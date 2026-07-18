@@ -460,25 +460,24 @@ pyproject.toml (version)
 
 ### 8.4 测试基础设施
 
-[tests/test_registry.py](../../tests/test_registry.py) 维护 11 个内置分类：
+[tests/support/catalog.py](../../tests/support/catalog.py) 按目录发现 **8** 个内置套件（详见 [tests/README.md](../../tests/README.md)）：
 
-| ID | 说明 | 优先级 |
-|----|------|--------|
-| `all` | 全量 | 0 |
-| `cli_sdk` | CLI / SDK / Runner | 10 |
-| `web_api` | FastAPI / WebSocket / 契约 | 20 |
-| `app_flows` | 端到端 / 入口调度 | 30 |
-| `desktop_ui` | Qt 主窗口 / 对话框 | 40 |
-| `browser_e2e` | Playwright 浏览器回归 | 50 |
-| `pipeline` | stdin/stdout JSON 管道 | 60 |
-| `packaging` | spec / hook / 发布完整性 | 70 |
-| `core_services` | 下载器 / 服务 / Mixin | 80 |
-| `suite_infra` | 测试套件自身 | 90 |
-| `misc` | 未归类新测试 | 999 |
+| ID | 说明 |
+|----|------|
+| `unit` | 隔离单元行为 |
+| `integration` | 多组件 / 本地边界协作 |
+| `contract` | API / CLI / 前端与兼容契约 |
+| `e2e` | 完整入口与浏览器旅程 |
+| `architecture` | 依赖方向、布局与规模守卫 |
+| `performance` | 性能预算 |
+| `release` | CI / 打包 / 更新与发布资产 |
+| `testkit` | catalog / launcher / runner 自身 |
 
-运行栈：`entry/test_entry.py` → `tests/test_launcher.py`（GUI/TUI/CLI）→ `tests/test_runner.py`（pytest 封装）→ 注册表解析文件列表。
+`all` 是八套件联合视图；`misc` 仅作布局违规视图，正常应为空。
 
-约 **92** 个 `test_*.py` 文件，测试主体为 `unittest.TestCase` 风格，由 pytest 统一执行。
+运行栈：`entry/test_entry.py` → `tests/launcher.py`（GUI/TUI/CLI）→ pytest 执行器 → catalog 按目录解析文件列表。
+
+测试规模随功能演进变化；当前仓库约有 **180+** 个 `test_*.py` 模块，主体为 `unittest.TestCase` 风格，由 pytest 统一执行。
 
 ### 8.5 调试体系
 
@@ -532,10 +531,14 @@ pyproject.toml (version)
 
 ### 10.4 建议关注顺序（供维护者参考）
 
-1. 完成 `shared/` 与 Web session 的收敛，消除双份 Mixin
-2. 对齐 CI 与本地测试入口（pytest + 轻量分类子集）
-3. 接入 ruff 作为低成本静态门禁
-4. 关键平台 Spider 流程保持半集成测试覆盖
+> 2026-07-18 更新：下列 1–3 项已在 shared 收束与分层 CI 中完成；保留为历史检查清单，后续优先做未竟项。
+
+1. ~~完成 `shared/` 与 Web session 的收敛，消除双份 Mixin~~（已完成）
+2. ~~对齐 CI 与本地测试入口（pytest + 分层门禁）~~（已完成）
+3. ~~接入 ruff / mypy / Bandit / pip-audit 静态与安全门禁~~（已完成）
+4. 关键平台 Spider 流程保持半集成与真实站点回归覆盖
+5. 继续削减超大模块（FrontendStateService、MainWindow、部分 Spider/Downloader）
+6. 取得正式代码签名证书后恢复 `UPDATE_REQUIRE_OS_SIGNATURE`
 
 ---
 

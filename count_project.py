@@ -1,4 +1,5 @@
 import argparse
+import ast
 import base64
 import os
 import site
@@ -399,10 +400,37 @@ def count_lines(path: Path) -> dict:
     }
 
 
+def count_test_cases(path: Path) -> int:
+    """Count Python test definitions statically without importing test modules."""
+    if path.suffix.lower() != ".py":
+        return 0
+    text = read_text_safely(path)
+    if not text:
+        return 0
+    try:
+        module = ast.parse(text, filename=str(path))
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return 0
+
+    function_nodes = (ast.FunctionDef, ast.AsyncFunctionDef)
+    count = 0
+    for node in module.body:
+        if isinstance(node, function_nodes) and node.name.startswith("test_"):
+            count += 1
+        elif isinstance(node, ast.ClassDef):
+            count += sum(
+                1
+                for member in node.body
+                if isinstance(member, function_nodes) and member.name.startswith("test_")
+            )
+    return count
+
+
 def scan_project(root: Path) -> dict:
     total_dirs = 0
     total_files = 0
     code_files = 0
+    test_cases = 0
 
     totals = {
         "all": empty_stat(),
@@ -444,6 +472,8 @@ def scan_project(root: Path) -> dict:
             stat = count_lines(file_path)
             lang = CODE_EXTS.get(file_path.suffix.lower(), file_path.suffix.lower())
             test_flag = is_test_file(file_path, root)
+            if test_flag:
+                test_cases += count_test_cases(file_path)
 
             group = "test" if test_flag else "prod"
 
@@ -469,6 +499,7 @@ def scan_project(root: Path) -> dict:
         "total_dirs": total_dirs,
         "total_files": total_files,
         "code_files": code_files,
+        "test_cases": test_cases,
         "totals": totals,
         "by_language": by_language,
         "largest_files": largest_files[:30],
@@ -483,6 +514,7 @@ def print_total_report(result: dict) -> None:
     print(f"目录数量: {result['total_dirs']}")
     print(f"文件总数: {result['total_files']}")
     print(f"代码文件数: {result['code_files']}")
+    print(f"\u6d4b\u8bd5\u7528\u4f8b\u6570: {result['test_cases']}")
 
     rows = [
         ("全部代码_含测试", totals["all"]),
@@ -1108,7 +1140,7 @@ body {
 }
 .metrics {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 16px;
     margin-top: 18px;
 }
@@ -1517,6 +1549,12 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
         render_kpi_card("总行数", all_totals["total"], "包含空行与注释", "Σ"),
         render_kpi_card("有效代码行数", all_totals["code"], "排除空行与注释", "</>"),
         render_kpi_card("测试代码行数", test_code, "识别为测试文件的有效代码", "T"),
+        render_kpi_card(
+            "\u6d4b\u8bd5\u7528\u4f8b\u6570",
+            result["test_cases"],
+            "\u9759\u6001\u8bc6\u522b\u7684\u6d4b\u8bd5\u7528\u4f8b\u5b9a\u4e49",
+            "TC",
+        ),
     ]
 
     html = f"""<!doctype html>

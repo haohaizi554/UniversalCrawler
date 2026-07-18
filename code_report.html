@@ -159,7 +159,7 @@ body {
 }
 .metrics {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 16px;
     margin-top: 18px;
 }
@@ -579,7 +579,7 @@ tr:last-child td {
 </div>
 <aside class="hero-stat">
 <div class="hero-stat-label">Effective LOC</div>
-<div class="hero-stat-value">164,829</div>
+<div class="hero-stat-value">167,773</div>
 <div class="hero-stat-note">有效代码行数</div>
 </aside>
 </section>
@@ -590,7 +590,7 @@ tr:last-child td {
 <span class="metric-icon">#</span>
 <span class="metric-label">代码文件数</span>
 </div>
-<div class="metric-value">621</div>
+<div class="metric-value">631</div>
 <div class="metric-hint">纳入统计的源代码文件</div>
 </article>
 
@@ -599,7 +599,7 @@ tr:last-child td {
 <span class="metric-icon">Σ</span>
 <span class="metric-label">总行数</span>
 </div>
-<div class="metric-value">188,942</div>
+<div class="metric-value">192,314</div>
 <div class="metric-hint">包含空行与注释</div>
 </article>
 
@@ -608,7 +608,7 @@ tr:last-child td {
 <span class="metric-icon">&lt;/&gt;</span>
 <span class="metric-label">有效代码行数</span>
 </div>
-<div class="metric-value">164,829</div>
+<div class="metric-value">167,773</div>
 <div class="metric-hint">排除空行与注释</div>
 </article>
 
@@ -617,8 +617,17 @@ tr:last-child td {
 <span class="metric-icon">T</span>
 <span class="metric-label">测试代码行数</span>
 </div>
-<div class="metric-value">60,629</div>
+<div class="metric-value">61,951</div>
 <div class="metric-hint">识别为测试文件的有效代码</div>
+</article>
+
+<article class="metric-card">
+<div class="metric-top">
+<span class="metric-icon">TC</span>
+<span class="metric-label">测试用例数</span>
+</div>
+<div class="metric-value">2,985</div>
+<div class="metric-hint">静态识别的测试用例定义</div>
 </article>
 
 </section>
@@ -632,9 +641,9 @@ tr:last-child td {
 </div>
 </div>
 <div class="donut-layout">
-<div class="donut" style="--test-deg: 132.42deg;">
+<div class="donut" style="--test-deg: 132.93deg;">
 <div class="donut-hole">
-<div class="donut-value">36.8%</div>
+<div class="donut-value">36.9%</div>
 <div class="donut-label">测试占比</div>
 </div>
 </div>
@@ -642,14 +651,14 @@ tr:last-child td {
 <div class="legend-item">
 <span class="legend-dot legend-prod"></span>
 <span>生产代码</span>
-<strong>104,200 行</strong>
-<em>63.2%</em>
+<strong>105,822 行</strong>
+<em>63.1%</em>
 </div>
 <div class="legend-item">
 <span class="legend-dot legend-test"></span>
 <span>测试代码</span>
-<strong>60,629 行</strong>
-<em>36.8%</em>
+<strong>61,951 行</strong>
+<em>36.9%</em>
 </div>
 </div>
 </div>
@@ -668,15 +677,15 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">Python</div>
 <div class="bar-track"><div class="bar-fill bar-fill-primary" style="width: 100.00%"></div></div>
-<div class="bar-value">146,201</div>
-<div class="bar-ratio">88.7%</div>
+<div class="bar-value">149,161</div>
+<div class="bar-ratio">88.9%</div>
 </div>
 
 <div class="bar-row">
 <div class="bar-name">JavaScript</div>
-<div class="bar-track"><div class="bar-fill" style="width: 7.52%"></div></div>
-<div class="bar-value">10,991</div>
-<div class="bar-ratio">6.7%</div>
+<div class="bar-track"><div class="bar-fill" style="width: 7.37%"></div></div>
+<div class="bar-value">10,997</div>
+<div class="bar-ratio">6.6%</div>
 </div>
 
 <div class="bar-row">
@@ -689,14 +698,14 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">JSON</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
-<div class="bar-value">2,432</div>
-<div class="bar-ratio">1.5%</div>
+<div class="bar-value">2,402</div>
+<div class="bar-ratio">1.4%</div>
 </div>
 
 <div class="bar-row">
 <div class="bar-name">HTML</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
-<div class="bar-value">1,251</div>
+<div class="bar-value">1,259</div>
 <div class="bar-ratio">0.8%</div>
 </div>
 
@@ -750,8 +759,8 @@ tr:last-child td {
 <span class="file-path">tests\unit\app\spiders\test_helpers.py</span>
 </div>
 <span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 86.62%"></div></div>
-<div class="bar-value">3,063</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 87.36%"></div></div>
+<div class="bar-value">3,089</div>
 </div>
 
 <div class="bar-row file-bar-row">
@@ -770,8 +779,8 @@ tr:last-child td {
 <span class="file-path">app\ui\main_window.py</span>
 </div>
 <span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 79.75%"></div></div>
-<div class="bar-value">2,820</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 79.89%"></div></div>
+<div class="bar-value">2,825</div>
 </div>
 
 <div class="bar-row file-bar-row">
@@ -790,8 +799,8 @@ tr:last-child td {
 <span class="file-path">tests\unit\app\ui\test_main_window.py</span>
 </div>
 <span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 75.06%"></div></div>
-<div class="bar-value">2,654</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 75.40%"></div></div>
+<div class="bar-value">2,666</div>
 </div>
 
 <div class="bar-row file-bar-row">
@@ -848,7 +857,7 @@ tr:last-child td {
 
 <article class="insight-card insight-good" title="测试占比较高，回归保护较充分">
 <div class="insight-label">测试代码占比</div>
-<div class="insight-value">36.8%</div>
+<div class="insight-value">36.9%</div>
 <p>测试占比较高，回归保护较充分</p>
 </article>
 
@@ -858,15 +867,15 @@ tr:last-child td {
 <p>存在超大文件，建议评估拆分</p>
 </article>
 
-<article class="insight-card insight-neutral" title="主语言：Python，占比 88.7%">
+<article class="insight-card insight-neutral" title="主语言：Python，占比 88.9%">
 <div class="insight-label">主语言</div>
 <div class="insight-value">Python</div>
-<p>主语言：Python，占比 88.7%</p>
+<p>主语言：Python，占比 88.9%</p>
 </article>
 
 <article class="insight-card insight-neutral" title="用于观察业务代码与测试代码结构">
 <div class="insight-label">生产代码占比</div>
-<div class="insight-value">63.2%</div>
+<div class="insight-value">63.1%</div>
 <p>用于观察业务代码与测试代码结构</p>
 </article>
 
@@ -880,7 +889,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="text">统计口径</th><th class="num">代码文件数</th><th class="num">总行数</th><th class="num">空行数</th><th class="num">注释行数</th><th class="num">有效代码行数</th></tr></thead>
 <tbody>
-<tr><td class="text">全部代码_含测试</td><td class="num">621</td><td class="num">188942</td><td class="num">22905</td><td class="num">1208</td><td class="num">164829</td></tr><tr><td class="text">排除测试后</td><td class="num">407</td><td class="num">116888</td><td class="num">11901</td><td class="num">787</td><td class="num">104200</td></tr><tr><td class="text">仅测试代码</td><td class="num">214</td><td class="num">72054</td><td class="num">11004</td><td class="num">421</td><td class="num">60629</td></tr>
+<tr><td class="text">全部代码_含测试</td><td class="num">631</td><td class="num">192314</td><td class="num">23326</td><td class="num">1215</td><td class="num">167773</td></tr><tr><td class="text">排除测试后</td><td class="num">412</td><td class="num">118676</td><td class="num">12060</td><td class="num">794</td><td class="num">105822</td></tr><tr><td class="text">仅测试代码</td><td class="num">219</td><td class="num">73638</td><td class="num">11266</td><td class="num">421</td><td class="num">61951</td></tr>
 </tbody>
 </table>
 </div>
@@ -893,7 +902,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="text">语言</th><th class="num">全部文件</th><th class="num">全部行</th><th class="num">全部代码</th><th class="num">生产代码</th><th class="num">测试代码</th><th class="num">测试文件</th></tr></thead>
 <tbody>
-<tr><td class="text">Python</td><td class="num">573</td><td class="num">168766</td><td class="num">146201</td><td class="num">85572</td><td class="num">60629</td><td class="num">214</td></tr><tr><td class="text">JavaScript</td><td class="num">22</td><td class="num">11839</td><td class="num">10991</td><td class="num">10991</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">CSS</td><td class="num">7</td><td class="num">3899</td><td class="num">3356</td><td class="num">3356</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">JSON</td><td class="num">11</td><td class="num">2432</td><td class="num">2432</td><td class="num">2432</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">HTML</td><td class="num">2</td><td class="num">1315</td><td class="num">1251</td><td class="num">1251</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">YAML</td><td class="num">3</td><td class="num">445</td><td class="num">391</td><td class="num">391</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">TOML</td><td class="num">2</td><td class="num">166</td><td class="num">142</td><td class="num">142</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">Shell</td><td class="num">1</td><td class="num">80</td><td class="num">65</td><td class="num">65</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td class="text">Python</td><td class="num">583</td><td class="num">172153</td><td class="num">149161</td><td class="num">87210</td><td class="num">61951</td><td class="num">219</td></tr><tr><td class="text">JavaScript</td><td class="num">22</td><td class="num">11845</td><td class="num">10997</td><td class="num">10997</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">CSS</td><td class="num">7</td><td class="num">3899</td><td class="num">3356</td><td class="num">3356</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">JSON</td><td class="num">11</td><td class="num">2402</td><td class="num">2402</td><td class="num">2402</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">HTML</td><td class="num">2</td><td class="num">1324</td><td class="num">1259</td><td class="num">1259</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">YAML</td><td class="num">3</td><td class="num">445</td><td class="num">391</td><td class="num">391</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">TOML</td><td class="num">2</td><td class="num">166</td><td class="num">142</td><td class="num">142</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">Shell</td><td class="num">1</td><td class="num">80</td><td class="num">65</td><td class="num">65</td><td class="num">0</td><td class="num">0</td></tr>
 </tbody>
 </table>
 </div>
@@ -906,7 +915,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="num">总行数</th><th class="num">代码行</th><th class="center">类型</th><th class="text path">文件</th></tr></thead>
 <tbody>
-<tr><td class="num">3536</td><td class="num">2920</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\integration\app\core\downloaders\test_runtime.py">tests\integration\app\core\downloaders\test_runtime.py</td></tr><tr><td class="num">3063</td><td class="num">2573</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\spiders\test_helpers.py">tests\unit\app\spiders\test_helpers.py</td></tr><tr><td class="num">2941</td><td class="num">2478</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\services\test_frontend_state_service.py">tests\unit\app\services\test_frontend_state_service.py</td></tr><tr><td class="num">2820</td><td class="num">2545</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\main_window.py">app\ui\main_window.py</td></tr><tr><td class="num">2681</td><td class="num">2460</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\frontend_state_service.py">app\services\frontend_state_service.py</td></tr><tr><td class="num">2654</td><td class="num">2170</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\ui\test_main_window.py">tests\unit\app\ui\test_main_window.py</td></tr><tr><td class="num">2199</td><td class="num">2020</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\launcher.py">tests\launcher.py</td></tr><tr><td class="num">2037</td><td class="num">1900</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\downloaders\m3u8.py">app\core\downloaders\m3u8.py</td></tr><tr><td class="num">1849</td><td class="num">1745</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\bilibili\spider.py">app\spiders\bilibili\spider.py</td></tr><tr><td class="num">1825</td><td class="num">1661</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\app.js">app\web\static\app.js</td></tr><tr><td class="num">1700</td><td class="num">1498</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\log_center_page.py">app\ui\pages\log_center_page.py</td></tr><tr><td class="num">1665</td><td class="num">1493</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="count_project.py">count_project.py</td></tr><tr><td class="num">1643</td><td class="num">1422</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\settings_page.py">app\ui\pages\settings_page.py</td></tr><tr><td class="num">1630</td><td class="num">1528</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\lib\douyin\extract\extractor.py">app\core\lib\douyin\extract\extractor.py</td></tr><tr><td class="num">1629</td><td class="num">1381</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\release\packaging\test_assets.py">tests\release\packaging\test_assets.py</td></tr><tr><td class="num">1612</td><td class="num">1501</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="shared\log_i18n.py">shared\log_i18n.py</td></tr><tr><td class="num">1499</td><td class="num">1337</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\controller.py">app\web\controller.py</td></tr><tr><td class="num">1492</td><td class="num">1302</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\config\settings.py">app\config\settings.py</td></tr><tr><td class="num">1471</td><td class="num">1352</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\kuaishou\spider.py">app\spiders\kuaishou\spider.py</td></tr><tr><td class="num">1438</td><td class="num">1266</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\secure_updater.py">app\services\secure_updater.py</td></tr><tr><td class="num">1411</td><td class="num">1391</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\i18n.js">app\web\static\i18n.js</td></tr><tr><td class="num">1399</td><td class="num">1304</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\runtime_and_lists.py">tests\support\browser_cases\runtime_and_lists.py</td></tr><tr><td class="num">1388</td><td class="num">1182</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\styles\themes.py">app\ui\styles\themes.py</td></tr><tr><td class="num">1379</td><td class="num">1322</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\log_i18n.js">app\web\static\log_i18n.js</td></tr><tr><td class="num">1340</td><td class="num">1134</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\contract\frontend\test_shell.py">tests\contract\frontend\test_shell.py</td></tr><tr><td class="num">1325</td><td class="num">1203</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\download_manager_core.py">app\core\download_manager_core.py</td></tr><tr><td class="num">1315</td><td class="num">1098</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\core\guardrails\test_runtime_policies.py">tests\unit\app\core\guardrails\test_runtime_policies.py</td></tr><tr><td class="num">1303</td><td class="num">1156</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\components\media_preview_panel.py">app\ui\components\media_preview_panel.py</td></tr><tr><td class="num">1283</td><td class="num">1180</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\active_downloads_page.py">app\ui\pages\active_downloads_page.py</td></tr><tr><td class="num">1276</td><td class="num">1215</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\log_center.py">tests\support\browser_cases\log_center.py</td></tr>
+<tr><td class="num">3536</td><td class="num">2920</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\integration\app\core\downloaders\test_runtime.py">tests\integration\app\core\downloaders\test_runtime.py</td></tr><tr><td class="num">3089</td><td class="num">2599</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\spiders\test_helpers.py">tests\unit\app\spiders\test_helpers.py</td></tr><tr><td class="num">2941</td><td class="num">2478</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\services\test_frontend_state_service.py">tests\unit\app\services\test_frontend_state_service.py</td></tr><tr><td class="num">2825</td><td class="num">2549</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\main_window.py">app\ui\main_window.py</td></tr><tr><td class="num">2681</td><td class="num">2460</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\frontend_state_service.py">app\services\frontend_state_service.py</td></tr><tr><td class="num">2666</td><td class="num">2179</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\ui\test_main_window.py">tests\unit\app\ui\test_main_window.py</td></tr><tr><td class="num">2199</td><td class="num">2020</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\launcher.py">tests\launcher.py</td></tr><tr><td class="num">2037</td><td class="num">1900</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\downloaders\m3u8.py">app\core\downloaders\m3u8.py</td></tr><tr><td class="num">1849</td><td class="num">1745</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\bilibili\spider.py">app\spiders\bilibili\spider.py</td></tr><tr><td class="num">1825</td><td class="num">1661</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\app.js">app\web\static\app.js</td></tr><tr><td class="num">1703</td><td class="num">1528</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="count_project.py">count_project.py</td></tr><tr><td class="num">1700</td><td class="num">1498</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\log_center_page.py">app\ui\pages\log_center_page.py</td></tr><tr><td class="num">1643</td><td class="num">1422</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\settings_page.py">app\ui\pages\settings_page.py</td></tr><tr><td class="num">1642</td><td class="num">1531</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="shared\log_i18n.py">shared\log_i18n.py</td></tr><tr><td class="num">1630</td><td class="num">1528</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\lib\douyin\extract\extractor.py">app\core\lib\douyin\extract\extractor.py</td></tr><tr><td class="num">1629</td><td class="num">1381</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\release\packaging\test_assets.py">tests\release\packaging\test_assets.py</td></tr><tr><td class="num">1492</td><td class="num">1302</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\config\settings.py">app\config\settings.py</td></tr><tr><td class="num">1438</td><td class="num">1266</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\secure_updater.py">app\services\secure_updater.py</td></tr><tr><td class="num">1421</td><td class="num">1272</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\controller.py">app\web\controller.py</td></tr><tr><td class="num">1411</td><td class="num">1391</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\i18n.js">app\web\static\i18n.js</td></tr><tr><td class="num">1399</td><td class="num">1304</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\runtime_and_lists.py">tests\support\browser_cases\runtime_and_lists.py</td></tr><tr><td class="num">1388</td><td class="num">1182</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\styles\themes.py">app\ui\styles\themes.py</td></tr><tr><td class="num">1385</td><td class="num">1328</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\log_i18n.js">app\web\static\log_i18n.js</td></tr><tr><td class="num">1340</td><td class="num">1134</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\contract\frontend\test_shell.py">tests\contract\frontend\test_shell.py</td></tr><tr><td class="num">1325</td><td class="num">1203</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\download_manager_core.py">app\core\download_manager_core.py</td></tr><tr><td class="num">1315</td><td class="num">1098</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\core\guardrails\test_runtime_policies.py">tests\unit\app\core\guardrails\test_runtime_policies.py</td></tr><tr><td class="num">1303</td><td class="num">1156</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\components\media_preview_panel.py">app\ui\components\media_preview_panel.py</td></tr><tr><td class="num">1283</td><td class="num">1180</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\active_downloads_page.py">app\ui\pages\active_downloads_page.py</td></tr><tr><td class="num">1276</td><td class="num">1215</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\log_center.py">tests\support\browser_cases\log_center.py</td></tr><tr><td class="num">1242</td><td class="num">1009</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\release\updater\test_secure_updater.py">tests\release\updater\test_secure_updater.py</td></tr>
 </tbody>
 </table>
 </div>

@@ -43,6 +43,7 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
         "total_dirs": 1,
         "total_files": 2,
         "code_files": 1,
+        "test_cases": 23,
         "totals": {
             "all": {"files": 2, "total": 15, "blank": 1, "comment": 4, "code": 10},
             "prod": {"files": 1, "total": 10, "blank": 1, "comment": 2, "code": 7},
@@ -74,6 +75,8 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
     assert 'class="hero-stat-label">Effective LOC</div>' in html
     assert "代码文件数" in html
     assert "测试代码行数" in html
+    assert "\u6d4b\u8bd5\u7528\u4f8b\u6570" in html
+    assert "\u9759\u6001\u8bc6\u522b\u7684\u6d4b\u8bd5\u7528\u4f8b\u5b9a\u4e49" in html
     assert 'class="dashboard-grid"' in html
     assert 'class="donut"' in html
     assert "语言分布 Top 8" in html
@@ -178,6 +181,36 @@ def test_scan_project_excludes_xml_from_code_statistics(tmp_path):
     assert result["code_files"] == 1
     assert "XML" not in result["by_language"]["all"]
     assert [item["path"] for item in result["largest_files"]] == ["main.py"]
+
+
+def test_scan_project_counts_python_test_case_definitions(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_sample.py").write_text(
+        """
+def test_module_case():
+    pass
+
+async def test_async_case():
+    pass
+
+def helper():
+    pass
+
+class TestFeature:
+    def test_method_case(self):
+        pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "def test_named_production_helper():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(tmp_path)
+
+    assert result["test_cases"] == 3
 
 
 def test_chart_rows_compute_widths_and_names():

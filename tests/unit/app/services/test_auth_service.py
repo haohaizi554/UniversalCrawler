@@ -150,6 +150,12 @@ class AuthServiceTests(unittest.TestCase):
                 {**base, "name": "negative", "value": "blocked", "expires": -2},
                 {**base, "name": "none", "value": "blocked", "expires": None},
                 {**base, "name": "empty", "value": "blocked", "expires": ""},
+                {
+                    **base,
+                    "name": "numeric_string",
+                    "value": "blocked",
+                    "expires": "2000",
+                },
                 {**base, "name": "false", "value": "blocked", "expires": False},
                 {
                     **base,

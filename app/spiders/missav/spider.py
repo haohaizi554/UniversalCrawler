@@ -2,14 +2,47 @@
 
 import re
 import urllib.parse
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Iterator
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from app.config import DEFAULT_USER_AGENT
 from app.spiders.base import BaseSpider
+from app.spiders.missav.challenge_session import (
+    ChallengeWaitCancelled,
+    ChallengeWaitTimeout,
+    ExternalChromeChallengeSession,
+    SystemBrowserUnavailable,
+)
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.missav.task_builder import MissAVTaskBuilder
 from shared.runtime_options import DomainPolicyViolation
+
+
+@dataclass
+class _ChallengeBrowserRuntime:
+    """记录一次 MissAV 扫描当前可用的浏览器接管对象。"""
+
+    playwright: Any = None
+    browser: Any = None
+    context: Any = None
+    page: Any = None
+    external_session: ExternalChromeChallengeSession | None = None
+
+    def bind(
+        self,
+        playwright: Any,
+        browser: Any,
+        context: Any,
+        page: Any,
+    ) -> None:
+        self.playwright = playwright
+        self.browser = browser
+        self.context = context
+        self.page = page
+
 
 class MissAVSpider(BaseSpider):
     """MissAV 爬虫，先扫列表再进入详情页嗅探 m3u8。"""
@@ -87,6 +120,167 @@ class MissAVSpider(BaseSpider):
         # 不注入全局 stealth.js：其中 Canvas/WebGL 改写会让挑战环境失去官方支持。
         return browser.new_context(**context_kwargs)
 
+    def _wait_for_external_challenge(
+        self,
+        session: ExternalChromeChallengeSession,
+        target_url: str,
+        *,
+        timeout_ms: int,
+    ) -> bool:
+        """在不连接 CDP 的前提下等待系统浏览器离开挑战页。"""
+
+        def report_challenge(_title: str) -> None:
+            self.log("🛡️ 检测到 Cloudflare，请在浏览器中完成人工验证...")
+
+        try:
+            session.wait_for_ready_page(
+                target_url,
+                timeout_seconds=max(
+                    self.CLOUDFLARE_MIN_WAIT_MS,
+                    int(timeout_ms or 0),
+                )
+                / 1000,
+                cancelled=lambda: not self.is_running or self.interrupt_requested,
+                on_challenge=report_challenge,
+            )
+        except ChallengeWaitCancelled:
+            return False
+        except ChallengeWaitTimeout as exc:
+            self.log(f"❌ Cloudflare 验证等待超时: {exc}")
+            return False
+        self.log("✅ Cloudflare 验证已通过")
+        return True
+
+    def _attach_external_browser(
+        self,
+        runtime: _ChallengeBrowserRuntime,
+        target_url: str,
+    ) -> bool:
+        """挑战结束后才启动 Playwright，并接管目标标签页。"""
+        session = runtime.external_session
+        if session is None:
+            return False
+        playwright = sync_playwright().start()
+        self._track_playwright_instance(playwright)
+        try:
+            attachment = session.attach(playwright, target_url)
+        except Exception:
+            self._stop_tracked_playwright_instance(playwright)
+            raise
+        runtime.bind(
+            playwright,
+            attachment.browser,
+            attachment.context,
+            attachment.page,
+        )
+        self._track_playwright_browser(attachment.browser)
+        self.log(f"🌐 MissAV 已接管系统浏览器 {attachment.browser.version}")
+        return True
+
+    def _disconnect_external_browser(
+        self,
+        runtime: _ChallengeBrowserRuntime,
+    ) -> None:
+        """仅断开 Playwright/CDP，保留系统 Chrome 进程和用户目录。"""
+        playwright = runtime.playwright
+        browser = runtime.browser
+        runtime.bind(None, None, None, None)
+        if browser is not None:
+            self._clear_playwright_browser(browser)
+        if playwright is not None:
+            self._stop_tracked_playwright_instance(playwright)
+
+    def _navigate_external_challenge(
+        self,
+        runtime: _ChallengeBrowserRuntime,
+        target_url: str,
+        *,
+        timeout_ms: int,
+    ) -> bool:
+        """断开控制后在同一浏览器资料中打开 URL，通过挑战后再接管。"""
+        session = runtime.external_session
+        if session is None:
+            return False
+        self._disconnect_external_browser(runtime)
+        session.open_url(target_url)
+        if not self._wait_for_external_challenge(
+            session,
+            target_url,
+            timeout_ms=timeout_ms,
+        ):
+            return False
+        return self._attach_external_browser(runtime, target_url)
+
+    def _release_challenge_browser_runtime(
+        self,
+        runtime: _ChallengeBrowserRuntime,
+    ) -> None:
+        """按所有权释放直连浏览器或外部系统浏览器会话。"""
+        if runtime.external_session is not None:
+            self._disconnect_external_browser(runtime)
+            runtime.external_session.close()
+            runtime.external_session = None
+            return
+        browser = runtime.browser
+        playwright = runtime.playwright
+        runtime.bind(None, None, None, None)
+        if browser is not None:
+            self._close_tracked_playwright_browser(browser)
+        if playwright is not None:
+            self._stop_tracked_playwright_instance(playwright)
+
+    @contextmanager
+    def _challenge_browser_runtime(
+        self,
+        target_url: str,
+        proxy_server: str | None,
+    ) -> Iterator[_ChallengeBrowserRuntime]:
+        """创建挑战安全的浏览器运行时，退出时统一回收资源。"""
+        runtime = _ChallengeBrowserRuntime()
+        browser_timeout_ms = self._configured_timeout_ms(default=60)
+        try:
+            if not self._browser_headless():
+                try:
+                    runtime.external_session = ExternalChromeChallengeSession(
+                        proxy_server=proxy_server,
+                    )
+                except SystemBrowserUnavailable:
+                    self.log("⚠️ 未找到系统 Chrome/Edge，改用 Playwright 浏览器")
+                else:
+                    runtime.external_session.start(target_url)
+                    if self._wait_for_external_challenge(
+                        runtime.external_session,
+                        target_url,
+                        timeout_ms=browser_timeout_ms,
+                    ):
+                        self._attach_external_browser(runtime, target_url)
+
+            if runtime.external_session is None:
+                playwright = sync_playwright().start()
+                self._track_playwright_instance(playwright)
+                browser = self._launch_challenge_browser(
+                    playwright,
+                    headless=self._browser_headless(),
+                )
+                self._track_playwright_browser(browser)
+                context = self._create_challenge_context(browser)
+                page = context.new_page()
+                runtime.bind(playwright, browser, context, page)
+                self.log("🚀 正在访问页面...")
+                if not self.interruptible_playwright_goto(
+                    page,
+                    target_url,
+                    timeout=browser_timeout_ms,
+                ) or not self._wait_for_cloudflare_challenge(
+                    page,
+                    timeout_ms=browser_timeout_ms,
+                ):
+                    runtime.page = None
+
+            yield runtime
+        finally:
+            self._release_challenge_browser_runtime(runtime)
+
     def _cloudflare_challenge_state(self, page) -> str:
         """区分正常页面、等待中的挑战和明确拒绝当前浏览器的页面。"""
         try:
@@ -97,10 +291,23 @@ class MissAVSpider(BaseSpider):
             body_text = str(page.locator("body").inner_text(timeout=1000) or "")
         except (PlaywrightError, TypeError, AttributeError):
             body_text = ""
-        challenge_text = f"{title}\n{body_text}".lower()
-        if any(marker in challenge_text for marker in self.CLOUDFLARE_UNSUPPORTED_MARKERS):
+        title_text = title.lower()
+        body_text = body_text.lower()
+        challenge_text = f"{title_text}\n{body_text}"
+        pending = any(
+            marker in challenge_text for marker in self.CLOUDFLARE_PENDING_MARKERS
+        )
+        challenge_evidence = (
+            pending
+            or "cloudflare" in challenge_text
+            or "ray id" in challenge_text
+        )
+        if challenge_evidence and any(
+            marker in challenge_text
+            for marker in self.CLOUDFLARE_UNSUPPORTED_MARKERS
+        ):
             return "unsupported"
-        if any(marker in challenge_text for marker in self.CLOUDFLARE_PENDING_MARKERS):
+        if pending:
             return "pending"
         return "clear"
 
@@ -172,23 +379,21 @@ class MissAVSpider(BaseSpider):
             self._require_missav_page_url(target_url)
             if not self.is_running:
                 return
-            with sync_playwright() as p:
-                self._track_playwright_instance(p)
-                browser = self._launch_challenge_browser(p, headless=self._browser_headless())
-                self._track_playwright_browser(browser)
+            with self._challenge_browser_runtime(
+                target_url,
+                proxy_server,
+            ) as runtime:
+                browser = runtime.browser
+                context = runtime.context
+                page = runtime.page
+                if page is None:
+                    return
                 try:
-                    context = self._create_challenge_context(browser)
-                    page = context.new_page()
                     try:
                         my_ua = str(page.evaluate("navigator.userAgent") or my_ua)
                     except (PlaywrightError, TypeError, AttributeError):
                         pass
-                    self.log("🚀 正在访问页面...")
                     browser_timeout_ms = self._configured_timeout_ms(default=60)
-                    if not self.interruptible_playwright_goto(page, target_url, timeout=browser_timeout_ms):
-                        return
-                    if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
-                        return
                     # 搜索页可能优先返回演员卡片，转入其主页后才能扫描完整作品列表。
                     if is_search_mode and self.is_running:
                         try:
@@ -250,10 +455,28 @@ class MissAVSpider(BaseSpider):
                                 self.log(f"   跳转校验: {chinese_url}")
                                 try:
                                     chinese_url_no_page = re.sub(r'[?&]page=\d+', '', chinese_url)
-                                    if not self.interruptible_playwright_goto(page, chinese_url_no_page, timeout=browser_timeout_ms):
-                                        return
-                                    if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
-                                        return
+                                    if runtime.external_session is not None:
+                                        if not self._navigate_external_challenge(
+                                            runtime,
+                                            chinese_url_no_page,
+                                            timeout_ms=browser_timeout_ms,
+                                        ):
+                                            return
+                                        browser = runtime.browser
+                                        context = runtime.context
+                                        page = runtime.page
+                                    else:
+                                        if not self.interruptible_playwright_goto(
+                                            page,
+                                            chinese_url_no_page,
+                                            timeout=browser_timeout_ms,
+                                        ):
+                                            return
+                                        if not self._wait_for_cloudflare_challenge(
+                                            page,
+                                            timeout_ms=browser_timeout_ms,
+                                        ):
+                                            return
 
                                     chinese_data = {}
                                     self._scan_pages(page, chinese_data, is_chinese_pass=True)
@@ -466,8 +689,7 @@ class MissAVSpider(BaseSpider):
                     else:
                         self.log("🛑 任务强制中止")
                 finally:
-                    self._close_tracked_playwright_browser(browser)
-                    self._clear_playwright_instance(p)
+                    self._release_challenge_browser_runtime(runtime)
         except (PlaywrightError, OSError, ValueError, RuntimeError) as e:
             self.log(f"💥 爬虫错误: {e}")
         finally:
@@ -478,7 +700,7 @@ class MissAVSpider(BaseSpider):
                 except PlaywrightError:
                     pass
             self._clear_playwright_browser(browser)
-            self._clear_playwright_instance()
+            self._stop_tracked_playwright_instance()
             self._emit_finished()
 
     @classmethod

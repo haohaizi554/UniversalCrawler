@@ -3,6 +3,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [clear-queue-409-freeze.md](clear-queue-409-freeze.md) | 清空队列导致 409 和卡顿的复盘 |
+| [missav-cloudflare-active-cdp-browser-rejection.md](missav-cloudflare-active-cdp-browser-rejection.md) | MissAV 二次筛选挑战因活动 CDP 会话被判浏览器不支持的完整实验与修复复盘 |
 | [missav-surrit-hls-403-local-proxy.md](missav-surrit-hls-403-local-proxy.md) | MissAV / surrit HLS 403 与本地代理经验 |
 | [settings-combo-native-arrow-gutter.md](settings-combo-native-arrow-gutter.md) | 设置下拉框右侧空白和原生箭头复盘 |
 | [packaged-startup-recursive-sweep-freeze.md](packaged-startup-recursive-sweep-freeze.md) | 打包态启动全盘递归导致未响应，以及恢复账本与两层迁移方案 |

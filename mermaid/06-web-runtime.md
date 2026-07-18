@@ -26,7 +26,7 @@ flowchart TB
     end
 
     subgraph Services["Web 服务层"]
-        Workflow["WorkflowService<br/>download/launch/route"]
+        Workflow["WebWorkflowService<br/>workflows.py 统一编排"]
         Search["SearchService"]
         DirSvc["DirectoryService"]
         FileResp["FileResponseService"]

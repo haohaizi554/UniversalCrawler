@@ -49,28 +49,35 @@ LLM 提示中提到 "ucrawl" 即可激活。
 
 ## 完整文档
 
-- [cli-guide.md](../../docs/cli/cli-guide.md) - CLI 完整调用说明
-- [rest-api-reference.md](../../docs/cli/rest-api-reference.md) - REST API 参考
-- [python-sdk-guide.md](../../docs/cli/python-sdk-guide.md) - Python SDK 指南
+- [cli-guide.md](../docs/cli/cli-guide.md) - CLI 完整调用说明
+- [rest-api-reference.md](../docs/cli/rest-api-reference.md) - REST API 参考
+- [python-sdk-guide.md](../docs/cli/python-sdk-guide.md) - Python SDK 指南
 
 ## 模块结构
 
 ```
 cli/
-├── __init__.py          # 暴露 SDK 入口
+├── __init__.py          # 公开包边界：再导出 SDK/选择策略，并注册历史模块别名
 ├── main.py              # CLI 入口 (`ucrawl` 命令)
-├── runner.py            # CLIRunner - 核心执行器
-├── sdk.py               # UcrawlSDK - Python SDK
-├── selection.py         # 4 种选择策略
 ├── script_runner.py     # 启动时脚本注入
 ├── commands/            # CLI 子命令
 │   ├── search.py
+│   ├── download.py
+│   ├── interactive.py
 │   ├── scan.py
 │   ├── platforms.py
 │   └── _alias.py        # 平台别名 (douyin/bilibili/...)
 └── skill/               # AI Skill 封装
     ├── SKILL.md
     └── ucrawl_skill.py
+
+shared/                  # 实现单源（CLI/Web/SDK 共用）
+├── cli_runner_runtime.py
+├── sdk_runtime.py
+├── runtime_options.py
+├── selection_runtime.py
+├── interactive_selection.py
+└── pipe_selection.py
 ```
 
 ## 安装
@@ -84,7 +91,8 @@ pip install -e .
 
 ## 关键设计点
 
-1. **独立进程 + 嵌入式 Qt**：CLI 启动时创建 QApplication（spider 派生自 QThread），不依赖 web 服务
-2. **同步 ask_user_selection**：monkey-patch spider.ask_user_selection，避免 Qt 信号跨线程阻塞
-3. **3 种二次选择策略**：规则 / TTY 交互 / stdin 管道（合集场景用预加载）
-4. **共享爬虫代码**：CLI、SDK、Web、GUI 都用相同的 app/spiders/ 和 app/core/plugins/
+1. **实现进 `shared/`**：`CLIRunner`、`UcrawlSDK`、选择策略与默认配置均在 `shared/`；`cli/` 只保留命令壳与公开包边界
+2. **历史导入兼容**：`cli.sdk` / `cli.runner` 等旧路径由 `cli/__init__.py` 注册为零逻辑别名，对象身份与 canonical 模块一致
+3. **同步 ask_user_selection**：monkey-patch spider.ask_user_selection，避免跨线程阻塞
+4. **多种二次选择策略**：规则 / TTY 交互 / stdin 管道（合集场景用预加载）；GUI 选择仅在需要时桥接
+5. **共享爬虫代码**：CLI、SDK、Web、GUI 都用相同的 `app/spiders/` 和 `app/core/plugins/`

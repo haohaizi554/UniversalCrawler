@@ -17,7 +17,7 @@ flowchart TB
         CmdInteractive["commands/interactive.py"]
         CmdScan["commands/scan.py"]
         CmdPlatforms["commands/platforms.py"]
-        SDK["sdk.py<br/>Python API 面向脚本"]
+        PackageInit["cli/__init__.py<br/>公开再导出 + 历史别名"]
     end
 
     subgraph Shared["shared/ 中立层"]
@@ -56,7 +56,9 @@ flowchart TB
     CmdInteractive --> InteractiveSel
     CmdInteractive --> PipeSel
     CmdInteractive --> SelectionRt
-    SDK --> SDKRt
+    PackageInit --> SDKRt
+    PackageInit --> CLIRunnerRt
+    PackageInit --> SelectionRt
 
     SearchRt --> CLIRunnerRt
     DownloadRt --> SDKRt
@@ -157,11 +159,11 @@ classDiagram
     GUISelection --> GUISelectionStrategy
 ```
 
-## SDK API（cli/sdk.py）
+## SDK API（shared/sdk_runtime.py）
 
 ```mermaid
 flowchart TB
-    subgraph SDK["UcrawlSDK (cli/sdk.py, 771 行)"]
+    subgraph SDK["UcrawlSDK (shared/sdk_runtime.py)"]
         Init["__init__(config)"]
         Search["search(source, keyword, **opts)<br/>→ list[VideoItem]"]
         Download["download_video(item, save_dir)<br/>→ DownloadResult"]
@@ -171,9 +173,9 @@ flowchart TB
         Close["close()<br/>清理资源"]
     end
 
-    subgraph Internal["内部实现"]
+    subgraph Internal["内部依赖"]
         SDKRt["shared.sdk_runtime"]
-        Runner["CLIRunner"]
+        Runner["shared.cli_runner_runtime.CLIRunner"]
         SpiderSession["SpiderSession"]
         Controller["ControllerSession"]
     end
