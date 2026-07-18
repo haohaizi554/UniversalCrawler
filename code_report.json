@@ -2,47 +2,54 @@
   "root": "D:\\desktop\\project\\UniversalCrawlerProplus",
   "repository_url": "https://github.com/haohaizi554/UniversalCrawler",
   "total_dirs": 155,
-  "total_files": 960,
-  "code_files": 639,
-  "test_cases": 3032,
+  "total_files": 967,
+  "code_files": 641,
+  "test_cases": 3241,
   "totals": {
     "all": {
-      "files": 639,
-      "total": 195450,
-      "blank": 23693,
-      "comment": 1173,
-      "code": 170584
+      "files": 641,
+      "total": 197415,
+      "blank": 23818,
+      "comment": 1180,
+      "code": 172417
     },
     "prod": {
-      "files": 419,
-      "total": 120307,
-      "blank": 12234,
-      "comment": 753,
-      "code": 107320
+      "files": 421,
+      "total": 121633,
+      "blank": 12286,
+      "comment": 759,
+      "code": 108588
     },
     "test": {
       "files": 220,
-      "total": 75143,
-      "blank": 11459,
-      "comment": 420,
-      "code": 63264
+      "total": 75782,
+      "blank": 11532,
+      "comment": 421,
+      "code": 63829
     }
   },
   "by_language": {
     "all": {
       "HTML": {
         "files": 2,
-        "total": 1324,
-        "blank": 65,
+        "total": 1450,
+        "blank": 68,
         "comment": 0,
-        "code": 1259
+        "code": 1382
+      },
+      "JSON": {
+        "files": 12,
+        "total": 3148,
+        "blank": 0,
+        "comment": 0,
+        "code": 3148
       },
       "Python": {
-        "files": 591,
-        "total": 175287,
-        "blank": 22198,
-        "comment": 1119,
-        "code": 151970
+        "files": 592,
+        "total": 176365,
+        "blank": 22319,
+        "comment": 1126,
+        "code": 152920
       },
       "YAML": {
         "files": 3,
@@ -58,19 +65,12 @@
         "comment": 10,
         "code": 142
       },
-      "JSON": {
-        "files": 11,
-        "total": 2402,
-        "blank": 0,
-        "comment": 0,
-        "code": 2402
-      },
       "JavaScript": {
         "files": 22,
-        "total": 11847,
-        "blank": 818,
+        "total": 11862,
+        "blank": 819,
         "comment": 30,
-        "code": 10999
+        "code": 11013
       },
       "CSS": {
         "files": 7,
@@ -90,17 +90,24 @@
     "prod": {
       "HTML": {
         "files": 2,
-        "total": 1324,
-        "blank": 65,
+        "total": 1450,
+        "blank": 68,
         "comment": 0,
-        "code": 1259
+        "code": 1382
+      },
+      "JSON": {
+        "files": 12,
+        "total": 3148,
+        "blank": 0,
+        "comment": 0,
+        "code": 3148
       },
       "Python": {
-        "files": 371,
-        "total": 100144,
-        "blank": 10739,
-        "comment": 699,
-        "code": 88706
+        "files": 372,
+        "total": 100583,
+        "blank": 10787,
+        "comment": 705,
+        "code": 89091
       },
       "YAML": {
         "files": 3,
@@ -116,19 +123,12 @@
         "comment": 10,
         "code": 142
       },
-      "JSON": {
-        "files": 11,
-        "total": 2402,
-        "blank": 0,
-        "comment": 0,
-        "code": 2402
-      },
       "JavaScript": {
         "files": 22,
-        "total": 11847,
-        "blank": 818,
+        "total": 11862,
+        "blank": 819,
         "comment": 30,
-        "code": 10999
+        "code": 11013
       },
       "CSS": {
         "files": 7,
@@ -148,10 +148,10 @@
     "test": {
       "Python": {
         "files": 220,
-        "total": 75143,
-        "blank": 11459,
-        "comment": 420,
-        "code": 63264
+        "total": 75782,
+        "blank": 11532,
+        "comment": 421,
+        "code": 63829
       }
     }
   },
@@ -167,29 +167,29 @@
       "files": 10,
       "total": 2549,
       "blank": 289,
-      "comment": 18,
-      "code": 2242
+      "comment": 19,
+      "code": 2241
     },
     "app/core": {
-      "files": 92,
-      "total": 20118,
-      "blank": 1964,
+      "files": 93,
+      "total": 20506,
+      "blank": 2002,
       "comment": 191,
-      "code": 17963
+      "code": 18313
     },
     "app/services": {
       "files": 34,
-      "total": 14013,
-      "blank": 1330,
-      "comment": 42,
-      "code": 12641
+      "total": 14047,
+      "blank": 1336,
+      "comment": 43,
+      "code": 12668
     },
     "app/spiders": {
       "files": 32,
-      "total": 10264,
-      "blank": 862,
-      "comment": 86,
-      "code": 9316
+      "total": 10296,
+      "blank": 863,
+      "comment": 92,
+      "code": 9341
     },
     "app/ui": {
       "files": 74,
@@ -200,10 +200,10 @@
     },
     "app/web": {
       "files": 51,
-      "total": 20718,
-      "blank": 1940,
-      "comment": 69,
-      "code": 18709
+      "total": 20723,
+      "blank": 1941,
+      "comment": 70,
+      "code": 18712
     },
     "app/models": {
       "files": 3,
@@ -227,18 +227,18 @@
       "code": 680
     },
     "shared": {
-      "files": 30,
-      "total": 9689,
-      "blank": 1076,
-      "comment": 146,
-      "code": 8467
+      "files": 31,
+      "total": 9857,
+      "blank": 1105,
+      "comment": 145,
+      "code": 8607
     },
     "cli": {
-      "files": 22,
-      "total": 1851,
-      "blank": 294,
-      "comment": 23,
-      "code": 1534
+      "files": 21,
+      "total": 1716,
+      "blank": 280,
+      "comment": 16,
+      "code": 1420
     },
     "entry": {
       "files": 15,
@@ -263,89 +263,99 @@
     },
     "tests": {
       "files": 219,
-      "total": 74729,
-      "blank": 11416,
-      "comment": 399,
-      "code": 62914
+      "total": 75368,
+      "blank": 11489,
+      "comment": 400,
+      "code": 63479
     },
     "other": {
-      "files": 21,
-      "total": 5571,
-      "blank": 382,
-      "comment": 28,
-      "code": 5161
+      "files": 22,
+      "total": 6405,
+      "blank": 373,
+      "comment": 33,
+      "code": 5999
     }
   },
   "by_suite": {
     "unit": {
       "files": 134,
-      "total": 37429,
-      "blank": 6804,
+      "total": 37864,
+      "blank": 6855,
       "comment": 109,
-      "code": 30516
+      "code": 30900,
+      "test_cases": 1881
     },
     "integration": {
       "files": 11,
       "total": 6633,
       "blank": 1055,
       "comment": 100,
-      "code": 5478
+      "code": 5478,
+      "test_cases": 328
     },
     "contract": {
       "files": 22,
-      "total": 9022,
-      "blank": 1136,
+      "total": 9068,
+      "blank": 1139,
       "comment": 71,
-      "code": 7815
+      "code": 7858,
+      "test_cases": 404
     },
     "e2e": {
       "files": 1,
       "total": 1103,
       "blank": 125,
       "comment": 26,
-      "code": 952
+      "code": 952,
+      "test_cases": 58
     },
     "architecture": {
       "files": 10,
-      "total": 1130,
-      "blank": 215,
+      "total": 1206,
+      "blank": 222,
       "comment": 2,
-      "code": 913
+      "code": 982,
+      "test_cases": 58
     },
     "performance": {
       "files": 1,
       "total": 140,
       "blank": 20,
       "comment": 0,
-      "code": 120
+      "code": 120,
+      "test_cases": 4
     },
     "release": {
       "files": 7,
-      "total": 5607,
-      "blank": 920,
-      "comment": 21,
-      "code": 4666
+      "total": 5662,
+      "blank": 932,
+      "comment": 22,
+      "code": 4708,
+      "test_cases": 316
     },
     "testkit": {
       "files": 3,
-      "total": 919,
+      "total": 928,
       "blank": 143,
       "comment": 12,
-      "code": 764
+      "code": 773,
+      "test_cases": 59
     },
     "support": {
       "files": 23,
-      "total": 10145,
+      "total": 10163,
       "blank": 738,
       "comment": 35,
-      "code": 9372
+      "code": 9390,
+      "test_cases": 133
     },
     "other": {
       "files": 8,
       "total": 3015,
       "blank": 303,
       "comment": 44,
-      "code": 2668
+      "code": 2668,
+      "test_cases": 0
     }
   },
   "largest_files": [
@@ -357,7 +367,8 @@
       "lang": "Python",
       "module": "tests",
       "suite": "integration",
-      "risk": "watch"
+      "risk": "watch",
+      "test_cases": 168
     },
     {
       "path": "tests/unit/app/spiders/test_helpers.py",
@@ -367,7 +378,8 @@
       "lang": "Python",
       "module": "tests",
       "suite": "unit",
-      "risk": "watch"
+      "risk": "watch",
+      "test_cases": 172
     },
     {
       "path": "tests/unit/app/services/test_frontend_state_service.py",
@@ -377,7 +389,8 @@
       "lang": "Python",
       "module": "tests",
       "suite": "unit",
-      "risk": "watch"
+      "risk": "watch",
+      "test_cases": 117
     },
     {
       "path": "app/ui/main_window.py",
@@ -387,270 +400,163 @@
       "lang": "Python",
       "module": "app/ui",
       "suite": "",
-      "risk": "watch"
+      "risk": "watch",
+      "test_cases": 0
     },
     {
       "path": "app/services/frontend_state_service.py",
-      "total": 2681,
-      "code": 2460,
+      "total": 2682,
+      "code": 2461,
       "is_test": false,
       "lang": "Python",
       "module": "app/services",
       "suite": "",
-      "risk": "watch"
-    },
+      "risk": "watch",
+      "test_cases": 0
+    }
+  ],
+  "complexity_hotspots": [
     {
-      "path": "count_project.py",
-      "total": 2669,
-      "code": 2409,
-      "is_test": false,
-      "lang": "Python",
-      "module": "other",
-      "suite": "",
-      "risk": "watch"
-    },
-    {
-      "path": "tests/unit/app/ui/test_main_window.py",
-      "total": 2666,
-      "code": 2179,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "unit",
-      "risk": "watch"
-    },
-    {
-      "path": "tests/launcher.py",
-      "total": 2199,
-      "code": 2020,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "other",
-      "risk": "ok"
-    },
-    {
-      "path": "app/core/downloaders/m3u8.py",
-      "total": 2037,
-      "code": 1900,
-      "is_test": false,
-      "lang": "Python",
+      "path": "app/core/downloaders/chunked.py",
       "module": "app/core",
-      "suite": "",
-      "risk": "watch"
+      "name": "ChunkedDownloader.download",
+      "complexity": 98,
+      "lineno": 43
     },
     {
-      "path": "app/spiders/bilibili/spider.py",
-      "total": 1849,
-      "code": 1745,
-      "is_test": false,
-      "lang": "Python",
-      "module": "app/spiders",
-      "suite": "",
-      "risk": "watch"
+      "path": "app/core/downloaders/bilibili.py",
+      "module": "app/core",
+      "name": "BilibiliDownloader.download",
+      "complexity": 97,
+      "lineno": 101
     },
     {
-      "path": "app/web/static/app.js",
-      "total": 1825,
-      "code": 1661,
-      "is_test": false,
-      "lang": "JavaScript",
-      "module": "app/web",
-      "suite": "",
-      "risk": "watch"
-    },
-    {
-      "path": "app/ui/pages/log_center_page.py",
-      "total": 1700,
-      "code": 1498,
-      "is_test": false,
-      "lang": "Python",
-      "module": "app/ui",
-      "suite": "",
-      "risk": "watch"
+      "path": "shared/log_pipeline_rules.py",
+      "module": "shared",
+      "name": "derive_event_stage",
+      "complexity": 78,
+      "lineno": 610
     },
     {
       "path": "shared/log_i18n.py",
-      "total": 1652,
-      "code": 1541,
-      "is_test": false,
-      "lang": "Python",
       "module": "shared",
-      "suite": "",
-      "risk": "watch"
+      "name": "_localize_non_english_dynamic",
+      "complexity": 74,
+      "lineno": 1387
     },
     {
-      "path": "app/ui/pages/settings_page.py",
-      "total": 1643,
-      "code": 1422,
-      "is_test": false,
-      "lang": "Python",
-      "module": "app/ui",
-      "suite": "",
-      "risk": "watch"
+      "path": "app/spiders/missav/spider.py",
+      "module": "app/spiders",
+      "name": "MissAVSpider.run",
+      "complexity": 73,
+      "lineno": 339
     },
     {
-      "path": "app/core/lib/douyin/extract/extractor.py",
-      "total": 1630,
-      "code": 1528,
-      "is_test": false,
-      "lang": "Python",
+      "path": "shared/sdk_runtime.py",
+      "module": "shared",
+      "name": "UcrawlSDK.download_video",
+      "complexity": 72,
+      "lineno": 238
+    },
+    {
+      "path": "app/services/auth_service.py",
+      "module": "app/services",
+      "name": "AuthService.extract_cookie_dict_for_url",
+      "complexity": 58,
+      "lineno": 118
+    },
+    {
+      "path": "app/core/downloaders/ffmpeg.py",
       "module": "app/core",
-      "suite": "",
-      "risk": "watch"
+      "name": "FFmpegDownloader.download",
+      "complexity": 56,
+      "lineno": 153
     },
     {
-      "path": "tests/release/packaging/test_assets.py",
-      "total": 1629,
-      "code": 1381,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "release",
-      "risk": "ok"
+      "path": "app/web/rest_router.py",
+      "module": "app/web",
+      "name": "build_rest_router",
+      "complexity": 53,
+      "lineno": 71
+    },
+    {
+      "path": "shared/log_i18n.py",
+      "module": "shared",
+      "name": "_localize_english_dynamic",
+      "complexity": 52,
+      "lineno": 1166
     },
     {
       "path": "app/config/settings.py",
-      "total": 1492,
-      "code": 1302,
-      "is_test": false,
-      "lang": "Python",
       "module": "app/config",
-      "suite": "",
-      "risk": "ok"
+      "name": "ConfigManager._normalize_field_value",
+      "complexity": 51,
+      "lineno": 1056
     },
     {
-      "path": "app/services/secure_updater.py",
-      "total": 1438,
-      "code": 1266,
-      "is_test": false,
-      "lang": "Python",
-      "module": "app/services",
-      "suite": "",
-      "risk": "ok"
+      "path": "app/spiders/bilibili/spider.py",
+      "module": "app/spiders",
+      "name": "BilibiliSpider._scan_with_browser_queue",
+      "complexity": 51,
+      "lineno": 1402
     },
     {
-      "path": "app/web/controller.py",
-      "total": 1423,
-      "code": 1274,
-      "is_test": false,
-      "lang": "Python",
-      "module": "app/web",
-      "suite": "",
-      "risk": "ok"
-    },
-    {
-      "path": "app/web/static/i18n.js",
-      "total": 1411,
-      "code": 1391,
-      "is_test": false,
-      "lang": "JavaScript",
-      "module": "app/web",
-      "suite": "",
-      "risk": "ok"
-    },
-    {
-      "path": "tests/support/browser_cases/runtime_and_lists.py",
-      "total": 1399,
-      "code": 1304,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "support",
-      "risk": "ok"
-    },
-    {
-      "path": "app/ui/styles/themes.py",
-      "total": 1388,
-      "code": 1182,
-      "is_test": false,
-      "lang": "Python",
+      "path": "app/ui/viewmodels/snapshot_table_model.py",
       "module": "app/ui",
-      "suite": "",
-      "risk": "ok"
+      "name": "SnapshotTableModel.data",
+      "complexity": 49,
+      "lineno": 44
     },
     {
-      "path": "app/web/static/log_i18n.js",
-      "total": 1387,
-      "code": 1330,
-      "is_test": false,
-      "lang": "JavaScript",
-      "module": "app/web",
-      "suite": "",
-      "risk": "ok"
-    },
-    {
-      "path": "tests/contract/frontend/test_shell.py",
-      "total": 1340,
-      "code": 1134,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "contract",
-      "risk": "ok"
-    },
-    {
-      "path": "app/core/download_manager_core.py",
-      "total": 1327,
-      "code": 1202,
-      "is_test": false,
-      "lang": "Python",
+      "path": "app/core/downloaders/base.py",
       "module": "app/core",
-      "suite": "",
-      "risk": "ok"
+      "name": "BaseDownloader._download_http_file",
+      "complexity": 47,
+      "lineno": 236
     },
     {
-      "path": "tests/unit/app/core/guardrails/test_runtime_policies.py",
-      "total": 1315,
-      "code": 1098,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "unit",
-      "risk": "ok"
+      "path": "app/services/frontend_state_service.py",
+      "module": "app/services",
+      "name": "FrontendStateService._build_video_sections",
+      "complexity": 44,
+      "lineno": 547
     },
     {
-      "path": "app/ui/components/media_preview_panel.py",
-      "total": 1303,
-      "code": 1156,
-      "is_test": false,
-      "lang": "Python",
+      "path": "app/ui/components/combo_popup.py",
       "module": "app/ui",
-      "suite": "",
-      "risk": "ok"
+      "name": "polish_combo_popup",
+      "complexity": 44,
+      "lineno": 486
     },
     {
-      "path": "app/ui/pages/active_downloads_page.py",
-      "total": 1283,
-      "code": 1180,
-      "is_test": false,
-      "lang": "Python",
+      "path": "app/spiders/kuaishou/spider.py",
+      "module": "app/spiders",
+      "name": "KuaishouSpider._run_capture_pipeline",
+      "complexity": 43,
+      "lineno": 752
+    },
+    {
+      "path": "app/ui/components/settings_platform_controls.py",
       "module": "app/ui",
-      "suite": "",
-      "risk": "ok"
+      "name": "build_platform_proxy_widget",
+      "complexity": 43,
+      "lineno": 84
     },
     {
-      "path": "tests/support/browser_cases/log_center.py",
-      "total": 1276,
-      "code": 1215,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "support",
-      "risk": "ok"
+      "path": "app/ui/viewmodels/log_platforms.py",
+      "module": "app/ui",
+      "name": "load_platform_options",
+      "complexity": 37,
+      "lineno": 39
     },
     {
-      "path": "tests/release/updater/test_secure_updater.py",
-      "total": 1242,
-      "code": 1009,
-      "is_test": true,
-      "lang": "Python",
-      "module": "tests",
-      "suite": "release",
-      "risk": "ok"
+      "path": "app/web/workflows.py",
+      "module": "app/web",
+      "name": "WebWorkflowService.direct_download",
+      "complexity": 37,
+      "lineno": 383
     }
   ],
-  "complexity_hotspots": [],
   "project_surface": {
     "scripts": [
       {
@@ -721,20 +627,8 @@
     "optional_dependency_groups": 0,
     "python_requires": ">=3.10",
     "package_name": "ucrawl",
-    "version": "3.6.17"
+    "version": "3.6.21"
   },
-  "cocomo": {
-    "model": "COCOMO organic",
-    "kloc": 107.32,
-    "person_months": 325.41,
-    "schedule_months": 22.52
-  },
-  "llm_budget": {
-    "tokens_per_code_line": 28.0,
-    "estimated_tokens": 4776352,
-    "note": "粗估全库有效代码装入 LLM 的 token 量级，不含提示词与工具协议开销"
-  },
-  "comment_metric_note": "注释行为前缀启发式统计，可能低估多行注释或高估字符串中的 # / //",
   "history_delta": null,
   "gates": {
     "enabled": false,

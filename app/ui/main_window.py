@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
         text = getattr(label, "text", None)
         if callable(text):
             return str(text())
-        return "v3.6.17"
+        return "v3.6.21"
 
     def _record_update_startup_health(self) -> None:
         try:

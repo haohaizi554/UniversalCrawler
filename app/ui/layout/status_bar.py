@@ -92,7 +92,7 @@ class StatusBarWidget(QFrame):
 
         layout.addStretch(1)
 
-        self.lbl_version = QPushButton("v3.6.17")
+        self.lbl_version = QPushButton("v3.6.21")
         self.lbl_version.setObjectName("StatusVersionButton")
         self.lbl_version.setToolTip("检查更新")
         self.lbl_version.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -190,4 +190,4 @@ class StatusBarWidget(QFrame):
         self.lbl_download.setText(str(merged.get("download_speed") or "0 B/s"))
         self.lbl_completed.setText(str(int(merged.get("completed_count", 0) or 0)))
         self.lbl_failed.setText(str(failed_count))
-        self.lbl_version.setText(str(merged.get("version") or "v3.6.17"))
+        self.lbl_version.setText(str(merged.get("version") or "v3.6.21"))
