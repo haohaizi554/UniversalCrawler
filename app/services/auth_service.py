@@ -182,10 +182,9 @@ class AuthService:
             if require_scope:
                 if raw_expires is _COOKIE_FIELD_UNSET:
                     expires = -1.0
-                elif (
-                    raw_expires is None
-                    or isinstance(raw_expires, bool)
-                    or raw_expires == ""
+                elif isinstance(raw_expires, bool) or not isinstance(
+                    raw_expires,
+                    (int, float),
                 ):
                     continue
                 else:

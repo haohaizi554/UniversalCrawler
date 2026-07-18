@@ -33,7 +33,7 @@
 4. 从传输 URL 计算主机与端口。显式端口优先；否则 HTTPS 使用 443，HTTP 使用 80。
 5. 将 IPv6 地址用方括号包裹，保留 IPv4 原样，构造单条 `host:port:address[,address...]` 的 `CurlOpt.RESOLVE` 配置；同一 request-scoped `curl_options` 必须设置 `CurlOpt.PROXY: ""`，禁止 libcurl 读取环境代理。
 6. 仅当输入是快手短链时，在展开前只读一次现有 Playwright storage state；不写入浏览器持久化使用的 `_loaded_storage_state`。
-7. 对当前 ASCII 传输 URL 按浏览器 domain、path、Secure 和 expiry 规则严格筛选 Cookie；拒绝 flat dict、缺少 domain/path、非布尔 Secure、非法过期值以及含 curl 分隔符或控制字符的项。仅缺失 expiry 字段或数值 `-1` 表示 session，显式 `0`、空值、其他负值和非有限值均失败关闭。
+7. 对当前 ASCII 传输 URL 按浏览器 domain、path、Secure 和 expiry 规则严格筛选 Cookie；拒绝 flat dict、缺少 domain/path、非布尔 Secure、非法过期值以及含 curl 分隔符或控制字符的项。expiry 只接受 JSON 数值类型（排除 bool），仅缺失字段或数值 `-1` 表示 session；字符串数值、显式 `0`、空值、其他负值和非有限值均失败关闭。
 8. 只有成功生成固定项后才把同一个 ASCII 传输 URL及当前跳 Cookie 交给 `curl_cffi.get()`；不传无效的 None proxy mapping，仍禁止 curl 自动跟随重定向。
 9. 对每个 `Location` 先按现有规则规范化并验证，再回到步骤 1，为新 URL/主机重新规范化、解析、固定并重新筛选 Cookie。
 10. 最终详情响应继续进入现有有界内容回调与缓存；后续解析消费同一份 HTML。响应缓存不保存 Cookie 或 storage state。

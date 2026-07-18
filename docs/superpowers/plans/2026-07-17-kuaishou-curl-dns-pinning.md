@@ -535,7 +535,7 @@ This is an incremental production-validation follow-up. The real failure sample 
 **Security contract:**
 
 - Add `require_scope=True` to the shared URL cookie filter as an opt-in; legacy callers keep their existing compatibility behavior.
-- Strict mode rejects flat/unscoped state, missing domain/path, non-boolean Secure fields, malformed expiry, control characters, and curl cookie delimiters. Only a missing expiry field or numeric `-1` is a session Cookie; explicit zero/empty/other-negative/non-finite values fail closed.
+- Strict mode rejects flat/unscoped state, missing domain/path, non-boolean Secure fields, malformed expiry, control characters, and curl cookie delimiters. Expiry accepts only JSON numeric types (excluding bool); only a missing field or numeric `-1` is a session Cookie, while numeric strings, explicit zero/empty/other-negative/non-finite values fail closed.
 - `/f` matches `/f` and `/f/...`, never `/foobar`.
 - `KuaishouSpider.run()` loads the storage state only for a short-link candidate and passes it as an explicit argument; it does not assign `_loaded_storage_state`.
 - Every manually handled curl hop calls the strict filter with the exact ASCII transport URL and supplies only that hop's dictionary through `curl_get(cookies=...)`.
