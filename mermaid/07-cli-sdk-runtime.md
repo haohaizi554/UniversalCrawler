@@ -1,226 +1,179 @@
 # 07 CLI / SDK / Shared Runtime
 
-## 跨端共享运行时骨架
+## 当前包边界与调用方向
 
 ```mermaid
 flowchart TB
     subgraph Entry["入口层"]
-        CLIEntry["cli_entry.py"]
-        InteractiveEntry["interactive_entry.py"]
-        WebEntry["web_entry.py"]
+        CLIEntry["entry/cli_entry.py"]
+        InteractiveEntry["entry/interactive_entry.py"]
+        WebEntry["entry/web_entry.py"]
     end
 
-    subgraph CLI["cli/ 命令层"]
-        Main["cli.main<br/>argparse 子命令"]
-        CmdSearch["commands/search.py"]
-        CmdDownload["commands/download.py"]
-        CmdInteractive["commands/interactive.py"]
-        CmdScan["commands/scan.py"]
-        CmdPlatforms["commands/platforms.py"]
-        PackageInit["cli/__init__.py<br/>公开再导出 + 历史别名"]
+    subgraph CLI["cli/ 命令宿主"]
+        Main["cli/main.py<br/>根解析器与分发"]
+        CmdSearch["cli/commands/search.py"]
+        CmdDownload["cli/commands/download.py"]
+        CmdScan["cli/commands/scan.py"]
+        CmdPlatforms["cli/commands/platforms.py"]
+        CmdInteractive["cli/commands/interactive.py"]
+        InteractiveFlow["cli/interactive/"]
+        CLIInit["cli/__init__.py<br/>仅 shared.version"]
     end
 
-    subgraph Shared["shared/ 中立层"]
-        SearchRt["search_command_runtime"]
-        DownloadRt["download_command_runtime"]
-        SDKRt["sdk_runtime"]
-        CLIRunnerRt["cli_runner_runtime"]
-        SpiderSession["spider_session_runtime"]
-        ControllerSession["controller_session"]
-        RuntimeOpts["runtime_options"]
-        RuntimeAdapters["runtime_adapters"]
-        PipeSel["pipe_selection"]
-        InteractiveSel["interactive_selection"]
-        SelectionRt["selection_runtime"]
+    subgraph PublicSDK["公开 Python 包"]
+        SDKInit["ucrawl/__init__.py"]
     end
 
-    subgraph App["app/ 核心层"]
-        AppCtrl["ApplicationController"]
-        Spider["Spider / Plugin"]
-        Download["Download Pipeline"]
+    subgraph Shared["shared/ 中立运行时"]
+        SearchRt["shared.search_command_runtime"]
+        DownloadRt["shared.download_command_runtime"]
+        ScanRt["shared.scan_command_runtime"]
+        SDKRt["shared.sdk_runtime"]
+        RunnerRt["shared.cli_runner_runtime"]
+        SelectionRt["shared selection runtimes"]
+        Version["shared.version"]
+    end
+
+    subgraph Plugins["插件契约"]
+        Manifest["plugin manifest<br/>identity + aliases + interactive"]
+        PluginRuntime["Spider / Plugin runtime"]
+    end
+
+    subgraph Web["Web 专属边界"]
+        ScriptAPI["app.web.script_api<br/>Web --script"]
+        InjectedScript["用户注入脚本"]
     end
 
     CLIEntry --> Main
     InteractiveEntry --> CmdInteractive
-    WebEntry --> RuntimeAdapters
+    WebEntry --> ScriptAPI --> InjectedScript
 
-    Main --> CmdSearch
-    Main --> CmdDownload
-    Main --> CmdScan
-    Main --> CmdPlatforms
+    Main --> CmdSearch --> SearchRt
+    Main --> CmdDownload --> DownloadRt
+    Main --> CmdScan --> ScanRt
+    Main --> CmdPlatforms --> SDKRt
+    Main --> CmdInteractive --> InteractiveFlow
 
-    CmdSearch --> SearchRt
-    CmdDownload --> DownloadRt
-    CmdInteractive --> SDKRt
-    CmdInteractive --> CLIRunnerRt
-    CmdInteractive --> InteractiveSel
-    CmdInteractive --> PipeSel
-    CmdInteractive --> SelectionRt
-    PackageInit --> SDKRt
-    PackageInit --> CLIRunnerRt
-    PackageInit --> SelectionRt
+    InteractiveFlow --> Manifest
+    InteractiveFlow --> SDKRt
+    InteractiveFlow --> RunnerRt
+    InteractiveFlow --> SelectionRt
 
-    SearchRt --> CLIRunnerRt
+    SearchRt --> RunnerRt
     DownloadRt --> SDKRt
-    SDKRt --> CLIRunnerRt
-    CLIRunnerRt --> SpiderSession
-    SpiderSession --> ControllerSession
-    ControllerSession --> AppCtrl
+    ScanRt --> SDKRt
+    SDKRt --> RunnerRt
+    SDKRt --> Manifest
+    RunnerRt --> PluginRuntime
 
-    RuntimeAdapters --> CLIRunnerRt
-    RuntimeAdapters --> SDKRt
+    SDKInit --> SDKRt
+    SDKInit --> RunnerRt
+    SDKInit --> SelectionRt
+    CLIInit --> Version
 
-    AppCtrl --> Spider
-    AppCtrl --> Download
+    Manifest --> PluginRuntime
 
     style CLI fill:#fff3e0,color:#e65100
     style Shared fill:#bbdefb,color:#0d47a1
-    style App fill:#c8e6c9,color:#1a5e20
+    style Plugins fill:#c8e6c9,color:#1a5e20
+    style PublicSDK fill:#f3e5f5,color:#6a1b9a
 ```
 
-## 命令分发关系
+`cli` 是命令实现包，不再充当 SDK 再导出层。公共 SDK、runner 与选择策略
+统一从 `ucrawl/__init__.py` 导入。`ucrawl platforms` 与交互引导读取同一份
+plugin manifest；外部插件可在 manifest 的 `interactive` 字段声明输入提示、
+选项字段和鉴权元数据。
+
+## 命令分发与语义运行时
 
 ```mermaid
 flowchart LR
-    Main["cli.main"] --> Sub{"子命令?"}
-    
-    Sub -->|search| Search["search command<br/>关键词搜索"]
-    Sub -->|download| Download["download command<br/>直接下载"]
-    Sub -->|interactive| Interactive["interactive command<br/>逐步引导"]
-    Sub -->|scan| Scan["scan command<br/>扫描本地媒体"]
-    Sub -->|platforms| Platforms["platforms command<br/>列出平台"]
-    
-    Search --> SearchRt["shared.search_command_runtime"]
-    Download --> DownloadRt["shared.download_command_runtime"]
-    Interactive --> SDKRt
-    Interactive --> Runner
-    Interactive --> Selection
-    Scan --> SDKRt
-    
-    SearchRt --> Runner["CLIRunner<br/>统一执行器"]
-    DownloadRt --> SDKRt["UcrawlSDK<br/>SDK 接口"]
-    SDKRt --> Runner
-    
-    Runner --> Spider["Spider 创建 + 启动"]
-    Runner --> Selection["选择策略<br/>自动/规则/交互"]
+    Main["cli.main"] --> Dispatch{"子命令"}
 
-    style Main fill:#fff3e0,color:#e65100
-    style Runner fill:#c8e6c9,color:#1a5e20
-    style SDKRt fill:#bbdefb,color:#0d47a1
+    Dispatch -->|search| SearchHost["search host"]
+    Dispatch -->|download| DownloadHost["download host"]
+    Dispatch -->|scan| ScanHost["scan host"]
+    Dispatch -->|platforms| PlatformsHost["platforms host"]
+    Dispatch -->|interactive| InteractiveHost["interactive host"]
+
+    SearchHost --> SearchRt["shared.search_command_runtime"]
+    DownloadHost --> DownloadRt["shared.download_command_runtime"]
+    ScanHost --> ScanRt["shared.scan_command_runtime"]
+    PlatformsHost --> SDKRt["shared.sdk_runtime"]
+    InteractiveHost --> InteractiveFlow["manifest-driven interactive flow"]
+
+    SearchRt --> Runner["shared.cli_runner_runtime"]
+    DownloadRt --> SDKRt
+    ScanRt --> SDKRt
+    InteractiveFlow --> SDKRt
+    InteractiveFlow --> Runner
+    InteractiveFlow --> Selection["shared selection runtimes"]
+
+    Runner --> Plugin["Spider / Plugin"]
 ```
 
-## 选择策略桥（6 种策略）
+三个命令运行时都返回语义状态，再由 CLI 宿主统一映射为稳定退出码。scan
+的参数校验、SDK 生命周期和结果输出属于 `shared.scan_command_runtime`，
+`cli/commands/scan.py` 只装配配置依赖。
+
+## 共享选择策略
 
 ```mermaid
 classDiagram
     class SelectionStrategyFactory {
-        +create(config, context) SelectionBridge
+        +from_value(value)
+        +from_cli_args(args)
     }
 
     class SelectionBridge {
-        +select(items, config) list~VideoItem~
+        +select(items, config)
     }
 
-    class AutoSelection {
-        +select() 全选
-    }
-
-    class RuleSelection {
-        +select() 按规则过滤
-        -rules: list
-    }
-
-    class InteractiveTTYSelection {
-        +select() 终端交互选择
-        -tty: Terminal
-    }
-
-    class PipeSelection {
-        +select() 管道模式
-        -stdin: Pipe
-    }
-
-    class GUISelection {
-        +select() GUI 弹窗选择
-        -dialog: SelectionDialog
-    }
-
-    class GUISelectionStrategy {
-        +select() GUI 策略
-        -strategy: gui_selection_strategy
-    }
+    class AutoSelection
+    class RuleSelection
+    class InteractiveTTYSelection
+    class PipeSelection
 
     SelectionStrategyFactory --> SelectionBridge
     SelectionBridge --> AutoSelection
     SelectionBridge --> RuleSelection
     SelectionBridge --> InteractiveTTYSelection
     SelectionBridge --> PipeSelection
-    SelectionBridge --> GUISelection
-    GUISelection --> GUISelectionStrategy
 ```
+
+桌面 GUI 的选择策略属于 `app.ui`，不从 CLI 或公共 SDK 包导出。
 
 ## SDK API（shared/sdk_runtime.py）
 
 ```mermaid
 flowchart TB
-    subgraph SDK["UcrawlSDK (shared/sdk_runtime.py)"]
-        Init["__init__(config)"]
-        Search["search(source, keyword, **opts)<br/>→ list[VideoItem]"]
-        Download["download_video(item, save_dir)<br/>→ DownloadResult"]
-        DownloadBatch["download_batch(items, save_dir)<br/>→ list[DownloadResult]"]
-        Scan["scan_directory(directory)<br/>→ list[MediaItem]"]
-        Stop["stop()<br/>停止所有任务"]
+    subgraph SDK["UcrawlSDK"]
+        Init["__init__(config, save_dir, verbose)"]
+        Search["search(source, keyword, **opts)<br/>→ structured result dict"]
+        Download["download_video(url, source, **opts)<br/>→ structured result dict"]
+        Platforms["list_platforms()<br/>→ list[plugin manifest]"]
+        Scan["scan_directory(directory, scan_limit)<br/>→ structured result dict"]
         Close["close()<br/>清理资源"]
     end
 
-    subgraph Internal["内部依赖"]
-        SDKRt["shared.sdk_runtime"]
-        Runner["shared.cli_runner_runtime.CLIRunner"]
-        SpiderSession["SpiderSession"]
-        Controller["ControllerSession"]
-    end
+    SDKRt["shared.sdk_runtime"]
+    Runner["shared.cli_runner_runtime"]
+    Manifest["plugin manifest"]
 
     Init --> SDKRt
-    Search --> SDKRt
+    Search --> SDKRt --> Runner
     Download --> SDKRt
-    DownloadBatch --> SDKRt
+    Platforms --> SDKRt --> Manifest
     Scan --> SDKRt
-    Stop --> SDKRt
     Close --> SDKRt
-
-    SDKRt --> Runner
-    Runner --> SpiderSession
-    SpiderSession --> Controller
-
-    style SDK fill:#fff3e0,color:#e65100
-    style Internal fill:#bbdefb,color:#0d47a1
 ```
 
 ## AI Skill 集成
 
 ```mermaid
 flowchart LR
-    subgraph Skill["cli/skill/"]
-        SkillMD["SKILL.md<br/>技能定义"]
-        SkillPy["ucrawl_skill.py<br/>技能实现"]
-        Examples["examples/<br/>01_basic_search.py<br/>02_collection_download.py<br/>03_batch_search.py"]
-    end
-
-    subgraph SDK["SDK 接口"]
-        UCrawl["UcrawlSDK"]
-        Search["search()"]
-        Download["download_video()"]
-        Batch["download_batch()"]
-    end
-
-    SkillPy --> UCrawl
-    UCrawl --> Search
-    UCrawl --> Download
-    UCrawl --> Batch
-
-    SkillMD -.->|描述| SkillPy
-    Examples -.->|示例| SkillPy
-
-    style Skill fill:#f3e5f5,color:#7b1fa2
-    style SDK fill:#fff3e0,color:#e65100
+    SkillMD["cli/skill/SKILL.md"] --> Wrapper["ucrawl_skill.py"]
+    Wrapper --> Public["ucrawl/__init__.py"]
+    Public --> SDK["shared.sdk_runtime"]
 ```

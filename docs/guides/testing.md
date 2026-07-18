@@ -148,7 +148,8 @@ python -X faulthandler -m pytest tests/e2e -q
 
 - `shared/selection_base.py` / `shared/pipe_selection.py` / `shared/interactive_selection.py`
 - `shared/runtime_options.py` / `shared/cli_runner_runtime.py` / `shared/sdk_runtime.py`
-- `cli/__init__.py` 的历史模块路径兼容别名（别名必须直接指向上述 canonical 模块）
+- `shared/search_command_runtime.py` / `shared/download_command_runtime.py` / `shared/scan_command_runtime.py`
+- `cli/__init__.py` 仅导出版本，`ucrawl/__init__.py` 承担公共 SDK 边界
 - `entry/dispatcher.py` / `entry/web_entry.py`
 - `app/core/download_manager.py`（纯逻辑）
 - 配置与文件名工具
@@ -163,11 +164,11 @@ python -X faulthandler -m pytest tests/e2e -q
 
 - `tests/contract/entry/test_cli_entry.py`
 - `tests/unit/cli/test_main.py`
-- `tests/unit/cli/test_selection.py`
-- `tests/unit/cli/test_pipe.py`
-- `tests/unit/cli/test_defaults.py`
-- `tests/unit/cli/test_sdk.py`
-- `tests/unit/cli/test_runner.py`
+- `tests/unit/shared/test_selection_runtime.py`
+- `tests/unit/shared/test_pipe_selection.py`
+- `tests/unit/shared/test_runtime_options.py`
+- `tests/unit/shared/test_sdk_runtime.py`
+- `tests/unit/shared/test_cli_runner_runtime.py`
 
 ### Web / API（`contract` + `integration`）
 
@@ -263,7 +264,7 @@ python -X faulthandler -m pytest tests/e2e -q
 
 测试文件：
 
-- `tests/unit/cli/test_pipe.py`
+- `tests/unit/shared/test_pipe_selection.py`
 - `tests/integration/shared/test_pipe_selection.py`
 
 ### 组件协作（`integration`）
@@ -493,7 +494,7 @@ register_category(
 
 1. **RuleSelection.__init__ 中 `self.select = select` 覆盖了 `def select()` 方法**
    - 修复：用 `self._select_rule = select`
-   - 发现于：`tests/unit/cli/test_selection.py`
+   - 发现于：`tests/unit/shared/test_selection_runtime.py`
 
 2. **cli/main.py 顶部 `sys.path.insert(0, ROOT)` 不去重**
    - 修复：加 `if _PROJECT_ROOT not in sys.path:` 去重检查

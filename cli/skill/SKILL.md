@@ -98,7 +98,7 @@ ucrawl search --source douyin "测试" --ua "Mozilla/5.0 ..."
 ucrawl download --source douyin "https://..." --title "视频标题"
 ucrawl douyin download "https://..." --title "视频标题"
 
-# 下载指定视频并设置超时（与 SDK timeout 和 REST API timeout 对齐）
+# 设置整次下载命令期限（默认 300 秒，与 SDK timeout 和 REST API timeout 对齐）
 ucrawl download --source douyin "https://..." --title "视频标题" --timeout 600
 
 # 下载 MissAV 视频并设置代理（与 SDK config 和 REST API config 对齐）
@@ -128,6 +128,8 @@ ucrawl platforms --describe douyin
 # 交互式引导模式（逐步选择平台和参数，适合不熟悉命令行的用户）
 ucrawl interactive
 ucrawl i --http-timeout 15 --timeout 60
+
+# platforms 与 interactive 读取同一份 plugin manifest；外部插件可声明引导字段和鉴权规则
 
 # 交互式模式 + 额外配置（交互式输入的参数优先级高于 --config）
 ucrawl interactive --config '{"max_items":50}'
@@ -439,7 +441,7 @@ curl -X POST http://localhost:8000/api/download \
 | `source` | string | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**） |
 | `title` | string | 否 | 视频标题（默认使用 URL） |
 | `save_dir` | string \| null | 否 | 保存目录（默认使用服务端配置，**必须是字符串或 null**） |
-| `timeout` | float | 否 | 下载超时秒数（默认 300，**必须是数字**，与 CLI 和 SDK 对齐） |
+| `timeout` | float | 否 | 整次直接下载请求超时秒数（默认 300，**必须是数字**，与 CLI 和 SDK 对齐） |
 | `config` | object | 否 | 平台特定参数（**必须是 JSON 对象**，同 `/api/search` 的 config，如 missav 的 `{"proxy": "http://127.0.0.1:7890"}`） |
 | `cookie` | string | 否 | 便捷参数：Cookie 字符串（与 CLI `--cookie` 对齐，优先级高于 `config.cookie`） |
 | `download_strategy` | string | 否 | 便捷参数：下载策略 m3u8/http（与 CLI `--download-strategy` 对齐，优先级高于 `config.download_strategy`） |
@@ -562,7 +564,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `source` / `-s` | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（通用 `search` 支持全部平台；平台别名支持 `dy` / `xhs` / `bili` / `bl` / `ks` / `miss`） |
+| `source` / `-s` | 是 | plugin registry 中的平台 ID；内置含 `douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`，外部插件注册后自动加入 choices |
 | `keyword` | 是 | 搜索关键词 / 视频链接 / 用户 ID |
 | `save-dir` / `-d` | 否 | 保存目录（默认：从配置读取） |
 | `--config` | 否 | 平台特定配置（JSON 字符串，如 `'{"max_items":50}'`，与 CLI download --config 和 SDK config 对齐） |
@@ -590,7 +592,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `--title` | 否 | 可选标题；省略时由下载器推断 |
 | `--source` / `-s` | 通用入口必填 | 平台 ID；平台快捷命令（如 `ucrawl douyin download`）会自动注入 |
 | `--save-dir` / `-d` | 否 | 保存目录（默认：从配置读取） |
-| `--timeout` | 否 | 下载超时秒数（默认 300，与 SDK/REST API 一致） |
+| `--timeout` | 否 | 整次下载命令超时秒数（默认 300，与 SDK/REST API 一致） |
 | `--config` | 否 | 平台特定配置（JSON 字符串，如 `'{"proxy":"http://127.0.0.1:7890"}'`，与 SDK config 和 REST API config 对齐） |
 | `--cookie` | 否 | Cookie 字符串（与 `--config '{"cookie":"..."}'` 等价，与 GUI spider cookie 对齐） |
 | `--download-strategy` | 否 | 下载策略（m3u8/http，与 GUI spider `build_download_meta` 对齐） |
@@ -636,7 +638,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `source` | 是 | str | 平台 ID（douyin/xiaohongshu/bilibili/kuaishou/missav） |
 | `title` | 否 | str | 视频标题（默认使用 URL，与 CLI download 对齐） |
 | `save_dir` | 否 | str \| None | 保存目录（None=从配置读取，与 GUI 对齐） |
-| `timeout` | 否 | float | 下载超时秒数（默认 300，与 CLI download --timeout 和 REST API /api/download timeout 对齐） |
+| `timeout` | 否 | float | 整次直接下载调用超时秒数（默认 300，与 CLI download --timeout 和 REST API /api/download timeout 对齐） |
 | `verbose` | 否 | bool | 是否输出下载进度到 stderr（默认 False，与 CLI download --quiet 对齐：CLI 默认 verbose=True，加 --quiet 时 verbose=False） |
 | `config` | 否 | dict \| None | 平台特定配置（None=使用平台默认值，与 REST API /api/download 的 config 对齐） |
 | `progress_callback` | 否 | Callable[[int], None] \| None | 下载进度回调（None=不回调，进度范围 0-100，与 GUI DownloadManager task_progress 信号对齐） |
@@ -649,6 +651,10 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `scan_limit` | 否 | int \| None | 最多扫描文件数（None=从配置读取，与 GUI/Web 一致，默认 1000） |
 
 ### 平台列表命令参数
+
+平台列表与交互引导都消费 plugin registry 返回的 manifest。manifest 的
+`interactive` 元数据可声明输入提示、选项字段、确认摘要和鉴权规则；未声明
+该字段的外部插件使用通用安全引导，不会回落到任一内置平台。
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
@@ -972,7 +978,7 @@ CLI search `--config` 校验错误（与 CLI download `--config` 对齐）：
 ❌ --config JSON 解析失败: ...
 ```
 
-CLI 使用稳定退出码：`0` 成功、`1` 运行或初始化失败、`2` 参数/配置错误、`124` 超时、`130` 取消。SDK 在参数类型错误时抛出 `TypeError`，在参数值错误时抛出 `ValueError`。SDK 的 `search()` 使用 `run_timeout` 表示整次运行超时；spider HTTP 超时通过 `**config` 中的 `timeout` 设置。CLI 对应关系是 `--timeout`（整次命令）与 `--http-timeout`（HTTP），旧 `--run-timeout` 仅作弃用兼容。CLI `download` 在进入 SDK 前校验位置参数 URL、平台、超时和配置；`--quiet`/`-q` 关闭进度日志，`--pretty` 输出人类可读摘要。interactive 支持与 search 一致的选择参数，默认使用纯终端 `InteractiveTTYSelection`。
+CLI 使用稳定退出码：`0` 成功、`1` 运行或初始化失败、`2` 参数/配置错误、`124` 超时、`130` 取消。SDK 在参数类型错误时抛出 `TypeError`，在参数值错误时抛出 `ValueError`。SDK 的 `search()` 使用 `run_timeout` 表示整次运行超时；spider HTTP 超时通过 `**config` 中的 `timeout` 设置。CLI search / interactive 的 `--timeout` 是默认无限的整次命令期限，`--http-timeout` 只影响 HTTP；旧 `--run-timeout` 仅作弃用兼容。CLI download 的 `--timeout` 是整次下载命令期限，默认 300 秒。CLI `download` 在进入 SDK 前校验位置参数 URL、平台、超时和配置；`--quiet`/`-q` 关闭进度日志，`--pretty` 输出人类可读摘要。interactive 支持与 search 一致的选择参数，默认使用纯终端 `InteractiveTTYSelection`，其引导字段与鉴权说明来自 plugin manifest。
 - **CLI/SDK/REST API config 参数**：CLI search 和 download 的 `--config` 都接受 JSON 字符串，SDK `search(**config)` 和 `download_video(config=)` 接受字典，REST API `/api/search` 和 `/api/download` 的 `config` 接受 JSON 对象，四者对齐。config 中的 missav proxy 会自动转换（与 GUI `build_missav_proxy_url` 一致）。config 参数同样经过 `_validate_config_types` 校验。
 
 ### items 字段说明

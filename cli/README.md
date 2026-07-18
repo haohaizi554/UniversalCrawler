@@ -2,7 +2,8 @@
 
 `cli` 是命令行实现包；Python SDK 的公开入口是 `ucrawl`。平台命令和
 `--source` 选项由 plugin registry 动态生成，新增平台不需要再修改
-`argparse` 的硬编码列表。
+`argparse` 的硬编码列表。`ucrawl platforms` 与交互引导都消费插件的
+manifest；外部插件可声明引导文案、交互字段和鉴权元数据。
 
 ## 快速使用
 
@@ -23,9 +24,14 @@ ucrawl platforms --pretty
 ucrawl interactive
 ```
 
-`--run-timeout` 暂时保留为 `--timeout` 的弃用别名，不能与
-`--timeout` 同时使用。`--http-timeout` 只控制 spider HTTP 请求；
-`--timeout` 控制整次 CLI 运行。
+超时参数遵循一套固定语义：
+
+- search 的 `--http-timeout` 只控制 spider HTTP 请求。
+- search / interactive 的 `--timeout` 控制整次命令，默认不设期限。
+- download 的 `--timeout` 控制整次直接下载命令，默认 300 秒。
+
+search / interactive 的 `--run-timeout` 暂时保留为 `--timeout` 的弃用
+别名，不能与 `--timeout` 同时使用。
 
 平台快捷入口只提供 `search` 和 `download`。本地目录扫描没有平台语义，
 因此不存在 `ucrawl <platform> scan` 之类的命令。
@@ -76,7 +82,7 @@ cli/
 ├── interactive/         # catalog/configuration/prompts/workflow
 └── skill/               # AI Skill 权威副本与包装器
 
-shared/                  # CLI/Web/SDK 共用运行时
+shared/                  # search/download/scan、SDK、runner 与选择运行时
 ucrawl/                  # Python SDK 公开包
 ```
 

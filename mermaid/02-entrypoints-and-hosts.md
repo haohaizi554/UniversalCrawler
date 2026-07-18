@@ -108,12 +108,15 @@ flowchart TB
     subgraph CLI["cli/ 命令层"]
         CmdSearch["search command"]
         CmdDownload["download command"]
+        CmdScan["scan command"]
+        CmdPlatforms["platforms command"]
         CmdInteractive["interactive command"]
     end
 
     subgraph Shared["shared/ 中立层 (host-neutral)"]
         SearchRt["search_command_runtime"]
         DownloadRt["download_command_runtime"]
+        ScanRt["scan_command_runtime"]
         SDKRt["sdk_runtime"]
         CLIRunnerRt["cli_runner_runtime"]
         InteractiveSel["interactive_selection"]
@@ -121,6 +124,10 @@ flowchart TB
         SelectionRt["selection_runtime"]
         SpiderSession["spider_session_runtime"]
         ControllerSession["controller_session"]
+    end
+
+    subgraph Contract["插件契约"]
+        Manifest["plugin manifest<br/>identity + aliases + interactive"]
     end
 
     subgraph App["app/ 核心层"]
@@ -131,15 +138,20 @@ flowchart TB
 
     CmdSearch --> SearchRt
     CmdDownload --> DownloadRt
+    CmdScan --> ScanRt
+    CmdPlatforms --> SDKRt
     CmdInteractive --> SDKRt
     CmdInteractive --> CLIRunnerRt
     CmdInteractive --> InteractiveSel
     CmdInteractive --> PipeSel
     CmdInteractive --> SelectionRt
+    CmdInteractive --> Manifest
 
     SearchRt --> CLIRunnerRt
     DownloadRt --> SDKRt
+    ScanRt --> SDKRt
     SDKRt --> CLIRunnerRt
+    SDKRt --> Manifest
     CLIRunnerRt --> SpiderSession
     SpiderSession --> ControllerSession
     ControllerSession --> AppCtrl

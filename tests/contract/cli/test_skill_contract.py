@@ -44,6 +44,7 @@ class CliSkillContractTests(unittest.TestCase):
 
         self.assertIn("--http-timeout", text)
         self.assertIn("download --source", text)
+        self.assertIn("整次下载命令", text)
         self.assertNotIn("--url", text)
         self.assertNotIn("<video_id>", text)
 

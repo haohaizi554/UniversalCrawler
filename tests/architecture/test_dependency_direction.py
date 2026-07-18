@@ -243,6 +243,33 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
 
         self.assertEqual(remaining, [])
 
+    def test_active_cli_runtime_diagram_tracks_current_boundaries(self) -> None:
+        diagram = (
+            PROJECT_ROOT / "mermaid" / "07-cli-sdk-runtime.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("shared.scan_command_runtime", diagram)
+        self.assertIn("ucrawl/__init__.py", diagram)
+        self.assertIn("plugin manifest", diagram.lower())
+        self.assertNotIn("公开再导出 + 历史别名", diagram)
+        self.assertNotIn("PackageInit --> SDKRt", diagram)
+
+    def test_active_testing_guide_uses_shared_runtime_test_paths(self) -> None:
+        guide = (
+            PROJECT_ROOT / "docs" / "guides" / "testing.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "tests/unit/shared/test_sdk_runtime.py",
+            guide,
+        )
+        self.assertIn(
+            "tests/unit/shared/test_cli_runner_runtime.py",
+            guide,
+        )
+        self.assertNotIn("tests/unit/cli/test_sdk.py", guide)
+        self.assertNotIn("历史模块路径兼容别名", guide)
+
     def test_ui_does_not_import_core_downloaders(self) -> None:
         self.assertEqual(_imports_under("app/ui", "app.core.downloaders"), [])
 
