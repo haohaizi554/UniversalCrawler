@@ -1,52 +1,72 @@
 # UniversalCrawlerProplus
 
-UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download application. It coordinates desktop GUI flows, Web UI APIs, crawler spiders, media playback, download workers, and runtime configuration through explicit signal, event, and thread boundaries.
+> Windows desktop media crawler workstation (`ucrawl` / v3.6.17): PyQt6 GUI, FastAPI Web UI, CLI/SDK/AI Skill, Playwright spiders, and unified download scheduling across Douyin, Xiaohongshu, Bilibili, Kuaishou, and MissAV.
 
-## Tech stack
+Prefer current guides under `docs/guides/` and practices under `docs/engineering/` over dated reports. Shared runtime contracts live in `shared/`; do not reintroduce deleted dual copies such as `cli/runner.py` or `app/controllers/session_mixin.py`. Test placement follows `tests/AGENTS.md` (eight directory-driven suites).
 
-- Python 3
-- PyQt6 desktop GUI
-- FastAPI and WebSocket Web UI services
-- Playwright-based crawler helpers
-- Threaded workers, Qt signals, EventBus, and bounded dispatch semaphores
-- pytest test suite
+## Entry points
 
-## Entry files
+- [main.py](main.py): process launcher for GUI / Web / CLI / test modes
+- [entry/dispatcher.py](entry/dispatcher.py): startup mode routing
+- [entry/gui_entry.py](entry/gui_entry.py): desktop GUI bootstrap
+- [entry/web_entry.py](entry/web_entry.py): Web UI / portal bootstrap
+- [entry/cli_entry.py](entry/cli_entry.py): CLI bootstrap
+- [cli/main.py](cli/main.py): `ucrawl` command entry
+- [cli/__init__.py](cli/__init__.py): public SDK exports and module aliases
+- [cli/skill/SKILL.md](cli/skill/SKILL.md): AI Skill contract for LLM-driven crawl/download
 
-- `main.py`: main application launcher.
-- `entry/dispatcher.py`: startup mode routing.
-- `app/config/settings.py`: ConfigManager singleton and runtime configuration entrypoint.
-- `app/controllers/application_controller.py`: desktop application orchestration.
-- `app/web/controller.py`: Web UI controller.
-- `app/spiders/base.py`: shared spider runtime, navigation helpers, and crawler guardrails.
-- `app/core/download_manager_core.py`: download dispatch semaphore core.
+## Core modules
 
-## Rule files
+- [app/config/settings.py](app/config/settings.py): ConfigManager singleton and runtime settings
+- [app/controllers/application_controller.py](app/controllers/application_controller.py): desktop application orchestration
+- [app/ui/main_window.py](app/ui/main_window.py): PyQt6 main window shell
+- [app/web/controller.py](app/web/controller.py): Web UI controller and session host
+- [app/services/frontend_state_service.py](app/services/frontend_state_service.py): GUI/Web shared frontend snapshots and deltas
+- [app/spiders/base.py](app/spiders/base.py): spider runtime, navigation helpers, crawler guardrails
+- [app/core/download_manager_core.py](app/core/download_manager_core.py): download dispatch and semaphore core
+- [shared/controller_session.py](shared/controller_session.py): unique download/session state machine for GUI and Web
+- [shared/cli_runner_runtime.py](shared/cli_runner_runtime.py): unique CLIRunner used by CLI, SDK, and Web search
+- [shared/sdk_runtime.py](shared/sdk_runtime.py): `UcrawlSDK` implementation
+- [shared/localization.py](shared/localization.py): shared i18n / locale helpers for GUI and Web
 
-- `rules/index.md`: agent and synchronization safety rules.
-- `.trae/rules/agent-native-engineering.md`: native engineering workflow rules.
-- `.trae/rules/resilience.md`: resilience and failure-handling rules.
-- `.trae/rules/security-baseline.md`: security baseline rules.
-- `tests/AGENTS.md`: canonical test-suite placement, naming, marker, and validation rules.
+## Documentation
 
-## Documentation index
+- [docs/README.md](docs/README.md): documentation hub and maintenance rules
+- [docs/guides/architecture.md](docs/guides/architecture.md): system architecture and frontend adapter boundaries
+- [docs/guides/development.md](docs/guides/development.md): local development and validation workflow
+- [docs/guides/config.md](docs/guides/config.md): config files, hot reload, GUI/Web settings contract
+- [docs/guides/api.md](docs/guides/api.md): REST, WebSocket, and frontend state service notes
+- [docs/guides/testing.md](docs/guides/testing.md): test launcher, suites, and verification strategy
+- [docs/guides/packaging.md](docs/guides/packaging.md): PyInstaller and release packaging
+- [docs/guides/ai-skill-guide.md](docs/guides/ai-skill-guide.md): AI Skill integration guide
+- [docs/cli/cli-guide.md](docs/cli/cli-guide.md): CLI usage
+- [docs/cli/python-sdk-guide.md](docs/cli/python-sdk-guide.md): Python SDK usage
+- [docs/cli/rest-api-reference.md](docs/cli/rest-api-reference.md): CLI/REST API reference
+- [docs/engineering/frontend-refresh-and-concurrency.md](docs/engineering/frontend-refresh-and-concurrency.md): EventBus, refresh coalescing, concurrency, and backpressure
+- [docs/engineering/settings-ui-contract.md](docs/engineering/settings-ui-contract.md): settings controls, theme/language, and i18n contract
+- [docs/engineering/spider-async-pipeline.md](docs/engineering/spider-async-pipeline.md): async crawl/parse/enqueue pipeline baseline
+- [docs/update.md](docs/update.md): secure update bootstrap, trust anchors, and signing
 
-- `docs/reports/2026-06-28-signal-baseline.md`: baseline signal/semaphore audit report.
-- `docs/adr/0001-signal-semaphore-hardening.md`: signal, semaphore, EventBus, and guardrail ADR.
-- `docs/guides/architecture.md`: system architecture.
-- `docs/guides/config.md`: runtime configuration behavior.
-- `docs/guides/api.md`: HTTP/Web API notes.
-- `docs/guides/testing.md`: testing guidance.
-- `docs/guides/development.md`: development workflow.
-- `docs/cli/cli-guide.md`: CLI usage.
-- `docs/cli/rest-api-reference.md`: CLI/API reference.
-- `docs/postmortems/clear-queue-409-freeze.md`: clear-queue freeze postmortem.
-- `docs/postmortems/missav-surrit-hls-403-local-proxy.md`: MissAV HLS proxy postmortem.
+## Agent rules
 
-## Test entrypoints
+- [tests/AGENTS.md](tests/AGENTS.md): test suite roots, naming, markers, and change workflow
+- [docs/engineering/README.md](docs/engineering/README.md): index of current recommended engineering practices
+- [docs/guides/README.md](docs/guides/README.md): index of architecture, API, config, and packaging guides
 
-- `python -m pytest`: full test suite.
-- `python tests/launcher.py --list`: list the eight directory-driven suites.
-- `python -m pytest tests/unit/app/spiders/test_base.py tests/unit/app/ui/components/test_media_preview_panel.py tests/unit/app/core/downloaders/test_manager_core.py -q`: focused signal/guardrail/media checks.
-- `python -m pytest tests/unit/app/ui/test_main_window.py tests/unit/app/ui/test_update_scheduler.py tests/integration/app/web/test_websocket_server.py tests/contract/web/test_fastapi_endpoints.py -q`: GUI/Web/API regression checks.
-- `python main.py`: application startup smoke check.
+## Tests
+
+- [tests/launcher.py](tests/launcher.py): directory-driven suite launcher (`python tests/launcher.py --list`)
+- Full suite: `python -m pytest`
+- Focused spider/download checks: `python -m pytest tests/unit/app/spiders/test_base.py tests/unit/app/core/downloaders/test_manager_core.py -q`
+- Focused GUI/Web checks: `python -m pytest tests/unit/app/ui/test_main_window.py tests/unit/app/ui/test_update_scheduler.py tests/contract/web/test_fastapi_endpoints.py -q`
+- Startup smoke: `python main.py`
+
+## Optional
+
+- [docs/reports/2026-06-28-signal-runtime-acceptance.md](docs/reports/2026-06-28-signal-runtime-acceptance.md): historical signal/refresh acceptance; prefer the engineering practice doc above
+- [docs/postmortems/README.md](docs/postmortems/README.md): incident postmortem index
+- [docs/postmortems/clear-queue-409-freeze.md](docs/postmortems/clear-queue-409-freeze.md): clear-queue freeze root cause and fix
+- [docs/postmortems/missav-surrit-hls-403-local-proxy.md](docs/postmortems/missav-surrit-hls-403-local-proxy.md): MissAV HLS proxy postmortem
+- [docs/reviews/README.md](docs/reviews/README.md): architecture and Qt frontend review index
+- [docs/references/ui-skills.md](docs/references/ui-skills.md): external GUI/WebUI reference repos (upstream links)
+- [docs/changelog.md](docs/changelog.md): version changelog

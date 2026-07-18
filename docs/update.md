@@ -182,7 +182,7 @@ fail-open。开发测试可以使用：
 python scripts/update_bootstrap.py generate-dev-windows-cert --write-dev-trust
 ```
 
-该命令只写 `app/config/update_trust_dev.py`，生产 updater 不会导入它。
+该命令只写本地开发文件 `app/config/update_trust_dev.py`（按需生成，生产 updater 不会导入它）。
 
 `packaging/build_installer.py` 默认不签名。需要生产签名时显式设置
 `UCRAWL_SIGN_WINDOWS=1`，并配置真实证书选择、timestamp URL 和 signtool 路径：

@@ -337,7 +337,7 @@ def main(controller, **kwargs):
 
 UCrawl 提供了符合 Claude / LLM skill 规范的封装，让 LLM 可以直接调用爬虫：
 
-- **Skill 位置**：`cli/skill/SKILL.md` 和 `.trae/skills/ucrawl/SKILL.md`
+- **Skill 位置**：`cli/skill/SKILL.md`（仓库内权威副本）
 - **Skill 入口**：`cli/skill/ucrawl_skill.py`
 - **激活方式**：在 LLM 提示中提到 "ucrawl" 即可激活 skill
 

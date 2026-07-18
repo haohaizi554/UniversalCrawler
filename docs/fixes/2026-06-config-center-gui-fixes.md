@@ -123,14 +123,14 @@
 
 相关历史修复累计覆盖过以下测试面：
 
-- `tests/test_unified_frontend_contract.py`
-- `tests/test_frontend_state_service.py`
-- `tests/test_main_window.py`
-- `tests/test_web_browser.py`
-- `tests/test_fastapi_endpoints.py`
-- `tests/test_config_settings.py`
-- `tests/test_application_controller.py`
-- `tests/test_web_controller_runtime.py`
-- `tests/test_download_manager_core.py`
+- `tests/contract/frontend/test_unified_frontend.py`
+- `tests/unit/app/services/test_frontend_state_service.py`
+- `tests/unit/app/ui/test_main_window.py`
+- `tests/e2e/web/test_browser_journeys.py`
+- `tests/contract/web/test_fastapi_endpoints.py`
+- `tests/unit/app/config/test_settings.py`
+- `tests/integration/app/controllers/test_application_flows.py`
+- `tests/unit/app/web/test_controller_runtime.py`
+- `tests/unit/app/core/downloaders/test_manager_core.py`
 
 后续修改配置中心、主题、语言、弹层、默认打开方式、仅下载视频或运行时热加载时，至少需要跑对应 focused tests；涉及真实布局和弹层的问题，必须补 GUI 截图或像素级/尺寸级验证。

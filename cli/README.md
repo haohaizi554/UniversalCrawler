@@ -43,7 +43,7 @@ python -m entry.web_entry --script my_automation.py --script-arg target=douyin
 
 ### 4. AI Skill（LLM）
 
-SKILL 位置：`cli/skill/SKILL.md` 和 `.trae/skills/ucrawl/SKILL.md`
+SKILL 位置：`cli/skill/SKILL.md`（仓库内权威副本）
 
 LLM 提示中提到 "ucrawl" 即可激活。
 

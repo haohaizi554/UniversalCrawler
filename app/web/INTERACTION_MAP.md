@@ -880,7 +880,7 @@ previewVideo(id) → 前端直接创建 <video src="/api/media/{id}">
 | 功能 | GUI 代码路径 | Web 代码路径 |
 |---|---|---|
 | 主窗口 | `app/ui/main_window.py` | `app/web/static/index.html` |
-| 顶栏 | `app/ui/components/top_bar.py` | `.top-bar` CSS + JS |
+| 顶栏 | `app/ui/layout/top_bar.py` | `.top-bar` CSS + JS |
 | 下载队列 | `app/ui/components/download_queue_panel.py` | `.left-panel` CSS + JS `renderQueue()` |
 | 媒体预览 | `app/ui/components/media_preview_panel.py` | `.preview-panel` CSS + JS `previewVideo()` |
 | 日志面板 | `app/ui/components/log_panel.py` | `.log-panel` CSS + JS `appendLog()` |
@@ -5733,7 +5733,7 @@ curl.exe -s http://localhost:8000/api/ping
 | **命令行工具** | `python -m cli` 或 `ucrawl` | `ucrawl search --source douyin --keyword "测试"` | 一次性任务、shell 脚本、人工调试 |
 | **Python SDK** | `from ucrawl import UcrawlSDK` | `sdk.search("douyin", "测试")` | 集成到 Python 项目、批量处理 |
 | **启动时脚本注入** | `python -m entry.web_entry --script xxx.py` | 启动后自动执行 Python 脚本 | 自动化部署、嵌入式自动化 |
-| **AI Skill 封装** | `.trae/skills/ucrawl/SKILL.md` | LLM 提示中提到 "ucrawl" 即激活 | LLM Agent、对话式控制 |
+| **AI Skill 封装** | `cli/skill/SKILL.md` | LLM 提示中提到 "ucrawl" 即激活 | LLM Agent、对话式控制 |
 
 ### 40.2 目录结构
 
@@ -5877,9 +5877,9 @@ def main(controller, **kwargs):
 
 按 skill-creator 规范创建：
 
-1. `cli/skill/SKILL.md`：项目内置 skill 资源
-2. `.trae/skills/ucrawl/SKILL.md`：Trae IDE 识别的正式 skill 路径
-3. `cli/skill/ucrawl_skill.py`：skill 调用入口（CLI 模式）
+1. `cli/skill/SKILL.md`：仓库内权威 skill 资源
+2. `cli/skill/ucrawl_skill.py`：skill 调用入口（CLI 模式）
+3. IDE 本地镜像（如 Trae `.trae/skills/ucrawl/SKILL.md`）可选，不纳入 Git
 
 **关键字段**：
 - `name: "ucrawl"`：skill 唯一标识

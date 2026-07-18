@@ -28,6 +28,6 @@
 
 当前分支重点是让测试、文档和注册入口保持一致，因此修改平台注册相关逻辑后，请同步更新：
 
-- `docs/api.md`
-- `docs/development.md`
+- `docs/guides/api.md`
+- `docs/guides/development.md`
 - 根目录 `README.md`

@@ -440,7 +440,7 @@ pyproject.toml (version)
 
 - 元数据、AppUserModelID、版本注入均有脚本自动化
 - `packaging/runtime_hook.py` 修正冻结运行时（Playwright 路径、stdout、任务栏 ID）
-- `tests/test_packaging.py` 提供静态契约验证（不实际跑 PyInstaller）
+- `tests/release/packaging/` 提供静态契约验证（不实际跑 PyInstaller）
 
 ### 8.2 容器化（Web-only）
 
@@ -577,7 +577,7 @@ pyproject.toml (version)
 | [docs/cli/cli-guide.md](../cli/cli-guide.md) | 命令行指南 |
 | [docs/cli/python-sdk-guide.md](../cli/python-sdk-guide.md) | SDK 编程接口 |
 | [docs/cli/rest-api-reference.md](../cli/rest-api-reference.md) | REST API 参考 |
-| [docs/SKILL_GUIDE.md](../guides/ai-skill-guide.md) | AI Skill 集成 |
+| [docs/guides/ai-skill-guide.md](../guides/ai-skill-guide.md) | AI Skill 集成 |
 
 ### 图示（Mermaid）
 

@@ -15,6 +15,7 @@
 | 工程审查 | [reviews/](reviews/README.md) | 架构审查、Qt 前端经验和重构记录 |
 | 验收报告 | [reports/](reports/README.md) | 阶段验收、运行基线和合并后的信号运行报告 |
 | 事故复盘 | [postmortems/](postmortems/) | 队列、浏览器挑战、HLS、控件等问题复盘 |
+| 外部参考 | [references/ui-skills.md](references/ui-skills.md) | 工业级 GUI/WebUI 参考仓库与官方文档索引 |
 | Prompt | [prompts/](prompts/README.md) | 历史提示词归档 |
 | 更新日志 | [changelog.md](changelog.md) | 版本变更记录 |
 

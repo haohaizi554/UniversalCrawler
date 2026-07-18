@@ -4,7 +4,7 @@ UCrawl 提供了符合 Claude / LLM skill 规范的封装，让 LLM 可以直接
 
 ## Skill 信息
 
-- **Skill 位置**：`cli/skill/SKILL.md` 和 `.trae/skills/ucrawl/SKILL.md`
+- **Skill 位置**：`cli/skill/SKILL.md`（仓库内权威副本；Trae 等 IDE 可另放本地镜像，不纳入 Git）
 - **Skill 入口**：`cli/skill/ucrawl_skill.py`
 - **激活方式**：在 LLM 提示中提到 "ucrawl" 或 "爬虫" 即可激活
 
