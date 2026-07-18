@@ -13,6 +13,7 @@ from count_project import (
     classify_module,
     classify_test_suite,
     compute_history_delta,
+    count_test_cases,
     evaluate_gates,
     main,
     normalize_repository_url,
@@ -78,6 +79,13 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
     assert 'rel="icon" type="image/x-icon"' in html
     assert 'href="data:image/x-icon;base64,AAABAA=="' in html
     assert 'class="hero"' in html
+    assert 'id="report-top"' in html
+    assert "scrollRestoration" not in html
+    assert "window.scrollTo(0, 0)" not in html
+    assert "min-height: 260px" in html
+    assert "margin: 32px auto 48px;" in html
+    assert "blur(18px)" not in html
+    assert "rgba(255, 255, 255, 0.28)" not in html
     assert 'class="hero-stat-label">Effective LOC</div>' in html
     assert "代码文件数" in html
     assert "测试代码行数" in html
@@ -235,6 +243,39 @@ class TestFeature:
     result = scan_project(tmp_path)
 
     assert result["test_cases"] == 3
+
+
+def test_count_test_cases_reads_utf8_bom_files(tmp_path):
+    path = tmp_path / "test_bom.py"
+    path.write_bytes(
+        b"\xef\xbb\xbfdef test_ok():\n    assert True\n"
+    )
+
+    assert count_test_cases(path) == 1
+
+
+def test_count_test_cases_expands_parametrize(tmp_path):
+    path = tmp_path / "test_params.py"
+    path.write_text(
+        """
+import pytest
+
+CASES = [1, 2, 3]
+
+@pytest.mark.parametrize("value", CASES)
+def test_from_name(value):
+    assert value
+
+@pytest.mark.parametrize("value", ["a", "b"])
+@pytest.mark.parametrize("flag", [True, False])
+def test_stacked(value, flag):
+    assert value or flag
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    # 3 + (2 * 2) = 7
+    assert count_test_cases(path) == 7
 
 
 def test_chart_rows_compute_widths_and_names():

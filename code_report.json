@@ -1,0 +1,746 @@
+{
+  "root": "D:\\desktop\\project\\UniversalCrawlerProplus",
+  "repository_url": "https://github.com/haohaizi554/UniversalCrawler",
+  "total_dirs": 155,
+  "total_files": 960,
+  "code_files": 639,
+  "test_cases": 3032,
+  "totals": {
+    "all": {
+      "files": 639,
+      "total": 195450,
+      "blank": 23693,
+      "comment": 1173,
+      "code": 170584
+    },
+    "prod": {
+      "files": 419,
+      "total": 120307,
+      "blank": 12234,
+      "comment": 753,
+      "code": 107320
+    },
+    "test": {
+      "files": 220,
+      "total": 75143,
+      "blank": 11459,
+      "comment": 420,
+      "code": 63264
+    }
+  },
+  "by_language": {
+    "all": {
+      "HTML": {
+        "files": 2,
+        "total": 1324,
+        "blank": 65,
+        "comment": 0,
+        "code": 1259
+      },
+      "Python": {
+        "files": 591,
+        "total": 175287,
+        "blank": 22198,
+        "comment": 1119,
+        "code": 151970
+      },
+      "YAML": {
+        "files": 3,
+        "total": 445,
+        "blank": 53,
+        "comment": 1,
+        "code": 391
+      },
+      "TOML": {
+        "files": 2,
+        "total": 166,
+        "blank": 14,
+        "comment": 10,
+        "code": 142
+      },
+      "JSON": {
+        "files": 11,
+        "total": 2402,
+        "blank": 0,
+        "comment": 0,
+        "code": 2402
+      },
+      "JavaScript": {
+        "files": 22,
+        "total": 11847,
+        "blank": 818,
+        "comment": 30,
+        "code": 10999
+      },
+      "CSS": {
+        "files": 7,
+        "total": 3899,
+        "blank": 534,
+        "comment": 9,
+        "code": 3356
+      },
+      "Shell": {
+        "files": 1,
+        "total": 80,
+        "blank": 11,
+        "comment": 4,
+        "code": 65
+      }
+    },
+    "prod": {
+      "HTML": {
+        "files": 2,
+        "total": 1324,
+        "blank": 65,
+        "comment": 0,
+        "code": 1259
+      },
+      "Python": {
+        "files": 371,
+        "total": 100144,
+        "blank": 10739,
+        "comment": 699,
+        "code": 88706
+      },
+      "YAML": {
+        "files": 3,
+        "total": 445,
+        "blank": 53,
+        "comment": 1,
+        "code": 391
+      },
+      "TOML": {
+        "files": 2,
+        "total": 166,
+        "blank": 14,
+        "comment": 10,
+        "code": 142
+      },
+      "JSON": {
+        "files": 11,
+        "total": 2402,
+        "blank": 0,
+        "comment": 0,
+        "code": 2402
+      },
+      "JavaScript": {
+        "files": 22,
+        "total": 11847,
+        "blank": 818,
+        "comment": 30,
+        "code": 10999
+      },
+      "CSS": {
+        "files": 7,
+        "total": 3899,
+        "blank": 534,
+        "comment": 9,
+        "code": 3356
+      },
+      "Shell": {
+        "files": 1,
+        "total": 80,
+        "blank": 11,
+        "comment": 4,
+        "code": 65
+      }
+    },
+    "test": {
+      "Python": {
+        "files": 220,
+        "total": 75143,
+        "blank": 11459,
+        "comment": 420,
+        "code": 63264
+      }
+    }
+  },
+  "by_module": {
+    "app/config": {
+      "files": 4,
+      "total": 1621,
+      "blank": 194,
+      "comment": 8,
+      "code": 1419
+    },
+    "app/controllers": {
+      "files": 10,
+      "total": 2549,
+      "blank": 289,
+      "comment": 18,
+      "code": 2242
+    },
+    "app/core": {
+      "files": 92,
+      "total": 20118,
+      "blank": 1964,
+      "comment": 191,
+      "code": 17963
+    },
+    "app/services": {
+      "files": 34,
+      "total": 14013,
+      "blank": 1330,
+      "comment": 42,
+      "code": 12641
+    },
+    "app/spiders": {
+      "files": 32,
+      "total": 10264,
+      "blank": 862,
+      "comment": 86,
+      "code": 9316
+    },
+    "app/ui": {
+      "files": 74,
+      "total": 25861,
+      "blank": 2849,
+      "comment": 43,
+      "code": 22969
+    },
+    "app/web": {
+      "files": 51,
+      "total": 20718,
+      "blank": 1940,
+      "comment": 69,
+      "code": 18709
+    },
+    "app/models": {
+      "files": 3,
+      "total": 237,
+      "blank": 24,
+      "comment": 1,
+      "code": 212
+    },
+    "app/utils": {
+      "files": 10,
+      "total": 702,
+      "blank": 129,
+      "comment": 3,
+      "code": 570
+    },
+    "app/other": {
+      "files": 8,
+      "total": 766,
+      "blank": 77,
+      "comment": 9,
+      "code": 680
+    },
+    "shared": {
+      "files": 30,
+      "total": 9689,
+      "blank": 1076,
+      "comment": 146,
+      "code": 8467
+    },
+    "cli": {
+      "files": 22,
+      "total": 1851,
+      "blank": 294,
+      "comment": 23,
+      "code": 1534
+    },
+    "entry": {
+      "files": 15,
+      "total": 3301,
+      "blank": 448,
+      "comment": 85,
+      "code": 2768
+    },
+    "packaging": {
+      "files": 11,
+      "total": 2176,
+      "blank": 239,
+      "comment": 21,
+      "code": 1916
+    },
+    "scripts": {
+      "files": 3,
+      "total": 1284,
+      "blank": 180,
+      "comment": 1,
+      "code": 1103
+    },
+    "tests": {
+      "files": 219,
+      "total": 74729,
+      "blank": 11416,
+      "comment": 399,
+      "code": 62914
+    },
+    "other": {
+      "files": 21,
+      "total": 5571,
+      "blank": 382,
+      "comment": 28,
+      "code": 5161
+    }
+  },
+  "by_suite": {
+    "unit": {
+      "files": 134,
+      "total": 37429,
+      "blank": 6804,
+      "comment": 109,
+      "code": 30516
+    },
+    "integration": {
+      "files": 11,
+      "total": 6633,
+      "blank": 1055,
+      "comment": 100,
+      "code": 5478
+    },
+    "contract": {
+      "files": 22,
+      "total": 9022,
+      "blank": 1136,
+      "comment": 71,
+      "code": 7815
+    },
+    "e2e": {
+      "files": 1,
+      "total": 1103,
+      "blank": 125,
+      "comment": 26,
+      "code": 952
+    },
+    "architecture": {
+      "files": 10,
+      "total": 1130,
+      "blank": 215,
+      "comment": 2,
+      "code": 913
+    },
+    "performance": {
+      "files": 1,
+      "total": 140,
+      "blank": 20,
+      "comment": 0,
+      "code": 120
+    },
+    "release": {
+      "files": 7,
+      "total": 5607,
+      "blank": 920,
+      "comment": 21,
+      "code": 4666
+    },
+    "testkit": {
+      "files": 3,
+      "total": 919,
+      "blank": 143,
+      "comment": 12,
+      "code": 764
+    },
+    "support": {
+      "files": 23,
+      "total": 10145,
+      "blank": 738,
+      "comment": 35,
+      "code": 9372
+    },
+    "other": {
+      "files": 8,
+      "total": 3015,
+      "blank": 303,
+      "comment": 44,
+      "code": 2668
+    }
+  },
+  "largest_files": [
+    {
+      "path": "tests/integration/app/core/downloaders/test_runtime.py",
+      "total": 3538,
+      "code": 2922,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "integration",
+      "risk": "watch"
+    },
+    {
+      "path": "tests/unit/app/spiders/test_helpers.py",
+      "total": 3094,
+      "code": 2604,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "unit",
+      "risk": "watch"
+    },
+    {
+      "path": "tests/unit/app/services/test_frontend_state_service.py",
+      "total": 2945,
+      "code": 2481,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "unit",
+      "risk": "watch"
+    },
+    {
+      "path": "app/ui/main_window.py",
+      "total": 2825,
+      "code": 2549,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/services/frontend_state_service.py",
+      "total": 2681,
+      "code": 2460,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/services",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "count_project.py",
+      "total": 2669,
+      "code": 2409,
+      "is_test": false,
+      "lang": "Python",
+      "module": "other",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "tests/unit/app/ui/test_main_window.py",
+      "total": 2666,
+      "code": 2179,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "unit",
+      "risk": "watch"
+    },
+    {
+      "path": "tests/launcher.py",
+      "total": 2199,
+      "code": 2020,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "other",
+      "risk": "ok"
+    },
+    {
+      "path": "app/core/downloaders/m3u8.py",
+      "total": 2037,
+      "code": 1900,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/core",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/spiders/bilibili/spider.py",
+      "total": 1849,
+      "code": 1745,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/spiders",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/web/static/app.js",
+      "total": 1825,
+      "code": 1661,
+      "is_test": false,
+      "lang": "JavaScript",
+      "module": "app/web",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/ui/pages/log_center_page.py",
+      "total": 1700,
+      "code": 1498,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "shared/log_i18n.py",
+      "total": 1652,
+      "code": 1541,
+      "is_test": false,
+      "lang": "Python",
+      "module": "shared",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/ui/pages/settings_page.py",
+      "total": 1643,
+      "code": 1422,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "app/core/lib/douyin/extract/extractor.py",
+      "total": 1630,
+      "code": 1528,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/core",
+      "suite": "",
+      "risk": "watch"
+    },
+    {
+      "path": "tests/release/packaging/test_assets.py",
+      "total": 1629,
+      "code": 1381,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "release",
+      "risk": "ok"
+    },
+    {
+      "path": "app/config/settings.py",
+      "total": 1492,
+      "code": 1302,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/config",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "app/services/secure_updater.py",
+      "total": 1438,
+      "code": 1266,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/services",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "app/web/controller.py",
+      "total": 1423,
+      "code": 1274,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/web",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "app/web/static/i18n.js",
+      "total": 1411,
+      "code": 1391,
+      "is_test": false,
+      "lang": "JavaScript",
+      "module": "app/web",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "tests/support/browser_cases/runtime_and_lists.py",
+      "total": 1399,
+      "code": 1304,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "support",
+      "risk": "ok"
+    },
+    {
+      "path": "app/ui/styles/themes.py",
+      "total": 1388,
+      "code": 1182,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "app/web/static/log_i18n.js",
+      "total": 1387,
+      "code": 1330,
+      "is_test": false,
+      "lang": "JavaScript",
+      "module": "app/web",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "tests/contract/frontend/test_shell.py",
+      "total": 1340,
+      "code": 1134,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "contract",
+      "risk": "ok"
+    },
+    {
+      "path": "app/core/download_manager_core.py",
+      "total": 1327,
+      "code": 1202,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/core",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "tests/unit/app/core/guardrails/test_runtime_policies.py",
+      "total": 1315,
+      "code": 1098,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "unit",
+      "risk": "ok"
+    },
+    {
+      "path": "app/ui/components/media_preview_panel.py",
+      "total": 1303,
+      "code": 1156,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "app/ui/pages/active_downloads_page.py",
+      "total": 1283,
+      "code": 1180,
+      "is_test": false,
+      "lang": "Python",
+      "module": "app/ui",
+      "suite": "",
+      "risk": "ok"
+    },
+    {
+      "path": "tests/support/browser_cases/log_center.py",
+      "total": 1276,
+      "code": 1215,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "support",
+      "risk": "ok"
+    },
+    {
+      "path": "tests/release/updater/test_secure_updater.py",
+      "total": 1242,
+      "code": 1009,
+      "is_test": true,
+      "lang": "Python",
+      "module": "tests",
+      "suite": "release",
+      "risk": "ok"
+    }
+  ],
+  "complexity_hotspots": [],
+  "project_surface": {
+    "scripts": [
+      {
+        "name": "ucrawl",
+        "target": "entry.cli_entry:main"
+      },
+      {
+        "name": "ucrawl-i",
+        "target": "entry.interactive_entry:main"
+      },
+      {
+        "name": "ucrawl-web",
+        "target": "entry.web_entry:main"
+      },
+      {
+        "name": "ucrawl-auto",
+        "target": "entry.dispatcher:run"
+      },
+      {
+        "name": "ucrawl-test",
+        "target": "entry.test_entry:main"
+      },
+      {
+        "name": "ucrawl-update-bootstrap",
+        "target": "scripts.update_bootstrap:main"
+      },
+      {
+        "name": "scan-secrets",
+        "target": "scripts.update_bootstrap:scan_secrets_main"
+      }
+    ],
+    "gui_scripts": [
+      {
+        "name": "ucrawl-gui",
+        "target": "entry.gui_entry:main"
+      },
+      {
+        "name": "ucrawl-test-gui",
+        "target": "entry.test_entry:main"
+      }
+    ],
+    "dependencies": [
+      "PyQt6>=6.4.0",
+      "fastapi>=0.139.0,<0.140.0",
+      "starlette>=1.3.1,<2.0.0",
+      "uvicorn>=0.20.0",
+      "pydantic>=2.9.0",
+      "httpx>=0.28.0",
+      "requests>=2.34.2,<3.0.0",
+      "urllib3>=2.7.0,<3.0.0",
+      "idna>=3.15,<4.0",
+      "defusedxml>=0.7.1,<1.0",
+      "Pygments>=2.20.0,<3.0.0",
+      "fake-useragent>=2.2.0",
+      "emoji>=2.14.0",
+      "gmssl>=3.2.2",
+      "m3u8>=3.6.0",
+      "xhshow>=0.1.9",
+      "websockets>=12.0",
+      "yt-dlp>=2026.6.9",
+      "curl-cffi>=0.15.0,<1.0",
+      "pycryptodome>=3.20.0",
+      "playwright>=1.30.0",
+      "rich>=14.1.0",
+      "loguru>=0.7.0",
+      "cachetools>=5.3.0"
+    ],
+    "optional_dependency_groups": 0,
+    "python_requires": ">=3.10",
+    "package_name": "ucrawl",
+    "version": "3.6.17"
+  },
+  "cocomo": {
+    "model": "COCOMO organic",
+    "kloc": 107.32,
+    "person_months": 325.41,
+    "schedule_months": 22.52
+  },
+  "llm_budget": {
+    "tokens_per_code_line": 28.0,
+    "estimated_tokens": 4776352,
+    "note": "粗估全库有效代码装入 LLM 的 token 量级，不含提示词与工具协议开销"
+  },
+  "comment_metric_note": "注释行为前缀启发式统计，可能低估多行注释或高估字符串中的 # / //",
+  "history_delta": null,
+  "gates": {
+    "enabled": false,
+    "passed": true,
+    "failures": [],
+    "prod_max_lines": null,
+    "test_ratio_min": null
+  }
+}

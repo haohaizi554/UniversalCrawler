@@ -9,34 +9,60 @@
 
 :root {
     color-scheme: light;
-    --bg: #eef3f9;
-    --panel: #ffffff;
-    --text: #0f172a;
-    --muted: #64748b;
-    --line: #dbe4f0;
-    --blue: #2563eb;
-    --blue2: #38bdf8;
-    --green: #10b981;
-    --orange: #f59e0b;
-    --red: #ef4444;
-    --purple: #8b5cf6;
-    --shadow: 0 20px 55px rgba(15, 23, 42, 0.10);
+    --bg: #fff5f8;
+    --panel: #fffafc;
+    --text: #3b2a35;
+    --muted: #8b7380;
+    --line: #f3d5e2;
+    --blue: #7eb6ff;
+    --blue2: #b8e0ff;
+    --green: #7dd3b0;
+    --orange: #ffb4a2;
+    --red: #ff8fab;
+    --pink: #ff9ec8;
+    --peach: #ffc9a3;
+    --mint: #9be7c4;
+    --sky: #9fd4ff;
+    --lavender: #d4b8ff;
+    --cream: #fff7fb;
+    --shadow: 0 18px 40px rgba(255, 158, 200, 0.18);
+    --shadow-soft: 0 10px 28px rgba(255, 182, 193, 0.22);
 }
 * {
     box-sizing: border-box;
 }
+html {
+    min-height: 100%;
+    background-color: #ffe9f2;
+    scroll-behavior: auto;
+}
 body {
     margin: 0;
-    background:
-        linear-gradient(180deg, rgba(226, 235, 247, 0.92), var(--bg) 360px),
-        var(--bg);
+    min-height: 100vh;
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
     font-size: 15px;
+    /* 随文档滚动平铺，不再用 fixed 四角光斑（长页滚动会上下截断） */
+    background-color: #ffe9f2;
+    background-image:
+        radial-gradient(circle, rgba(255, 196, 220, 0.95) 1.05px, transparent 1.05px),
+        repeating-linear-gradient(
+            180deg,
+            #ffd6e8 0px,
+            #ffe9f2 220px,
+            #eaf4ff 440px,
+            #f3eaff 660px,
+            #fff1e8 880px,
+            #ffd6e8 1100px
+        );
+    background-size: 22px 22px, 100% 1100px;
+    background-repeat: repeat, repeat;
+    background-attachment: scroll;
 }
 .page {
     width: min(1280px, calc(100% - 48px));
-    margin: 32px auto 56px;
+    margin: 32px auto 48px;
+    padding: 0;
 }
 .hero {
     position: relative;
@@ -53,7 +79,7 @@ body {
         linear-gradient(135deg, #0f172a 0%, #1d4ed8 72%, #38bdf8 130%);
     background-size: 34px 34px, 34px 34px, auto;
     border-radius: 20px;
-    box-shadow: var(--shadow);
+    box-shadow: 0 20px 55px rgba(15, 23, 42, 0.16);
 }
 .hero::after {
     content: "";
@@ -66,6 +92,7 @@ body {
 .hero-stat {
     position: relative;
     z-index: 1;
+    min-width: 0;
 }
 .hero-title {
     margin: 0;
@@ -133,7 +160,10 @@ body {
     fill: currentColor;
 }
 .hero-stat {
-    align-self: end;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     padding: 24px;
     background: rgba(255, 255, 255, 0.12);
     border: 1px solid rgba(255, 255, 255, 0.20);
@@ -167,19 +197,47 @@ body {
 .chart-card,
 .report-section,
 .insights {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.07);
+    position: relative;
+    overflow: hidden;
+    background:
+        linear-gradient(165deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 252, 0.94));
+    border: 2px solid #ffd6e7;
+    border-radius: 28px;
+    box-shadow: var(--shadow-soft);
+}
+.metric-card::before,
+.chart-card::before,
+.report-section::before,
+.insights::before {
+    content: "";
+    position: absolute;
+    top: -18px;
+    right: -12px;
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(255, 182, 213, 0.45), transparent 68%);
+    pointer-events: none;
 }
 .metric-card {
-    padding: 18px;
-    transition: transform 160ms ease, box-shadow 160ms ease;
+    padding: 18px 18px 16px;
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 .metric-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 22px 44px rgba(15, 23, 42, 0.10);
+    transform: translateY(-4px) scale(1.01);
+    box-shadow: 0 18px 36px rgba(255, 158, 200, 0.28);
+    border-color: #ffb7d5;
 }
+.metric-strawberry { border-color: #ffc1d9; }
+.metric-peach { border-color: #ffd2b5; }
+.metric-mint { border-color: #b8efd4; }
+.metric-sky { border-color: #b9e0ff; }
+.metric-lavender { border-color: #e0ccff; }
+.metric-strawberry .metric-icon { color: #e85a8c; background: #ffe0ec; }
+.metric-peach .metric-icon { color: #e8894c; background: #ffe8d6; }
+.metric-mint .metric-icon { color: #2f9d6a; background: #d9f8e8; }
+.metric-sky .metric-icon { color: #3b82c4; background: #dff0ff; }
+.metric-lavender .metric-icon { color: #8b5bb8; background: #efe4ff; }
 .metric-top {
     display: flex;
     align-items: center;
@@ -189,23 +247,25 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
-    color: var(--blue);
-    background: #e8f1ff;
+    width: 38px;
+    height: 38px;
     border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 6px 14px rgba(255, 158, 200, 0.18);
     font-weight: 800;
 }
 .metric-label,
 .meta-label {
     color: var(--muted);
     font-size: 13px;
+    font-weight: 650;
 }
 .metric-value {
     margin-top: 14px;
     font-size: 30px;
     font-weight: 800;
     line-height: 1;
+    color: #4a3040;
     font-variant-numeric: tabular-nums;
 }
 .metric-hint {
@@ -223,6 +283,15 @@ body {
     min-height: 390px;
     padding: 20px;
 }
+.chart-card-donut {
+    border-color: #ffc9dd;
+}
+.dashboard-grid .chart-card:nth-child(2) {
+    border-color: #bfe9ff;
+}
+.dashboard-grid .chart-card:nth-child(3) {
+    border-color: #c8f0da;
+}
 .chart-head {
     display: flex;
     align-items: flex-start;
@@ -236,6 +305,14 @@ body {
     margin: 0;
     font-size: 18px;
     line-height: 1.35;
+    color: #5a3a4a;
+}
+.chart-head h2::before,
+.report-section h2::before,
+.section-title h2::before {
+    content: "♡ ";
+    color: #ff8fbf;
+    font-weight: 500;
 }
 .chart-head p,
 .section-title p {
@@ -253,21 +330,24 @@ body {
     width: 196px;
     height: 196px;
     border-radius: 999px;
-    background: conic-gradient(var(--orange) 0deg var(--test-deg), var(--blue) var(--test-deg) 360deg);
-    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    background: conic-gradient(#ffb4c8 0deg var(--test-deg), #9fd4ff var(--test-deg) 360deg);
+    box-shadow:
+        inset 0 0 0 3px rgba(255, 255, 255, 0.65),
+        0 12px 28px rgba(255, 158, 200, 0.25);
 }
 .donut-hole {
     display: grid;
     place-items: center;
     width: 126px;
     height: 126px;
-    background: #ffffff;
+    background: linear-gradient(180deg, #ffffff, #fff5f9);
     border-radius: 999px;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 10px 22px rgba(255, 158, 200, 0.18);
 }
 .donut-value {
     font-size: 30px;
     font-weight: 800;
+    color: #e85a8c;
     font-variant-numeric: tabular-nums;
 }
 .donut-label {
@@ -285,7 +365,11 @@ body {
     grid-template-columns: auto 1fr auto auto;
     gap: 8px;
     align-items: center;
+    padding: 8px 10px;
     color: var(--muted);
+    background: rgba(255, 245, 250, 0.8);
+    border: 1px solid #ffe0ec;
+    border-radius: 14px;
 }
 .legend-item strong,
 .legend-item em {
@@ -294,15 +378,16 @@ body {
     font-variant-numeric: tabular-nums;
 }
 .legend-dot {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8);
 }
 .legend-prod {
-    background: var(--blue);
+    background: #9fd4ff;
 }
 .legend-test {
-    background: var(--orange);
+    background: #ffb4c8;
 }
 .bar-chart {
     display: grid;
@@ -321,31 +406,32 @@ body {
 }
 .bar-name {
     overflow: hidden;
-    color: #334155;
+    color: #5a3a4a;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .bar-track {
-    height: 10px;
+    height: 12px;
     overflow: hidden;
-    background: #e7edf6;
+    background: #ffe9f1;
     border-radius: 999px;
+    box-shadow: inset 0 1px 2px rgba(255, 143, 191, 0.15);
 }
 .bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, rgba(37, 99, 235, 0.48), rgba(37, 99, 235, 0.92));
+    background: linear-gradient(90deg, #ffc2d9, #ff8fbf);
     border-radius: inherit;
 }
 .bar-fill-primary {
-    background: linear-gradient(90deg, var(--blue), var(--blue2));
+    background: linear-gradient(90deg, #ffb4c8, #ff8fab 55%, #ffc9a3);
 }
 .bar-fill-file {
-    background: linear-gradient(90deg, var(--green), var(--blue2));
+    background: linear-gradient(90deg, #9be7c4, #9fd4ff);
 }
 .bar-value,
 .bar-ratio {
     text-align: right;
-    color: #334155;
+    color: #5a3a4a;
 }
 .file-bar-row {
     grid-template-columns: minmax(120px, 1.4fr) auto minmax(90px, 1fr) 72px;
@@ -361,8 +447,8 @@ body {
     white-space: nowrap;
 }
 .file-name {
-    color: #1e293b;
-    font-weight: 650;
+    color: #4a3040;
+    font-weight: 700;
 }
 .file-path {
     margin-top: 2px;
@@ -387,40 +473,47 @@ body {
 }
 .insight-card {
     padding: 16px;
-    background: #f8fafc;
-    border: 1px solid var(--line);
-    border-radius: 14px;
+    background: #fff7fb;
+    border: 2px solid #ffd6e7;
+    border-radius: 22px;
+    box-shadow: 0 8px 18px rgba(255, 182, 193, 0.14);
+    transition: transform 160ms ease;
+}
+.insight-card:hover {
+    transform: translateY(-2px);
 }
 .insight-label {
     color: var(--muted);
     font-size: 13px;
+    font-weight: 650;
 }
 .insight-value {
     margin-top: 8px;
     font-size: 23px;
     font-weight: 800;
+    color: #4a3040;
     font-variant-numeric: tabular-nums;
 }
 .insight-card p {
     margin: 10px 0 0;
-    color: #475569;
+    color: #7a5a68;
     line-height: 1.55;
 }
 .insight-good {
-    border-color: rgba(16, 185, 129, 0.26);
-    background: #f0fdf8;
+    border-color: #b8efd4;
+    background: linear-gradient(165deg, #f3fff8, #e8fbf1);
 }
 .insight-watch {
-    border-color: rgba(245, 158, 11, 0.28);
-    background: #fffbeb;
+    border-color: #ffd2b5;
+    background: linear-gradient(165deg, #fff8f1, #ffefdf);
 }
 .insight-risk {
-    border-color: rgba(239, 68, 68, 0.26);
-    background: #fff1f2;
+    border-color: #ffc1d9;
+    background: linear-gradient(165deg, #fff5f8, #ffe4ef);
 }
 .insight-neutral {
-    border-color: rgba(37, 99, 235, 0.18);
-    background: #eff6ff;
+    border-color: #b9e0ff;
+    background: linear-gradient(165deg, #f5fbff, #e8f5ff);
 }
 .report-section {
     margin-top: 18px;
@@ -428,8 +521,9 @@ body {
 }
 .table-wrap {
     overflow-x: auto;
-    border: 1px solid var(--line);
-    border-radius: 12px;
+    border: 2px solid #ffe0ec;
+    border-radius: 18px;
+    background: #fffafc;
 }
 table {
     width: 100%;
@@ -440,7 +534,7 @@ table {
 th,
 td {
     padding: 11px 13px;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid #ffe6f0;
     text-align: center;
     vertical-align: middle;
     white-space: normal;
@@ -449,12 +543,12 @@ td {
     font-variant-numeric: tabular-nums;
 }
 th {
-    color: #334155;
-    background: #eef5fb;
+    color: #7a4a62;
+    background: linear-gradient(180deg, #ffe9f2, #ffdceb);
     font-weight: 700;
 }
 tbody tr:hover {
-    background: #f8fbff;
+    background: #fff3f8;
 }
 tr:last-child td {
     border-bottom: none;
@@ -471,52 +565,54 @@ tr:last-child td {
     align-items: center;
     justify-content: center;
     min-width: 46px;
-    padding: 3px 8px;
+    padding: 4px 10px;
     border-radius: 999px;
     font-size: 12px;
     font-weight: 800;
     line-height: 1.2;
     letter-spacing: 0;
+    box-shadow: 0 4px 10px rgba(255, 158, 200, 0.12);
 }
 .badge-test {
-    color: #9a3412;
-    background: #ffedd5;
-    border: 1px solid #fdba74;
+    color: #c45c2a;
+    background: #ffe8d6;
+    border: 1px solid #ffc9a3;
 }
 .badge-prod {
-    color: #1d4ed8;
-    background: #dbeafe;
-    border: 1px solid #93c5fd;
+    color: #3b82c4;
+    background: #dff0ff;
+    border: 1px solid #9fd4ff;
 }
 .badge-risk {
-    color: #b91c1c;
-    background: #fee2e2;
-    border: 1px solid #fca5a5;
+    color: #d63b6a;
+    background: #ffe0ec;
+    border: 1px solid #ffb4c8;
 }
 .badge-watch {
-    color: #b45309;
-    background: #ffedd5;
-    border: 1px solid #fdba74;
+    color: #d07a2e;
+    background: #fff0dd;
+    border: 1px solid #ffd2b5;
 }
 .badge-ok {
-    color: #047857;
-    background: #d1fae5;
-    border: 1px solid #6ee7b7;
+    color: #2f9d6a;
+    background: #d9f8e8;
+    border: 1px solid #9be7c4;
 }
 .gate-banner {
     margin-top: 18px;
     padding: 16px 18px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: #f8fafc;
+    border-radius: 24px;
+    border: 2px solid #ffd6e7;
+    background: #fff7fb;
+    box-shadow: var(--shadow-soft);
 }
 .gate-banner.gate-pass {
-    border-color: rgba(16, 185, 129, 0.28);
-    background: #f0fdf8;
+    border-color: #b8efd4;
+    background: linear-gradient(165deg, #f3fff8, #e8fbf1);
 }
 .gate-banner.gate-fail {
-    border-color: rgba(239, 68, 68, 0.28);
-    background: #fff1f2;
+    border-color: #ffc1d9;
+    background: linear-gradient(165deg, #fff5f8, #ffe4ef);
 }
 .gate-banner h2 {
     margin: 0 0 8px;
@@ -551,7 +647,8 @@ tr:last-child td {
 @media (max-width: 720px) {
     .page {
         width: min(100% - 28px, 1280px);
-        margin-top: 18px;
+        margin: 20px auto 32px;
+        padding: 0;
     }
     .hero,
     .dashboard-grid,
@@ -583,6 +680,7 @@ tr:last-child td {
 @media print {
     body {
         background: #ffffff;
+        background-image: none;
     }
     .hero,
     .metric-card,
@@ -596,8 +694,8 @@ tr:last-child td {
 </style>
 </head>
 <body>
-<main class="page">
-<section class="hero">
+<main class="page" id="report-top">
+<section class="hero" aria-label="报告概览">
 <div class="hero-content">
 <h1 class="hero-title">项目代码量统计报告</h1>
 <p class="hero-subtitle">静态代码规模、模块分布、测试占比、复杂度热点与大文件风险概览</p>
@@ -616,54 +714,54 @@ tr:last-child td {
 </div>
 <aside class="hero-stat">
 <div class="hero-stat-label">Effective LOC</div>
-<div class="hero-stat-value">172,061</div>
+<div class="hero-stat-value">172,405</div>
 <div class="hero-stat-note">有效代码行数</div>
 </aside>
 </section>
 <section class="metrics">
 
-<article class="metric-card">
+<article class="metric-card metric-strawberry">
 <div class="metric-top">
-<span class="metric-icon">#</span>
+<span class="metric-icon">✦</span>
 <span class="metric-label">代码文件数</span>
 </div>
 <div class="metric-value">641</div>
 <div class="metric-hint">纳入统计的源代码文件</div>
 </article>
 
-<article class="metric-card">
+<article class="metric-card metric-peach">
 <div class="metric-top">
 <span class="metric-icon">Σ</span>
 <span class="metric-label">总行数</span>
 </div>
-<div class="metric-value">197,022</div>
+<div class="metric-value">197,401</div>
 <div class="metric-hint">包含空行与注释</div>
 </article>
 
-<article class="metric-card">
+<article class="metric-card metric-mint">
 <div class="metric-top">
 <span class="metric-icon">&lt;/&gt;</span>
 <span class="metric-label">有效代码行数</span>
 </div>
-<div class="metric-value">172,061</div>
+<div class="metric-value">172,405</div>
 <div class="metric-hint">排除空行与注释</div>
 </article>
 
-<article class="metric-card">
+<article class="metric-card metric-sky">
 <div class="metric-top">
-<span class="metric-icon">T</span>
+<span class="metric-icon">★</span>
 <span class="metric-label">测试代码行数</span>
 </div>
-<div class="metric-value">63,747</div>
+<div class="metric-value">63,829</div>
 <div class="metric-hint">识别为测试文件的有效代码</div>
 </article>
 
-<article class="metric-card">
+<article class="metric-card metric-lavender">
 <div class="metric-top">
-<span class="metric-icon">TC</span>
+<span class="metric-icon">♡</span>
 <span class="metric-label">测试用例数</span>
 </div>
-<div class="metric-value">3,047</div>
+<div class="metric-value">3,241</div>
 <div class="metric-hint">静态识别的测试用例定义</div>
 </article>
 
@@ -678,7 +776,7 @@ tr:last-child td {
 </div>
 </div>
 <div class="donut-layout">
-<div class="donut" style="--test-deg: 133.38deg;">
+<div class="donut" style="--test-deg: 133.28deg;">
 <div class="donut-hole">
 <div class="donut-value">37.0%</div>
 <div class="donut-label">测试占比</div>
@@ -688,13 +786,13 @@ tr:last-child td {
 <div class="legend-item">
 <span class="legend-dot legend-prod"></span>
 <span>生产代码</span>
-<strong>108,314 行</strong>
+<strong>108,576 行</strong>
 <em>63.0%</em>
 </div>
 <div class="legend-item">
 <span class="legend-dot legend-test"></span>
 <span>测试代码</span>
-<strong>63,747 行</strong>
+<strong>63,829 行</strong>
 <em>37.0%</em>
 </div>
 </div>
@@ -714,14 +812,14 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">Python</div>
 <div class="bar-track"><div class="bar-fill bar-fill-primary" style="width: 100.00%"></div></div>
-<div class="bar-value">152,676</div>
+<div class="bar-value">152,919</div>
 <div class="bar-ratio">88.7%</div>
 </div>
 
 <div class="bar-row">
 <div class="bar-name">JavaScript</div>
 <div class="bar-track"><div class="bar-fill" style="width: 7.20%"></div></div>
-<div class="bar-value">10,999</div>
+<div class="bar-value">11,013</div>
 <div class="bar-ratio">6.4%</div>
 </div>
 
@@ -729,7 +827,7 @@ tr:last-child td {
 <div class="bar-name">CSS</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
 <div class="bar-value">3,356</div>
-<div class="bar-ratio">2.0%</div>
+<div class="bar-ratio">1.9%</div>
 </div>
 
 <div class="bar-row">
@@ -742,8 +840,8 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">HTML</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
-<div class="bar-value">1,284</div>
-<div class="bar-ratio">0.7%</div>
+<div class="bar-value">1,371</div>
+<div class="bar-ratio">0.8%</div>
 </div>
 
 <div class="bar-row">
@@ -877,7 +975,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="center">统计口径</th><th class="center">代码文件数</th><th class="center">总行数</th><th class="center">空行数</th><th class="center">注释行数</th><th class="center">有效代码行数</th></tr></thead>
 <tbody>
-<tr><td class="center">全部代码_含测试</td><td class="center">641</td><td class="center">197022</td><td class="center">23793</td><td class="center">1168</td><td class="center">172061</td></tr><tr><td class="center">排除测试后</td><td class="center">421</td><td class="center">121336</td><td class="center">12274</td><td class="center">748</td><td class="center">108314</td></tr><tr><td class="center">仅测试代码</td><td class="center">220</td><td class="center">75686</td><td class="center">11519</td><td class="center">420</td><td class="center">63747</td></tr>
+<tr><td class="center">全部代码_含测试</td><td class="center">641</td><td class="center">197401</td><td class="center">23817</td><td class="center">1179</td><td class="center">172405</td></tr><tr><td class="center">排除测试后</td><td class="center">421</td><td class="center">121619</td><td class="center">12285</td><td class="center">758</td><td class="center">108576</td></tr><tr><td class="center">仅测试代码</td><td class="center">220</td><td class="center">75782</td><td class="center">11532</td><td class="center">421</td><td class="center">63829</td></tr>
 </tbody>
 </table>
 </div>
@@ -890,7 +988,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="center">语言</th><th class="center">全部文件</th><th class="center">全部行</th><th class="center">全部代码</th><th class="center">生产代码</th><th class="center">测试代码</th><th class="center">测试文件</th></tr></thead>
 <tbody>
-<tr><td class="center">Python</td><td class="center">592</td><td class="center">176085</td><td class="center">152676</td><td class="center">88929</td><td class="center">63747</td><td class="center">220</td></tr><tr><td class="center">JavaScript</td><td class="center">22</td><td class="center">11847</td><td class="center">10999</td><td class="center">10999</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">CSS</td><td class="center">7</td><td class="center">3899</td><td class="center">3356</td><td class="center">3356</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">JSON</td><td class="center">12</td><td class="center">3148</td><td class="center">3148</td><td class="center">3148</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">HTML</td><td class="center">2</td><td class="center">1352</td><td class="center">1284</td><td class="center">1284</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">YAML</td><td class="center">3</td><td class="center">445</td><td class="center">391</td><td class="center">391</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">TOML</td><td class="center">2</td><td class="center">166</td><td class="center">142</td><td class="center">142</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">Shell</td><td class="center">1</td><td class="center">80</td><td class="center">65</td><td class="center">65</td><td class="center">0</td><td class="center">0</td></tr>
+<tr><td class="center">Python</td><td class="center">592</td><td class="center">176363</td><td class="center">152919</td><td class="center">89090</td><td class="center">63829</td><td class="center">220</td></tr><tr><td class="center">JavaScript</td><td class="center">22</td><td class="center">11862</td><td class="center">11013</td><td class="center">11013</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">CSS</td><td class="center">7</td><td class="center">3899</td><td class="center">3356</td><td class="center">3356</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">JSON</td><td class="center">12</td><td class="center">3148</td><td class="center">3148</td><td class="center">3148</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">HTML</td><td class="center">2</td><td class="center">1438</td><td class="center">1371</td><td class="center">1371</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">YAML</td><td class="center">3</td><td class="center">445</td><td class="center">391</td><td class="center">391</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">TOML</td><td class="center">2</td><td class="center">166</td><td class="center">142</td><td class="center">142</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">Shell</td><td class="center">1</td><td class="center">80</td><td class="center">65</td><td class="center">65</td><td class="center">0</td><td class="center">0</td></tr>
 </tbody>
 </table>
 </div>
@@ -903,7 +1001,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="center">模块</th><th class="center">文件数</th><th class="center">总行数</th><th class="center">有效代码</th><th class="center">占比</th></tr></thead>
 <tbody>
-<tr><td class="center">tests</td><td class="center">219</td><td class="center">75272</td><td class="center">63397</td><td class="center">36.8%</td></tr><tr><td class="center">app/ui</td><td class="center">74</td><td class="center">25861</td><td class="center">22969</td><td class="center">13.3%</td></tr><tr><td class="center">app/web</td><td class="center">51</td><td class="center">20706</td><td class="center">18697</td><td class="center">10.9%</td></tr><tr><td class="center">app/core</td><td class="center">93</td><td class="center">20506</td><td class="center">18313</td><td class="center">10.6%</td></tr><tr><td class="center">app/services</td><td class="center">34</td><td class="center">14031</td><td class="center">12657</td><td class="center">7.4%</td></tr><tr><td class="center">app/spiders</td><td class="center">32</td><td class="center">10296</td><td class="center">9341</td><td class="center">5.4%</td></tr><tr><td class="center">shared</td><td class="center">31</td><td class="center">9841</td><td class="center">8592</td><td class="center">5.0%</td></tr><tr><td class="center">other</td><td class="center">22</td><td class="center">6157</td><td class="center">5765</td><td class="center">3.4%</td></tr><tr><td class="center">entry</td><td class="center">15</td><td class="center">3301</td><td class="center">2768</td><td class="center">1.6%</td></tr><tr><td class="center">app/controllers</td><td class="center">10</td><td class="center">2549</td><td class="center">2242</td><td class="center">1.3%</td></tr><tr><td class="center">packaging</td><td class="center">11</td><td class="center">2176</td><td class="center">1916</td><td class="center">1.1%</td></tr><tr><td class="center">cli</td><td class="center">21</td><td class="center">1716</td><td class="center">1420</td><td class="center">0.8%</td></tr><tr><td class="center">app/config</td><td class="center">4</td><td class="center">1621</td><td class="center">1419</td><td class="center">0.8%</td></tr><tr><td class="center">scripts</td><td class="center">3</td><td class="center">1284</td><td class="center">1103</td><td class="center">0.6%</td></tr><tr><td class="center">app/other</td><td class="center">8</td><td class="center">766</td><td class="center">680</td><td class="center">0.4%</td></tr><tr><td class="center">app/utils</td><td class="center">10</td><td class="center">702</td><td class="center">570</td><td class="center">0.3%</td></tr><tr><td class="center">app/models</td><td class="center">3</td><td class="center">237</td><td class="center">212</td><td class="center">0.1%</td></tr>
+<tr><td class="center">tests</td><td class="center">219</td><td class="center">75368</td><td class="center">63479</td><td class="center">36.8%</td></tr><tr><td class="center">app/ui</td><td class="center">74</td><td class="center">25861</td><td class="center">22969</td><td class="center">13.3%</td></tr><tr><td class="center">app/web</td><td class="center">51</td><td class="center">20721</td><td class="center">18711</td><td class="center">10.9%</td></tr><tr><td class="center">app/core</td><td class="center">93</td><td class="center">20506</td><td class="center">18313</td><td class="center">10.6%</td></tr><tr><td class="center">app/services</td><td class="center">34</td><td class="center">14047</td><td class="center">12668</td><td class="center">7.3%</td></tr><tr><td class="center">app/spiders</td><td class="center">32</td><td class="center">10296</td><td class="center">9341</td><td class="center">5.4%</td></tr><tr><td class="center">shared</td><td class="center">31</td><td class="center">9857</td><td class="center">8607</td><td class="center">5.0%</td></tr><tr><td class="center">other</td><td class="center">22</td><td class="center">6393</td><td class="center">5988</td><td class="center">3.5%</td></tr><tr><td class="center">entry</td><td class="center">15</td><td class="center">3301</td><td class="center">2768</td><td class="center">1.6%</td></tr><tr><td class="center">app/controllers</td><td class="center">10</td><td class="center">2549</td><td class="center">2241</td><td class="center">1.3%</td></tr><tr><td class="center">packaging</td><td class="center">11</td><td class="center">2176</td><td class="center">1916</td><td class="center">1.1%</td></tr><tr><td class="center">cli</td><td class="center">21</td><td class="center">1716</td><td class="center">1420</td><td class="center">0.8%</td></tr><tr><td class="center">app/config</td><td class="center">4</td><td class="center">1621</td><td class="center">1419</td><td class="center">0.8%</td></tr><tr><td class="center">scripts</td><td class="center">3</td><td class="center">1284</td><td class="center">1103</td><td class="center">0.6%</td></tr><tr><td class="center">app/other</td><td class="center">8</td><td class="center">766</td><td class="center">680</td><td class="center">0.4%</td></tr><tr><td class="center">app/utils</td><td class="center">10</td><td class="center">702</td><td class="center">570</td><td class="center">0.3%</td></tr><tr><td class="center">app/models</td><td class="center">3</td><td class="center">237</td><td class="center">212</td><td class="center">0.1%</td></tr>
 </tbody>
 </table>
 </div>
@@ -916,7 +1014,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="center">套件</th><th class="center">文件数</th><th class="center">用例数</th><th class="center">总行数</th><th class="center">有效代码</th><th class="center">占比</th></tr></thead>
 <tbody>
-<tr><td class="center">unit</td><td class="center">134</td><td class="center">1709</td><td class="center">37847</td><td class="center">30887</td><td class="center">48.5%</td></tr><tr><td class="center">integration</td><td class="center">11</td><td class="center">328</td><td class="center">6633</td><td class="center">5478</td><td class="center">8.6%</td></tr><tr><td class="center">contract</td><td class="center">22</td><td class="center">404</td><td class="center">9048</td><td class="center">7838</td><td class="center">12.3%</td></tr><tr><td class="center">e2e</td><td class="center">1</td><td class="center">58</td><td class="center">1103</td><td class="center">952</td><td class="center">1.5%</td></tr><tr><td class="center">architecture</td><td class="center">10</td><td class="center">58</td><td class="center">1206</td><td class="center">982</td><td class="center">1.5%</td></tr><tr><td class="center">performance</td><td class="center">1</td><td class="center">4</td><td class="center">140</td><td class="center">120</td><td class="center">0.2%</td></tr><tr><td class="center">release</td><td class="center">7</td><td class="center">294</td><td class="center">5621</td><td class="center">4677</td><td class="center">7.3%</td></tr><tr><td class="center">testkit</td><td class="center">3</td><td class="center">59</td><td class="center">928</td><td class="center">773</td><td class="center">1.2%</td></tr><tr><td class="center">support</td><td class="center">23</td><td class="center">133</td><td class="center">10145</td><td class="center">9372</td><td class="center">14.7%</td></tr><tr><td class="center">other</td><td class="center">8</td><td class="center">0</td><td class="center">3015</td><td class="center">2668</td><td class="center">4.2%</td></tr>
+<tr><td class="center">unit</td><td class="center">134</td><td class="center">1881</td><td class="center">37864</td><td class="center">30900</td><td class="center">48.4%</td></tr><tr><td class="center">integration</td><td class="center">11</td><td class="center">328</td><td class="center">6633</td><td class="center">5478</td><td class="center">8.6%</td></tr><tr><td class="center">contract</td><td class="center">22</td><td class="center">404</td><td class="center">9068</td><td class="center">7858</td><td class="center">12.3%</td></tr><tr><td class="center">e2e</td><td class="center">1</td><td class="center">58</td><td class="center">1103</td><td class="center">952</td><td class="center">1.5%</td></tr><tr><td class="center">architecture</td><td class="center">10</td><td class="center">58</td><td class="center">1206</td><td class="center">982</td><td class="center">1.5%</td></tr><tr><td class="center">performance</td><td class="center">1</td><td class="center">4</td><td class="center">140</td><td class="center">120</td><td class="center">0.2%</td></tr><tr><td class="center">release</td><td class="center">7</td><td class="center">316</td><td class="center">5662</td><td class="center">4708</td><td class="center">7.4%</td></tr><tr><td class="center">testkit</td><td class="center">3</td><td class="center">59</td><td class="center">928</td><td class="center">773</td><td class="center">1.2%</td></tr><tr><td class="center">support</td><td class="center">23</td><td class="center">133</td><td class="center">10163</td><td class="center">9390</td><td class="center">14.7%</td></tr><tr><td class="center">other</td><td class="center">8</td><td class="center">0</td><td class="center">3015</td><td class="center">2668</td><td class="center">4.2%</td></tr>
 </tbody>
 </table>
 </div>
@@ -929,7 +1027,7 @@ tr:last-child td {
 <table>
 <thead><tr><th class="center">复杂度</th><th class="center">模块</th><th class="center">符号</th><th class="center path">位置</th></tr></thead>
 <tbody>
-<tr><td class="center">98</td><td class="center">app/core</td><td class="center">ChunkedDownloader.download</td><td class="center path" title="app/core/downloaders/chunked.py:43">app/core/downloaders/chunked.py:43</td></tr><tr><td class="center">97</td><td class="center">app/core</td><td class="center">BilibiliDownloader.download</td><td class="center path" title="app/core/downloaders/bilibili.py:101">app/core/downloaders/bilibili.py:101</td></tr><tr><td class="center">78</td><td class="center">shared</td><td class="center">derive_event_stage</td><td class="center path" title="shared/log_pipeline_rules.py:610">shared/log_pipeline_rules.py:610</td></tr><tr><td class="center">74</td><td class="center">shared</td><td class="center">_localize_non_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1374">shared/log_i18n.py:1374</td></tr><tr><td class="center">73</td><td class="center">app/spiders</td><td class="center">MissAVSpider.run</td><td class="center path" title="app/spiders/missav/spider.py:339">app/spiders/missav/spider.py:339</td></tr><tr><td class="center">72</td><td class="center">shared</td><td class="center">UcrawlSDK.download_video</td><td class="center path" title="shared/sdk_runtime.py:238">shared/sdk_runtime.py:238</td></tr><tr><td class="center">58</td><td class="center">app/services</td><td class="center">AuthService.extract_cookie_dict_for_url</td><td class="center path" title="app/services/auth_service.py:118">app/services/auth_service.py:118</td></tr><tr><td class="center">56</td><td class="center">app/core</td><td class="center">FFmpegDownloader.download</td><td class="center path" title="app/core/downloaders/ffmpeg.py:153">app/core/downloaders/ffmpeg.py:153</td></tr><tr><td class="center">53</td><td class="center">app/web</td><td class="center">build_rest_router</td><td class="center path" title="app/web/rest_router.py:71">app/web/rest_router.py:71</td></tr><tr><td class="center">52</td><td class="center">shared</td><td class="center">_localize_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1153">shared/log_i18n.py:1153</td></tr><tr><td class="center">51</td><td class="center">app/config</td><td class="center">ConfigManager._normalize_field_value</td><td class="center path" title="app/config/settings.py:1056">app/config/settings.py:1056</td></tr><tr><td class="center">51</td><td class="center">app/spiders</td><td class="center">BilibiliSpider._scan_with_browser_queue</td><td class="center path" title="app/spiders/bilibili/spider.py:1402">app/spiders/bilibili/spider.py:1402</td></tr><tr><td class="center">49</td><td class="center">app/ui</td><td class="center">SnapshotTableModel.data</td><td class="center path" title="app/ui/viewmodels/snapshot_table_model.py:44">app/ui/viewmodels/snapshot_table_model.py:44</td></tr><tr><td class="center">47</td><td class="center">app/core</td><td class="center">BaseDownloader._download_http_file</td><td class="center path" title="app/core/downloaders/base.py:236">app/core/downloaders/base.py:236</td></tr><tr><td class="center">44</td><td class="center">app/services</td><td class="center">FrontendStateService._build_video_sections</td><td class="center path" title="app/services/frontend_state_service.py:547">app/services/frontend_state_service.py:547</td></tr><tr><td class="center">44</td><td class="center">app/ui</td><td class="center">polish_combo_popup</td><td class="center path" title="app/ui/components/combo_popup.py:486">app/ui/components/combo_popup.py:486</td></tr><tr><td class="center">43</td><td class="center">app/spiders</td><td class="center">KuaishouSpider._run_capture_pipeline</td><td class="center path" title="app/spiders/kuaishou/spider.py:752">app/spiders/kuaishou/spider.py:752</td></tr><tr><td class="center">43</td><td class="center">app/ui</td><td class="center">build_platform_proxy_widget</td><td class="center path" title="app/ui/components/settings_platform_controls.py:84">app/ui/components/settings_platform_controls.py:84</td></tr><tr><td class="center">37</td><td class="center">app/ui</td><td class="center">load_platform_options</td><td class="center path" title="app/ui/viewmodels/log_platforms.py:39">app/ui/viewmodels/log_platforms.py:39</td></tr><tr><td class="center">37</td><td class="center">app/web</td><td class="center">WebWorkflowService.direct_download</td><td class="center path" title="app/web/workflows.py:381">app/web/workflows.py:381</td></tr>
+<tr><td class="center">98</td><td class="center">app/core</td><td class="center">ChunkedDownloader.download</td><td class="center path" title="app/core/downloaders/chunked.py:43">app/core/downloaders/chunked.py:43</td></tr><tr><td class="center">97</td><td class="center">app/core</td><td class="center">BilibiliDownloader.download</td><td class="center path" title="app/core/downloaders/bilibili.py:101">app/core/downloaders/bilibili.py:101</td></tr><tr><td class="center">78</td><td class="center">shared</td><td class="center">derive_event_stage</td><td class="center path" title="shared/log_pipeline_rules.py:610">shared/log_pipeline_rules.py:610</td></tr><tr><td class="center">74</td><td class="center">shared</td><td class="center">_localize_non_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1387">shared/log_i18n.py:1387</td></tr><tr><td class="center">73</td><td class="center">app/spiders</td><td class="center">MissAVSpider.run</td><td class="center path" title="app/spiders/missav/spider.py:339">app/spiders/missav/spider.py:339</td></tr><tr><td class="center">72</td><td class="center">shared</td><td class="center">UcrawlSDK.download_video</td><td class="center path" title="shared/sdk_runtime.py:238">shared/sdk_runtime.py:238</td></tr><tr><td class="center">58</td><td class="center">app/services</td><td class="center">AuthService.extract_cookie_dict_for_url</td><td class="center path" title="app/services/auth_service.py:118">app/services/auth_service.py:118</td></tr><tr><td class="center">56</td><td class="center">app/core</td><td class="center">FFmpegDownloader.download</td><td class="center path" title="app/core/downloaders/ffmpeg.py:153">app/core/downloaders/ffmpeg.py:153</td></tr><tr><td class="center">53</td><td class="center">app/web</td><td class="center">build_rest_router</td><td class="center path" title="app/web/rest_router.py:71">app/web/rest_router.py:71</td></tr><tr><td class="center">52</td><td class="center">shared</td><td class="center">_localize_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1166">shared/log_i18n.py:1166</td></tr><tr><td class="center">51</td><td class="center">app/config</td><td class="center">ConfigManager._normalize_field_value</td><td class="center path" title="app/config/settings.py:1056">app/config/settings.py:1056</td></tr><tr><td class="center">51</td><td class="center">app/spiders</td><td class="center">BilibiliSpider._scan_with_browser_queue</td><td class="center path" title="app/spiders/bilibili/spider.py:1402">app/spiders/bilibili/spider.py:1402</td></tr><tr><td class="center">49</td><td class="center">app/ui</td><td class="center">SnapshotTableModel.data</td><td class="center path" title="app/ui/viewmodels/snapshot_table_model.py:44">app/ui/viewmodels/snapshot_table_model.py:44</td></tr><tr><td class="center">47</td><td class="center">app/core</td><td class="center">BaseDownloader._download_http_file</td><td class="center path" title="app/core/downloaders/base.py:236">app/core/downloaders/base.py:236</td></tr><tr><td class="center">44</td><td class="center">app/services</td><td class="center">FrontendStateService._build_video_sections</td><td class="center path" title="app/services/frontend_state_service.py:547">app/services/frontend_state_service.py:547</td></tr><tr><td class="center">44</td><td class="center">app/ui</td><td class="center">polish_combo_popup</td><td class="center path" title="app/ui/components/combo_popup.py:486">app/ui/components/combo_popup.py:486</td></tr><tr><td class="center">43</td><td class="center">app/spiders</td><td class="center">KuaishouSpider._run_capture_pipeline</td><td class="center path" title="app/spiders/kuaishou/spider.py:752">app/spiders/kuaishou/spider.py:752</td></tr><tr><td class="center">43</td><td class="center">app/ui</td><td class="center">build_platform_proxy_widget</td><td class="center path" title="app/ui/components/settings_platform_controls.py:84">app/ui/components/settings_platform_controls.py:84</td></tr><tr><td class="center">37</td><td class="center">app/ui</td><td class="center">load_platform_options</td><td class="center path" title="app/ui/viewmodels/log_platforms.py:39">app/ui/viewmodels/log_platforms.py:39</td></tr><tr><td class="center">37</td><td class="center">app/web</td><td class="center">WebWorkflowService.direct_download</td><td class="center path" title="app/web/workflows.py:381">app/web/workflows.py:381</td></tr>
 </tbody>
 </table>
 </div>

@@ -5,6 +5,7 @@ import os
 import site
 import subprocess
 import sys
+import time
 import webbrowser
 from collections import defaultdict
 from html import escape
@@ -402,15 +403,17 @@ def is_test_file(path: Path, root: Path) -> bool:
 
 
 def read_text_safely(path: Path) -> str:
-    encodings = ["utf-8", "utf-8-sig", "gbk", "latin-1"]
+    # utf-8-sig 优先：避免带 BOM 的源文件被 utf-8 读入后残留 U+FEFF，导致 AST 解析失败。
+    encodings = ["utf-8-sig", "utf-8", "gbk", "latin-1"]
 
     for enc in encodings:
         try:
-            return path.read_text(encoding=enc)
+            text = path.read_text(encoding=enc)
         except UnicodeDecodeError:
             continue
         except Exception:
             return ""
+        return text.lstrip("\ufeff")
 
     return ""
 
@@ -457,6 +460,52 @@ def count_lines(path: Path) -> dict:
     }
 
 
+def _parametrize_case_count(decorator_list: list[ast.expr], module: ast.AST) -> int:
+    """估算 @pytest.mark.parametrize 展开数；无法静态识别时按 1 计。"""
+    total = 1
+    found = False
+
+    def resolve_sequence_length(node: ast.AST) -> int:
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return len(node.elts)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "range"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, int)
+            and node.args[0].value >= 0
+        ):
+            return int(node.args[0].value)
+        if isinstance(node, ast.Name):
+            for stmt in getattr(module, "body", []):
+                if not isinstance(stmt, ast.Assign):
+                    continue
+                if any(isinstance(target, ast.Name) and target.id == node.id for target in stmt.targets):
+                    if isinstance(stmt.value, (ast.List, ast.Tuple)):
+                        return len(stmt.value.elts)
+        return 0
+
+    for decorator in decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        func = decorator.func
+        is_parametrize = (
+            (isinstance(func, ast.Attribute) and func.attr == "parametrize")
+            or (isinstance(func, ast.Name) and func.id == "parametrize")
+        )
+        if not is_parametrize:
+            continue
+        found = True
+        if len(decorator.args) < 2:
+            continue
+        length = resolve_sequence_length(decorator.args[1])
+        if length > 0:
+            total *= length
+    return total if found else 1
+
+
 def count_test_cases(path: Path) -> int:
     """Count Python test definitions statically without importing test modules."""
     if path.suffix.lower() != ".py":
@@ -470,17 +519,17 @@ def count_test_cases(path: Path) -> int:
         return 0
 
     function_nodes = (ast.FunctionDef, ast.AsyncFunctionDef)
-    count = 0
-    for node in module.body:
-        if isinstance(node, function_nodes) and node.name.startswith("test_"):
-            count += 1
-        elif isinstance(node, ast.ClassDef):
-            count += sum(
-                1
-                for member in node.body
-                if isinstance(member, function_nodes) and member.name.startswith("test_")
-            )
-    return count
+
+    def walk(nodes: list[ast.stmt]) -> int:
+        count = 0
+        for node in nodes:
+            if isinstance(node, function_nodes) and node.name.startswith("test_"):
+                count += _parametrize_case_count(node.decorator_list, module)
+            elif isinstance(node, ast.ClassDef):
+                count += walk(node.body)
+        return count
+
+    return walk(module.body)
 
 
 def normalize_rel_path(path: str | Path) -> str:
@@ -1334,9 +1383,9 @@ def render_repository_link(repository_url: str) -> str:
 """
 
 
-def render_kpi_card(label: str, value: int, hint: str, icon: str) -> str:
+def render_kpi_card(label: str, value: int, hint: str, icon: str, tone: str = "sky") -> str:
     return f"""
-<article class="metric-card">
+<article class="metric-card metric-{escape(tone)}">
 <div class="metric-top">
 <span class="metric-icon">{escape(icon)}</span>
 <span class="metric-label">{escape(label)}</span>
@@ -1576,34 +1625,60 @@ def render_table(title: str, columns: list[tuple[str, str]], rows: list[list[obj
 REPORT_CSS = """
 :root {
     color-scheme: light;
-    --bg: #eef3f9;
-    --panel: #ffffff;
-    --text: #0f172a;
-    --muted: #64748b;
-    --line: #dbe4f0;
-    --blue: #2563eb;
-    --blue2: #38bdf8;
-    --green: #10b981;
-    --orange: #f59e0b;
-    --red: #ef4444;
-    --purple: #8b5cf6;
-    --shadow: 0 20px 55px rgba(15, 23, 42, 0.10);
+    --bg: #fff5f8;
+    --panel: #fffafc;
+    --text: #3b2a35;
+    --muted: #8b7380;
+    --line: #f3d5e2;
+    --blue: #7eb6ff;
+    --blue2: #b8e0ff;
+    --green: #7dd3b0;
+    --orange: #ffb4a2;
+    --red: #ff8fab;
+    --pink: #ff9ec8;
+    --peach: #ffc9a3;
+    --mint: #9be7c4;
+    --sky: #9fd4ff;
+    --lavender: #d4b8ff;
+    --cream: #fff7fb;
+    --shadow: 0 18px 40px rgba(255, 158, 200, 0.18);
+    --shadow-soft: 0 10px 28px rgba(255, 182, 193, 0.22);
 }
 * {
     box-sizing: border-box;
 }
+html {
+    min-height: 100%;
+    background-color: #ffe9f2;
+    scroll-behavior: auto;
+}
 body {
     margin: 0;
-    background:
-        linear-gradient(180deg, rgba(226, 235, 247, 0.92), var(--bg) 360px),
-        var(--bg);
+    min-height: 100vh;
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
     font-size: 15px;
+    /* 随文档滚动平铺，不再用 fixed 四角光斑（长页滚动会上下截断） */
+    background-color: #ffe9f2;
+    background-image:
+        radial-gradient(circle, rgba(255, 196, 220, 0.95) 1.05px, transparent 1.05px),
+        repeating-linear-gradient(
+            180deg,
+            #ffd6e8 0px,
+            #ffe9f2 220px,
+            #eaf4ff 440px,
+            #f3eaff 660px,
+            #fff1e8 880px,
+            #ffd6e8 1100px
+        );
+    background-size: 22px 22px, 100% 1100px;
+    background-repeat: repeat, repeat;
+    background-attachment: scroll;
 }
 .page {
     width: min(1280px, calc(100% - 48px));
-    margin: 32px auto 56px;
+    margin: 32px auto 48px;
+    padding: 0;
 }
 .hero {
     position: relative;
@@ -1620,7 +1695,7 @@ body {
         linear-gradient(135deg, #0f172a 0%, #1d4ed8 72%, #38bdf8 130%);
     background-size: 34px 34px, 34px 34px, auto;
     border-radius: 20px;
-    box-shadow: var(--shadow);
+    box-shadow: 0 20px 55px rgba(15, 23, 42, 0.16);
 }
 .hero::after {
     content: "";
@@ -1633,6 +1708,7 @@ body {
 .hero-stat {
     position: relative;
     z-index: 1;
+    min-width: 0;
 }
 .hero-title {
     margin: 0;
@@ -1700,7 +1776,10 @@ body {
     fill: currentColor;
 }
 .hero-stat {
-    align-self: end;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     padding: 24px;
     background: rgba(255, 255, 255, 0.12);
     border: 1px solid rgba(255, 255, 255, 0.20);
@@ -1734,19 +1813,47 @@ body {
 .chart-card,
 .report-section,
 .insights {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.07);
+    position: relative;
+    overflow: hidden;
+    background:
+        linear-gradient(165deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 252, 0.94));
+    border: 2px solid #ffd6e7;
+    border-radius: 28px;
+    box-shadow: var(--shadow-soft);
+}
+.metric-card::before,
+.chart-card::before,
+.report-section::before,
+.insights::before {
+    content: "";
+    position: absolute;
+    top: -18px;
+    right: -12px;
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(255, 182, 213, 0.45), transparent 68%);
+    pointer-events: none;
 }
 .metric-card {
-    padding: 18px;
-    transition: transform 160ms ease, box-shadow 160ms ease;
+    padding: 18px 18px 16px;
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 .metric-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 22px 44px rgba(15, 23, 42, 0.10);
+    transform: translateY(-4px) scale(1.01);
+    box-shadow: 0 18px 36px rgba(255, 158, 200, 0.28);
+    border-color: #ffb7d5;
 }
+.metric-strawberry { border-color: #ffc1d9; }
+.metric-peach { border-color: #ffd2b5; }
+.metric-mint { border-color: #b8efd4; }
+.metric-sky { border-color: #b9e0ff; }
+.metric-lavender { border-color: #e0ccff; }
+.metric-strawberry .metric-icon { color: #e85a8c; background: #ffe0ec; }
+.metric-peach .metric-icon { color: #e8894c; background: #ffe8d6; }
+.metric-mint .metric-icon { color: #2f9d6a; background: #d9f8e8; }
+.metric-sky .metric-icon { color: #3b82c4; background: #dff0ff; }
+.metric-lavender .metric-icon { color: #8b5bb8; background: #efe4ff; }
 .metric-top {
     display: flex;
     align-items: center;
@@ -1756,23 +1863,25 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
-    color: var(--blue);
-    background: #e8f1ff;
+    width: 38px;
+    height: 38px;
     border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 6px 14px rgba(255, 158, 200, 0.18);
     font-weight: 800;
 }
 .metric-label,
 .meta-label {
     color: var(--muted);
     font-size: 13px;
+    font-weight: 650;
 }
 .metric-value {
     margin-top: 14px;
     font-size: 30px;
     font-weight: 800;
     line-height: 1;
+    color: #4a3040;
     font-variant-numeric: tabular-nums;
 }
 .metric-hint {
@@ -1790,6 +1899,15 @@ body {
     min-height: 390px;
     padding: 20px;
 }
+.chart-card-donut {
+    border-color: #ffc9dd;
+}
+.dashboard-grid .chart-card:nth-child(2) {
+    border-color: #bfe9ff;
+}
+.dashboard-grid .chart-card:nth-child(3) {
+    border-color: #c8f0da;
+}
 .chart-head {
     display: flex;
     align-items: flex-start;
@@ -1803,6 +1921,14 @@ body {
     margin: 0;
     font-size: 18px;
     line-height: 1.35;
+    color: #5a3a4a;
+}
+.chart-head h2::before,
+.report-section h2::before,
+.section-title h2::before {
+    content: "♡ ";
+    color: #ff8fbf;
+    font-weight: 500;
 }
 .chart-head p,
 .section-title p {
@@ -1820,21 +1946,24 @@ body {
     width: 196px;
     height: 196px;
     border-radius: 999px;
-    background: conic-gradient(var(--orange) 0deg var(--test-deg), var(--blue) var(--test-deg) 360deg);
-    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    background: conic-gradient(#ffb4c8 0deg var(--test-deg), #9fd4ff var(--test-deg) 360deg);
+    box-shadow:
+        inset 0 0 0 3px rgba(255, 255, 255, 0.65),
+        0 12px 28px rgba(255, 158, 200, 0.25);
 }
 .donut-hole {
     display: grid;
     place-items: center;
     width: 126px;
     height: 126px;
-    background: #ffffff;
+    background: linear-gradient(180deg, #ffffff, #fff5f9);
     border-radius: 999px;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 10px 22px rgba(255, 158, 200, 0.18);
 }
 .donut-value {
     font-size: 30px;
     font-weight: 800;
+    color: #e85a8c;
     font-variant-numeric: tabular-nums;
 }
 .donut-label {
@@ -1852,7 +1981,11 @@ body {
     grid-template-columns: auto 1fr auto auto;
     gap: 8px;
     align-items: center;
+    padding: 8px 10px;
     color: var(--muted);
+    background: rgba(255, 245, 250, 0.8);
+    border: 1px solid #ffe0ec;
+    border-radius: 14px;
 }
 .legend-item strong,
 .legend-item em {
@@ -1861,15 +1994,16 @@ body {
     font-variant-numeric: tabular-nums;
 }
 .legend-dot {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8);
 }
 .legend-prod {
-    background: var(--blue);
+    background: #9fd4ff;
 }
 .legend-test {
-    background: var(--orange);
+    background: #ffb4c8;
 }
 .bar-chart {
     display: grid;
@@ -1888,31 +2022,32 @@ body {
 }
 .bar-name {
     overflow: hidden;
-    color: #334155;
+    color: #5a3a4a;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .bar-track {
-    height: 10px;
+    height: 12px;
     overflow: hidden;
-    background: #e7edf6;
+    background: #ffe9f1;
     border-radius: 999px;
+    box-shadow: inset 0 1px 2px rgba(255, 143, 191, 0.15);
 }
 .bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, rgba(37, 99, 235, 0.48), rgba(37, 99, 235, 0.92));
+    background: linear-gradient(90deg, #ffc2d9, #ff8fbf);
     border-radius: inherit;
 }
 .bar-fill-primary {
-    background: linear-gradient(90deg, var(--blue), var(--blue2));
+    background: linear-gradient(90deg, #ffb4c8, #ff8fab 55%, #ffc9a3);
 }
 .bar-fill-file {
-    background: linear-gradient(90deg, var(--green), var(--blue2));
+    background: linear-gradient(90deg, #9be7c4, #9fd4ff);
 }
 .bar-value,
 .bar-ratio {
     text-align: right;
-    color: #334155;
+    color: #5a3a4a;
 }
 .file-bar-row {
     grid-template-columns: minmax(120px, 1.4fr) auto minmax(90px, 1fr) 72px;
@@ -1928,8 +2063,8 @@ body {
     white-space: nowrap;
 }
 .file-name {
-    color: #1e293b;
-    font-weight: 650;
+    color: #4a3040;
+    font-weight: 700;
 }
 .file-path {
     margin-top: 2px;
@@ -1954,40 +2089,47 @@ body {
 }
 .insight-card {
     padding: 16px;
-    background: #f8fafc;
-    border: 1px solid var(--line);
-    border-radius: 14px;
+    background: #fff7fb;
+    border: 2px solid #ffd6e7;
+    border-radius: 22px;
+    box-shadow: 0 8px 18px rgba(255, 182, 193, 0.14);
+    transition: transform 160ms ease;
+}
+.insight-card:hover {
+    transform: translateY(-2px);
 }
 .insight-label {
     color: var(--muted);
     font-size: 13px;
+    font-weight: 650;
 }
 .insight-value {
     margin-top: 8px;
     font-size: 23px;
     font-weight: 800;
+    color: #4a3040;
     font-variant-numeric: tabular-nums;
 }
 .insight-card p {
     margin: 10px 0 0;
-    color: #475569;
+    color: #7a5a68;
     line-height: 1.55;
 }
 .insight-good {
-    border-color: rgba(16, 185, 129, 0.26);
-    background: #f0fdf8;
+    border-color: #b8efd4;
+    background: linear-gradient(165deg, #f3fff8, #e8fbf1);
 }
 .insight-watch {
-    border-color: rgba(245, 158, 11, 0.28);
-    background: #fffbeb;
+    border-color: #ffd2b5;
+    background: linear-gradient(165deg, #fff8f1, #ffefdf);
 }
 .insight-risk {
-    border-color: rgba(239, 68, 68, 0.26);
-    background: #fff1f2;
+    border-color: #ffc1d9;
+    background: linear-gradient(165deg, #fff5f8, #ffe4ef);
 }
 .insight-neutral {
-    border-color: rgba(37, 99, 235, 0.18);
-    background: #eff6ff;
+    border-color: #b9e0ff;
+    background: linear-gradient(165deg, #f5fbff, #e8f5ff);
 }
 .report-section {
     margin-top: 18px;
@@ -1995,8 +2137,9 @@ body {
 }
 .table-wrap {
     overflow-x: auto;
-    border: 1px solid var(--line);
-    border-radius: 12px;
+    border: 2px solid #ffe0ec;
+    border-radius: 18px;
+    background: #fffafc;
 }
 table {
     width: 100%;
@@ -2007,7 +2150,7 @@ table {
 th,
 td {
     padding: 11px 13px;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid #ffe6f0;
     text-align: center;
     vertical-align: middle;
     white-space: normal;
@@ -2016,12 +2159,12 @@ td {
     font-variant-numeric: tabular-nums;
 }
 th {
-    color: #334155;
-    background: #eef5fb;
+    color: #7a4a62;
+    background: linear-gradient(180deg, #ffe9f2, #ffdceb);
     font-weight: 700;
 }
 tbody tr:hover {
-    background: #f8fbff;
+    background: #fff3f8;
 }
 tr:last-child td {
     border-bottom: none;
@@ -2038,52 +2181,54 @@ tr:last-child td {
     align-items: center;
     justify-content: center;
     min-width: 46px;
-    padding: 3px 8px;
+    padding: 4px 10px;
     border-radius: 999px;
     font-size: 12px;
     font-weight: 800;
     line-height: 1.2;
     letter-spacing: 0;
+    box-shadow: 0 4px 10px rgba(255, 158, 200, 0.12);
 }
 .badge-test {
-    color: #9a3412;
-    background: #ffedd5;
-    border: 1px solid #fdba74;
+    color: #c45c2a;
+    background: #ffe8d6;
+    border: 1px solid #ffc9a3;
 }
 .badge-prod {
-    color: #1d4ed8;
-    background: #dbeafe;
-    border: 1px solid #93c5fd;
+    color: #3b82c4;
+    background: #dff0ff;
+    border: 1px solid #9fd4ff;
 }
 .badge-risk {
-    color: #b91c1c;
-    background: #fee2e2;
-    border: 1px solid #fca5a5;
+    color: #d63b6a;
+    background: #ffe0ec;
+    border: 1px solid #ffb4c8;
 }
 .badge-watch {
-    color: #b45309;
-    background: #ffedd5;
-    border: 1px solid #fdba74;
+    color: #d07a2e;
+    background: #fff0dd;
+    border: 1px solid #ffd2b5;
 }
 .badge-ok {
-    color: #047857;
-    background: #d1fae5;
-    border: 1px solid #6ee7b7;
+    color: #2f9d6a;
+    background: #d9f8e8;
+    border: 1px solid #9be7c4;
 }
 .gate-banner {
     margin-top: 18px;
     padding: 16px 18px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: #f8fafc;
+    border-radius: 24px;
+    border: 2px solid #ffd6e7;
+    background: #fff7fb;
+    box-shadow: var(--shadow-soft);
 }
 .gate-banner.gate-pass {
-    border-color: rgba(16, 185, 129, 0.28);
-    background: #f0fdf8;
+    border-color: #b8efd4;
+    background: linear-gradient(165deg, #f3fff8, #e8fbf1);
 }
 .gate-banner.gate-fail {
-    border-color: rgba(239, 68, 68, 0.28);
-    background: #fff1f2;
+    border-color: #ffc1d9;
+    background: linear-gradient(165deg, #fff5f8, #ffe4ef);
 }
 .gate-banner h2 {
     margin: 0 0 8px;
@@ -2118,7 +2263,8 @@ tr:last-child td {
 @media (max-width: 720px) {
     .page {
         width: min(100% - 28px, 1280px);
-        margin-top: 18px;
+        margin: 20px auto 32px;
+        padding: 0;
     }
     .hero,
     .dashboard-grid,
@@ -2150,6 +2296,7 @@ tr:last-child td {
 @media print {
     body {
         background: #ffffff;
+        background-image: none;
     }
     .hero,
     .metric-card,
@@ -2200,15 +2347,16 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
     prod_code = totals["prod"]["code"]
     test_code = totals["test"]["code"]
     kpi_cards = [
-        render_kpi_card("代码文件数", result["code_files"], "纳入统计的源代码文件", "#"),
-        render_kpi_card("总行数", all_totals["total"], "包含空行与注释", "Σ"),
-        render_kpi_card("有效代码行数", all_totals["code"], "排除空行与注释", "</>"),
-        render_kpi_card("测试代码行数", test_code, "识别为测试文件的有效代码", "T"),
+        render_kpi_card("代码文件数", result["code_files"], "纳入统计的源代码文件", "✦", "strawberry"),
+        render_kpi_card("总行数", all_totals["total"], "包含空行与注释", "Σ", "peach"),
+        render_kpi_card("有效代码行数", all_totals["code"], "排除空行与注释", "</>", "mint"),
+        render_kpi_card("测试代码行数", test_code, "识别为测试文件的有效代码", "★", "sky"),
         render_kpi_card(
             "\u6d4b\u8bd5\u7528\u4f8b\u6570",
             result["test_cases"],
             "\u9759\u6001\u8bc6\u522b\u7684\u6d4b\u8bd5\u7528\u4f8b\u5b9a\u4e49",
-            "TC",
+            "♡",
+            "lavender",
         ),
     ]
 
@@ -2224,8 +2372,8 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 </style>
 </head>
 <body>
-<main class="page">
-<section class="hero">
+<main class="page" id="report-top">
+<section class="hero" aria-label="报告概览">
 <div class="hero-content">
 <h1 class="hero-title">项目代码量统计报告</h1>
 <p class="hero-subtitle">静态代码规模、模块分布、测试占比、复杂度热点与大文件风险概览</p>
@@ -2356,7 +2504,9 @@ def open_report_html(report_path: str | Path) -> bool:
     """使用系统默认浏览器打开生成后的本地 HTML 报告。"""
     path = Path(report_path).expanduser().resolve()
     try:
-        return bool(webbrowser.open_new_tab(path.as_uri()))
+        # 唯一 query 避免沿用旧会话滚动缓存；#report-top 定位报告顶部
+        url = f"{path.as_uri()}?v={time.time_ns()}#report-top"
+        return bool(webbrowser.open_new_tab(url))
     except (OSError, ValueError, webbrowser.Error):
         return False
 
