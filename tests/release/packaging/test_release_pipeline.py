@@ -15,6 +15,7 @@ from tests.support.paths import PROJECT_ROOT
 
 
 BUILD_RELEASE_TOOL = PROJECT_ROOT / "packaging" / "build_release.py"
+BUILD_PORTABLE_TOOL = PROJECT_ROOT / "packaging" / "build_portable.py"
 UPDATE_MANIFEST_TOOL = PROJECT_ROOT / "packaging" / "update_manifest.py"
 
 
@@ -40,6 +41,20 @@ def _load_tool():
 def _load_manifest_tool():
     spec = importlib.util.spec_from_file_location(
         "ucrawl_release_manifest_tool", UPDATE_MANIFEST_TOOL
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_portable_tool():
+    packaging_dir = str(BUILD_PORTABLE_TOOL.parent)
+    if packaging_dir not in sys.path:
+        sys.path.insert(0, packaging_dir)
+    spec = importlib.util.spec_from_file_location(
+        "ucrawl_release_portable_tool", BUILD_PORTABLE_TOOL
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -209,6 +224,34 @@ def test_run_build_passes_the_parent_release_lock_token_to_snapshot_script(tmp_p
     environment = run.call_args.kwargs["env"]
     assert environment["UCRAWL_RELEASE_LOCK_TOKEN"] == "release-token"
     assert environment["UCRAWL_RELEASE_LOCK_ROOT"] == str(lock_root.resolve())
+    assert environment["UCRAWL_USER_DATA_ROOT"] == str(
+        snapshot_root.resolve() / "build" / "runtime-user-data"
+    )
+
+
+def test_portable_build_removes_generated_launchers_when_pyinstaller_fails(tmp_path):
+    tool = _load_portable_tool()
+    packaging_dir = tmp_path / "packaging"
+    packaging_dir.mkdir()
+    launchers = [
+        packaging_dir / name for name in tool.GENERATED_LAUNCHER_NAMES
+    ]
+
+    def fail_after_generating_launchers():
+        for launcher in launchers:
+            launcher.write_text("generated\n", encoding="utf-8")
+        raise subprocess.CalledProcessError(1, ["PyInstaller"])
+
+    with (
+        patch.object(tool, "PROJECT_ROOT", tmp_path),
+        patch.object(tool, "ensure_prerequisites"),
+        patch.object(tool, "clean_previous_outputs"),
+        patch.object(tool, "run_pyinstaller", side_effect=fail_after_generating_launchers),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        tool._build_portable()
+
+    assert all(not launcher.exists() for launcher in launchers)
 
 
 @pytest.mark.parametrize("script_name", ["build_portable.py", "build_installer.py"])

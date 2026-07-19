@@ -91,6 +91,11 @@ REQUIRED_FILES = [
     PROJECT_ROOT / "entry" / "web_port_dialog.py",
 ]
 FORBIDDEN_BASENAMES = set(FORBIDDEN_USER_DATA_BASENAMES)
+GENERATED_LAUNCHER_NAMES = (
+    "_webui_launcher.py",
+    "_gui_launcher.py",
+    "_updater_helper_launcher.py",
+)
 # 可能占用 dist 目录的进程名
 LOCKING_PROCESSES = [
     LAUNCHER_EXE_NAME,
@@ -148,8 +153,17 @@ def clean_previous_outputs() -> None:
             except Exception as e:
                 print(f"警告: 清理 {child} 失败: {e}")
 
-    # 4. 清理 spec 生成的临时 launcher
-    for launcher_name in ("_webui_launcher.py", "_gui_launcher.py", "_updater_helper_launcher.py"):
+    # 4. 清理上次异常构建遗留的 spec 临时 launcher
+    cleanup_generated_launchers()
+
+
+def cleanup_generated_launchers() -> None:
+    """删除 portable.spec 生成的临时入口脚本。
+
+    这些文件只是 PyInstaller Analysis/EXE 的输入，不属于 sourceCommit。
+    必须在成功和失败路径都清理，避免污染正式发布的只读源码快照。
+    """
+    for launcher_name in GENERATED_LAUNCHER_NAMES:
         launcher = PROJECT_ROOT / "packaging" / launcher_name
         launcher.unlink(missing_ok=True)
 
@@ -328,12 +342,15 @@ def _validate_project_root(project_root: str | Path) -> Path:
 def _build_portable() -> None:
     ensure_prerequisites()
     clean_previous_outputs()
-    run_pyinstaller()
-    copy_python_sqlite_runtime_files()
-    copy_portable_root_docs()
-    verify_output()
-    write_manifest()
-    print(f"绿色版构建完成: {DIST_DIR}")
+    try:
+        run_pyinstaller()
+        copy_python_sqlite_runtime_files()
+        copy_portable_root_docs()
+        verify_output()
+        write_manifest()
+        print(f"绿色版构建完成: {DIST_DIR}")
+    finally:
+        cleanup_generated_launchers()
 
 
 def main(argv: list[str] | None = None) -> None:

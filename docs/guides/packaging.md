@@ -176,6 +176,8 @@ python packaging/build_release.py
 
 Windows 发布快照默认写入仓库同级的 `.ucrawl-release-tmp` 短目录。该边界用于控制 Playwright、Qt 等深层随包资源的绝对路径长度，防止 Inno Setup 压缩接近结束时才因传统 Win32 路径上限失败。需要切换构建盘时可设置 `UCRAWL_RELEASE_TEMP_ROOT`，但必须使用短、可写的本地路径；不要指向仓库目录或网络共享。
 
+冻结分析会执行少量模块导入，因此构建编排必须将 `UCRAWL_USER_DATA_ROOT` 指向快照内已隔离的 `build/runtime-user-data`。`portable.spec` 生成的三个临时入口脚本也必须由 `build_portable.py` 在 `finally` 中清理。发布门禁仍对其余快照文件逐项计算 SHA-256；构建副作用应被隔离或回收，不能靠白名单跳过源码完整性验证。
+
 只做本地构建或生产信任 bootstrap 时必须显式使用：
 
 ```bash

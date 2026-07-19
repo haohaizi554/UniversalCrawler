@@ -160,6 +160,8 @@ python packaging/build_release.py
 
 Windows 正式发布快照默认放在仓库同级的 `.ucrawl-release-tmp` 短目录中，并使用短工作区名称，避免 Playwright 深层资源在 Inno Setup 内部处理时触发传统 Win32 路径上限。发布机需要改用其他磁盘时可设置 `UCRAWL_RELEASE_TEMP_ROOT`；该值必须指向短、可写的本地目录，不应放在仓库内或网络共享中。
 
+PyInstaller 的分析阶段会导入部分应用模块。正式发布会将 `UCRAWL_USER_DATA_ROOT` 强制隔离到快照的 `build/runtime-user-data`，并在成功或异常路径清理 `portable.spec` 生成的临时 launcher。不要通过放宽源码指纹校验来容忍这些构建副作用；`sourceCommit` 快照除 `build/`、`dist/` 与字节码缓存外必须保持完全不变。
+
 只需要便携版和安装器时使用：
 
 ```bash

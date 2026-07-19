@@ -26,6 +26,7 @@ DEFAULT_RELEASE_REPOSITORY = "haohaizi554/UniversalCrawler"
 WINDOWS_RELEASE_TOOLS = ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe")
 MIN_WINDOWS_TOOL_BYTES = 1024 * 1024
 RELEASE_TEMP_ROOT_ENV = "UCRAWL_RELEASE_TEMP_ROOT"
+USER_DATA_ROOT_ENV = "UCRAWL_USER_DATA_ROOT"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -53,6 +54,10 @@ def _run_build(
     environment = os.environ.copy()
     environment[LOCK_TOKEN_ENV] = str(lock_token)
     environment[LOCK_ROOT_ENV] = str(Path(lock_root).resolve())
+    # PyInstaller imports selected modules while analyzing the graph. Isolate any
+    # import-time runtime state below build/ so a release never mutates its
+    # immutable sourceCommit snapshot or captures a developer's user data.
+    environment[USER_DATA_ROOT_ENV] = str(root / "build" / "runtime-user-data")
     subprocess.run(
         [
             sys.executable,
