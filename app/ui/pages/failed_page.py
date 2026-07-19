@@ -22,7 +22,7 @@ from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from shared.failed_page_projection import prepare_failed_item_for_display
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
-from app.utils.qt_lifecycle import connect_destroyed_cleanup, guarded_qt_callback
+from app.utils.qt_lifecycle import ShutdownResourceSlot, guarded_qt_callback
 from app.utils.qt_runtime import load_qt_icon
 
 
@@ -215,9 +215,8 @@ class FailedPage(PageFrame):
         self._syncing_selection = False
         self._page_sequence = 0
         self._page_request_preserves_selection = False
-        self._page_worker: ListPageWorker | None = None
+        self._page_worker_slot = ShutdownResourceSlot[ListPageWorker]()
         self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
-        connect_destroyed_cleanup(self, self._shutdown_page_worker)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
@@ -694,11 +693,19 @@ class FailedPage(PageFrame):
         return ok
 
     def _shutdown_page_worker(self) -> None:
-        worker = self._page_worker
-        self._page_worker = None
-        if worker is not None:
-            worker.shutdown()
+        self._page_worker_slot.shutdown()
+
+    def shutdown(self) -> None:
+        self._shutdown_page_worker()
 
     def deleteLater(self) -> None:
-        self._shutdown_page_worker()
+        self.shutdown()
         super().deleteLater()
+
+    @property
+    def _page_worker(self) -> ListPageWorker | None:
+        return self._page_worker_slot.value
+
+    @_page_worker.setter
+    def _page_worker(self, worker: ListPageWorker | None) -> None:
+        self._page_worker_slot.value = worker

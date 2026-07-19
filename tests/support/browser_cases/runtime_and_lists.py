@@ -3,6 +3,37 @@
 from __future__ import annotations
 
 class RuntimeAndListCases:
+    def test_ready_helper_accepts_websocket_state_while_rest_snapshot_is_pending(self):
+        from tests.support.browser_runtime import _wait_for_webui_ready
+
+        context = self._browser.new_context(viewport={"width": 1280, "height": 720})
+        self.addCleanup(context.close)
+        page = context.new_page()
+        self.addCleanup(page.close)
+        pending_routes = []
+        page.route("**/api/frontend/state", lambda route: pending_routes.append(route))
+
+        def release_state_request():
+            for route in pending_routes:
+                try:
+                    route.abort("aborted")
+                except Exception:
+                    pass
+
+        self.addCleanup(release_state_request)
+        _wait_for_webui_ready(page, self._server_url)
+
+        state = page.evaluate(
+            """
+            () => ({
+              loaded: window.__ucrawlFrontendStateLoaded === true,
+              settled: window.__ucrawlFrontendStateSettled === true,
+            })
+            """
+        )
+        self.assertTrue(state["loaded"])
+        self.assertFalse(state["settled"])
+
     def test_completed_delete_is_optimistic_and_selects_the_adjacent_item(self):
         self._goto_ready()
         result = self._page.evaluate(

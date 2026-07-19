@@ -176,7 +176,7 @@ def _wait_for_webui_ready(page, server_url: str) -> None:
         """,
         timeout=5000,
     )
-    page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
+    page.wait_for_function("window.__ucrawlFrontendStateLoaded === true", timeout=5000)
 
 def _install_webui_test_helpers(page) -> None:
     page.evaluate(

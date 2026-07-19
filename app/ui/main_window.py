@@ -2193,7 +2193,12 @@ class MainWindow(QMainWindow):
         self._connections.disconnect_all()
         self._remove_frameless_resize_event_filter()
         self._remove_windows_native_frame_filter()
-        self.cleanup_media()
+        app_shell = self.__dict__.get("app_shell")
+        shutdown_shell = getattr(app_shell, "shutdown", None)
+        if callable(shutdown_shell):
+            shutdown_shell()
+        else:
+            self.cleanup_media()
         self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
         event_bus_shutdown = getattr(self.event_bus, "shutdown", None)
         if self.__dict__.get("_owns_event_bus", False) and callable(event_bus_shutdown):

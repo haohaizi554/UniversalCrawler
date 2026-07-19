@@ -39,7 +39,7 @@ from app.ui.viewmodels.list_page_worker import (
     ListPageWorker,
     preferred_visible_selection,
 )
-from app.utils.qt_lifecycle import connect_destroyed_cleanup
+from app.utils.qt_lifecycle import ShutdownResourceSlot
 from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
@@ -738,9 +738,8 @@ class ActiveDownloadsPage(PageFrame):
         self._translation_dirty = True
         self._running_count_value: int | None = None
         self._items_sequence = 0
-        self._items_worker: ListPageWorker | None = None
+        self._items_worker_slot = ShutdownResourceSlot[ListPageWorker]()
         self._items_result_ready.connect(self._apply_items_result, Qt.ConnectionType.QueuedConnection)
-        connect_destroyed_cleanup(self, self._shutdown_items_worker)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
 
@@ -1273,11 +1272,19 @@ class ActiveDownloadsPage(PageFrame):
         return self.table.select_id(item_id) or item_id in self._id_order
 
     def _shutdown_items_worker(self) -> None:
-        worker = self._items_worker
-        self._items_worker = None
-        if worker is not None:
-            worker.shutdown()
+        self._items_worker_slot.shutdown()
+
+    def shutdown(self) -> None:
+        self._shutdown_items_worker()
 
     def deleteLater(self) -> None:
-        self._shutdown_items_worker()
+        self.shutdown()
         super().deleteLater()
+
+    @property
+    def _items_worker(self) -> ListPageWorker | None:
+        return self._items_worker_slot.value
+
+    @_items_worker.setter
+    def _items_worker(self, worker: ListPageWorker | None) -> None:
+        self._items_worker_slot.value = worker

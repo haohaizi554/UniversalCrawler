@@ -66,6 +66,7 @@ class AppShell(QWidget):
         self._language = "zh-CN"
         self._translation_dirty_pages: set[str] = set()
         self._top_quantity_signature: tuple | None = None
+        self._shutdown_done = False
         self._page_item_rows: dict[str, dict[str, int]] = {
             "queue": {},
             "active": {},
@@ -772,3 +773,19 @@ class AppShell(QWidget):
             cleanup = getattr(page, "cleanup", None)
             if callable(cleanup):
                 cleanup()
+
+    def shutdown(self) -> None:
+        """Stop page workers before Qt begins destroying the widget tree."""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+        for page in self.pages.values():
+            shutdown = getattr(page, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        self.cleanup_media()
+
+    def deleteLater(self) -> None:
+        # QObject.destroyed 已进入 C++ 析构阶段，worker 和媒体对象必须提前释放。
+        self.shutdown()
+        super().deleteLater()
