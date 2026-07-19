@@ -96,6 +96,8 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
             ("building installer artifacts", "build_installer"),
             ("signing the manifest", "sign_manifest"),
             ("smoke testing", "run_smoke_tests"),
+            ("uploading release assets", "upload_release_assets"),
+            ("remote asset verification", "verify_remote_assets"),
         ):
             if not getattr(request, attribute):
                 errors.append(f"new release publication requires {label}")

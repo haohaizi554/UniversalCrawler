@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from .events import redact_release_text
 from .models import BuildRequest, ReleaseMode, ReleaseResult, ReleaseStage, RemoteReleaseInfo
 from .modes import resolve_release_mode, validate_build_request
+from .proxy import validate_proxy_label_reference
 from .versioning import VersionUpdatePlan, VersionUpdateResult, normalize_version
 
 
@@ -39,7 +40,7 @@ class ReleasePipelineHooks:
     run_smoke_tests: Callable[[], None]
     sign_manifest: Callable[[BuildRequest], tuple[Path, ...]]
     commit_version_changes: Callable[[BuildRequest], str]
-    push_main: Callable[[BuildRequest], None]
+    push_main: Callable[[BuildRequest, str], None]
     ensure_tag: Callable[[BuildRequest, str], None]
     ensure_release: Callable[[BuildRequest], None]
     upload_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
@@ -199,7 +200,7 @@ def run_release_request(
                     if request.commit_version_changes:
                         commit = hooks.commit_version_changes(request)
                     if request.push_main:
-                        hooks.push_main(request)
+                        hooks.push_main(request, commit)
                     if request.create_or_reuse_tag:
                         hooks.ensure_tag(request, commit)
 
@@ -297,6 +298,9 @@ def load_request_file(path: Path) -> BuildRequest:
         raise ValueError("release request requires target_version")
     values["target_version"] = normalize_version(str(values["target_version"]))
     _validate_secret_reference(str(values.get("private_key_path", "")))
+    values["proxy_label"] = validate_proxy_label_reference(
+        str(values.get("proxy_label", BuildRequest.__dataclass_fields__["proxy_label"].default))
+    )
     _validate_proxy_reference(str(values.get("custom_proxy", "")))
     return BuildRequest(**values)
 

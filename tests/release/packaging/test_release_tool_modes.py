@@ -1,5 +1,5 @@
 import sys
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -236,7 +236,34 @@ def test_new_release_publication_requires_the_complete_formal_chain():
         "new release publication requires building installer artifacts",
         "new release publication requires signing the manifest",
         "new release publication requires smoke testing",
+        "new release publication requires uploading release assets",
+        "new release publication requires remote asset verification",
     }.issubset(errors)
+
+
+@pytest.mark.parametrize(
+    ("omitted", "message"),
+    [
+        ("upload_release_assets", "new release publication requires uploading release assets"),
+        ("verify_remote_assets", "new release publication requires remote asset verification"),
+    ],
+)
+def test_new_release_publication_rejects_omitted_upload_or_verification(omitted, message):
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        private_key_path="private.pem",
+        sign_manifest=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+
+    assert message in validate_build_request(replace(request, **{omitted: False}))
 
 
 def test_upload_public_key_requires_a_release_and_remote_verification():

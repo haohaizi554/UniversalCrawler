@@ -108,7 +108,7 @@ class RecordingHooks:
         self.calls.append("commit_version_changes")
         return "a" * 40
 
-    def push_main(self, request: BuildRequest) -> None:
+    def push_main(self, request: BuildRequest, commit: str) -> None:
         self.calls.append("push_main")
 
     def ensure_tag(self, request: BuildRequest, commit: str) -> None:
@@ -346,6 +346,8 @@ def test_new_release_smoke_failure_does_not_create_a_remote_release():
         push_main=True,
         create_or_reuse_tag=True,
         create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
     )
 
     result = run_release_request(request, hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken())
@@ -543,3 +545,21 @@ def test_request_file_accepts_proxy_endpoints_and_environment_references(tmp_pat
     )
 
     assert load_request_file(request_path).custom_proxy == proxy
+
+
+def test_request_file_rejects_endpoint_or_credentials_in_proxy_label_without_echo(tmp_path):
+    request_path = tmp_path / "request.json"
+    secret_label = "http://alice:label-secret@127.0.0.1:7890"
+    request_path.write_text(
+        (
+            '{"target_version":"3.6.22","remote":{"version":"3.6.21"},'
+            f'"proxy_label":"{secret_label}"}}'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="proxy selection") as caught:
+        load_request_file(request_path)
+
+    assert secret_label not in str(caught.value)
+    assert "label-secret" not in str(caught.value)

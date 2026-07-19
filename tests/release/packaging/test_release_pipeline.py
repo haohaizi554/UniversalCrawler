@@ -263,6 +263,8 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
         push_main=True,
         create_or_reuse_tag=True,
         create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
     )
     source_commit = "b" * 40
     snapshot_root = tmp_path / "snapshot"
@@ -275,6 +277,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     for name in ("setup.exe", "latest.json", "latest.json.sig"):
         (release_dir / name).write_bytes(b"asset")
     calls: list[str] = []
+    git_commands: list[list[str]] = []
     identity_ready = False
     tag_ready = False
     version_staged = False
@@ -295,8 +298,15 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
             assert repair is False
             calls.append("remote_release")
 
+        def upload_assets(self, *_args, **_kwargs):
+            calls.append("upload")
+
+        def verify_assets(self, *_args, **_kwargs):
+            calls.append("remote_verify")
+
     def fake_git(argv):
         nonlocal identity_ready, tag_ready, version_staged
+        git_commands.append(list(argv))
         command = argv[0]
         calls.append(f"git:{command}")
         if command == "commit":
@@ -314,6 +324,8 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
             return "shared/version.py" if version_staged or "--cached" not in argv else ""
         if command == "diff-tree":
             return "shared/version.py"
+        if command == "ls-remote":
+            return f"{source_commit}\trefs/heads/main"
         return ""
 
     def validate_identity(tag):
@@ -385,6 +397,13 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     assert calls.index("validate_identity") < calls.index("snapshot")
     assert calls.index("snapshot") < calls.index("manifest")
     assert calls.index("manifest") < calls.index("smoke") < calls.index("remote_release")
+    assert calls.index("remote_release") < calls.index("upload") < calls.index("remote_verify")
+    assert [
+        "push",
+        "origin",
+        f"{source_commit}:refs/heads/main",
+    ] in git_commands
+    assert ["ls-remote", "--exit-code", "origin", "refs/heads/main"] in git_commands
     assert smoke_run.call_args.args[0][1:] == ["--mode", "cli", "--help"]
 
 
@@ -532,6 +551,115 @@ def test_formal_new_release_rejects_a_pre_staged_unrelated_file_before_version_a
     applied.assert_not_called()
 
 
+def test_non_public_new_release_rejects_dirty_checkout_before_version_apply(tmp_path):
+    tool = _load_tool()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "release-test@example.invalid"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Release Test"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "baseline"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+    )
+    applied = Mock()
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "PROJECT_ROOT", repository),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "apply_version_update", applied),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    applied.assert_not_called()
+
+
+def test_source_identity_refuses_to_push_when_head_moves_after_verified_commit(tmp_path):
+    tool = _load_tool()
+    expected_commit = "a" * 40
+    moved_head = "b" * 40
+    version_staged = False
+    head_reads = 0
+    git_calls: list[list[str]] = []
+
+    class FakePublisher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_tag(self, *_args, **_kwargs):
+            pass
+
+    def fake_git(argv):
+        nonlocal version_staged, head_reads
+        git_calls.append(list(argv))
+        command = argv[0]
+        if command == "status":
+            return ""
+        if command == "diff":
+            return "shared/version.py" if version_staged or "--cached" not in argv else ""
+        if command == "add":
+            version_staged = True
+            return ""
+        if command == "commit":
+            version_staged = False
+            return ""
+        if command == "diff-tree":
+            return "shared/version.py"
+        if command == "rev-parse" and argv[1] == "HEAD":
+            head_reads += 1
+            return expected_commit if head_reads == 1 else moved_head
+        if command == "rev-parse":
+            return expected_commit
+        return ""
+
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+    version_plan = VersionUpdatePlan(tool.PROJECT_ROOT, "3.6.21", "3.6.22", ())
+    version_result = VersionUpdateResult(
+        "3.6.21",
+        "3.6.22",
+        (tool.PROJECT_ROOT / "shared/version.py",),
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "GitHubReleasePublisher", FakePublisher),
+        patch.object(tool, "plan_version_update", return_value=version_plan),
+        patch.object(tool, "apply_version_update", return_value=version_result),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_run_git", side_effect=fake_git),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.SOURCE_IDENTITY
+    assert not any(call[0] == "push" for call in git_calls)
+
+
 @pytest.mark.parametrize("public_key", [None, "not a public key"])
 def test_upload_public_key_dependency_rejects_missing_or_invalid_key_before_publish(tmp_path, public_key):
     tool = _load_tool()
@@ -586,6 +714,100 @@ def test_dry_run_dependency_preflight_rejects_missing_notes_without_acquiring_a_
 
     assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
     acquire_lock.assert_not_called()
+
+
+@pytest.mark.parametrize("key_case", ["missing", "empty", "malformed", "unreadable"])
+def test_private_key_dependency_preflight_rejects_invalid_material_before_mutation(
+    tmp_path,
+    key_case,
+):
+    tool = _load_tool()
+    private_key = tmp_path / "private.pem"
+    if key_case == "empty":
+        private_key.write_bytes(b"")
+    elif key_case in {"malformed", "unreadable"}:
+        private_key.write_text(
+            "-----BEGIN PRIVATE KEY-----\nnot-ed25519-key\n-----END PRIVATE KEY-----\n",
+            encoding="utf-8",
+        )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        private_key_path=str(private_key),
+        dry_run=True,
+        sign_manifest=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+    applied = Mock()
+
+    patches = [patch.object(tool, "apply_version_update", applied)]
+    if key_case == "unreadable":
+        patches.append(patch.object(tool.Path, "read_text", side_effect=PermissionError("denied")))
+
+    with patches[0]:
+        if len(patches) == 2:
+            with patches[1]:
+                hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+                result = run_release_request(request, hooks, Mock(), CancellationToken())
+        else:
+            hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+            result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    applied.assert_not_called()
+    assert "not-ed25519-key" not in result.error
+
+
+@pytest.mark.parametrize(
+    "build_request",
+    [
+        BuildRequest(
+            target_version="3.6.20",
+            remote=RemoteReleaseInfo.available("3.6.21"),
+            apply_version=False,
+            build_portable=False,
+            build_installer=False,
+            run_smoke_tests=False,
+            proxy_label="自定义",
+            custom_proxy="env:MISSING_RELEASE_PROXY",
+        ),
+        BuildRequest(
+            target_version="3.6.20",
+            remote=RemoteReleaseInfo.available("3.6.21"),
+            repository="invalid/repository/shape",
+            apply_version=False,
+            build_portable=False,
+            build_installer=False,
+            run_smoke_tests=False,
+        ),
+    ],
+)
+def test_hook_setup_failures_are_runner_owned_terminal_failures(build_request):
+    tool = _load_tool()
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream)
+    acquire_lock = Mock()
+    build_binaries = Mock()
+
+    with (
+        patch.object(tool, "_release_build_lock", acquire_lock),
+        patch.object(tool, "_build_binaries", build_binaries),
+    ):
+        hooks = tool._build_pipeline_hooks(build_request, {}, emitter)
+        result = run_release_request(build_request, hooks, emitter, CancellationToken())
+
+    events = [
+        event
+        for line in stream.getvalue().splitlines()
+        if (event := parse_event_line(line)) is not None
+    ]
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    assert sum(event.kind == "error" for event in events) == 1
+    assert sum(event.kind == "result" for event in events) == 1
+    acquire_lock.assert_not_called()
+    build_binaries.assert_not_called()
 
 
 def test_real_pipeline_hook_system_exit_is_redacted_and_terminal(tmp_path):
@@ -1186,6 +1408,7 @@ def test_prepare_release_assets_atomically_publishes_exact_required_triplet(tmp_
 
     with (
         patch.object(tool, "_run_manifest_tool", side_effect=fake_manifest),
+        patch.object(tool, "_validate_private_key_path", return_value=private_key),
         patch.object(tool, "_verify_staged_manifest") as verify_manifest,
         patch.object(tool, "_validate_git_release_state", return_value="a" * 40),
     ):
@@ -1236,6 +1459,7 @@ def test_prepare_release_assets_revalidates_live_tag_head_before_atomic_publish(
     output_root = tmp_path / "release-assets"
     with (
         patch.object(tool, "_run_manifest_tool", side_effect=fake_manifest),
+        patch.object(tool, "_validate_private_key_path", return_value=private_key),
         patch.object(tool, "_verify_staged_manifest"),
         patch.object(tool, "_validate_git_release_state", return_value="b" * 40),
         pytest.raises(SystemExit, match="HEAD|tag|source commit|源提交|提交"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -22,6 +23,7 @@ PROXY_ENVIRONMENT_VARIABLES = (
 _SYSTEM_PROXY_LABELS = {"系统代理", "system", "system proxy"}
 _DIRECT_PROXY_LABELS = {"直连", "direct", "none", "no proxy"}
 _CUSTOM_PROXY_LABEL = "自定义"
+_ENVIRONMENT_REFERENCE_RE = re.compile(r"^env:[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -64,12 +66,41 @@ def build_proxy_environment(
     if label == _CUSTOM_PROXY_LABEL:
         proxy_url = _normalize_explicit_proxy_endpoint(selection.endpoint)
     else:
+        if label not in _project_proxy_values():
+            raise ValueError("invalid proxy selection")
         proxy_url = normalize_proxy_url(label)
         if not proxy_url:
             raise ValueError("invalid proxy selection")
     for variable in PROXY_ENVIRONMENT_VARIABLES:
         environment[variable] = proxy_url
     return environment
+
+
+def validate_proxy_label_reference(value: str) -> str:
+    """Accept only a named project choice or an environment reference to one."""
+
+    label = str(value or "").strip()
+    lowered = label.lower()
+    if _ENVIRONMENT_REFERENCE_RE.fullmatch(label):
+        return label
+    if (
+        label in _SYSTEM_PROXY_LABELS
+        or lowered in _SYSTEM_PROXY_LABELS
+        or label in _DIRECT_PROXY_LABELS
+        or lowered in _DIRECT_PROXY_LABELS
+        or label == _CUSTOM_PROXY_LABEL
+        or label in _project_proxy_values()
+    ):
+        return label
+    raise ValueError("invalid proxy selection")
+
+
+def _project_proxy_values() -> frozenset[str]:
+    return frozenset(
+        str(option.get("value") or "").strip()
+        for option in project_proxy_options()
+        if str(option.get("value") or "").strip()
+    )
 
 
 def _normalize_explicit_proxy_endpoint(endpoint: str) -> str:
@@ -91,7 +122,12 @@ def _is_valid_explicit_proxy_endpoint(value: str) -> bool:
     else:
         parsed = urlparse(f"http://{value}")
     try:
-        return bool(parsed.hostname and parsed.port)
+        return bool(
+            parsed.hostname
+            and parsed.port
+            and parsed.username is None
+            and parsed.password is None
+        )
     except ValueError:
         return False
 
@@ -102,4 +138,5 @@ __all__ = [
     "build_proxy_environment",
     "normalize_proxy_url",
     "project_proxy_options",
+    "validate_proxy_label_reference",
 ]

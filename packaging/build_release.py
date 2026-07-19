@@ -19,6 +19,8 @@ from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
 from typing import Iterator
 
+from Crypto.PublicKey import ECC
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 UPDATE_TRUST_CONFIG = PROJECT_ROOT / "app" / "config" / "update_trust.py"
@@ -446,6 +448,13 @@ def _validate_private_key_path(private_key: Path) -> Path:
             "未找到 update manifest 私钥，请先运行："
             "python scripts/update_bootstrap.py generate-manifest-key"
         )
+    resolved = _require_readable_regular_file(resolved, label="manifest private key")
+    try:
+        key = ECC.import_key(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest private key is invalid") from None
+    if not key.has_private() or key.curve != "Ed25519":
+        raise ValueError("manifest private key is invalid")
     return resolved
 
 
@@ -501,6 +510,20 @@ def _git_path_set(argv: list[str]) -> set[str]:
 def _validate_release_baseline_clean() -> None:
     if _run_git(["status", "--porcelain=v1", "--untracked-files=all"]):
         raise SystemExit("formal release requires a clean Git worktree and index")
+
+
+def _new_release_requires_clean_baseline(request: BuildRequest) -> bool:
+    return any(
+        getattr(request, field)
+        for field in (
+            "apply_version",
+            "build_portable",
+            "build_installer",
+            "commit_version_changes",
+            "push_main",
+            "create_or_reuse_tag",
+        )
+    )
 
 
 def _validate_version_commit(paths: tuple[str, ...], commit: str) -> None:
@@ -914,15 +937,6 @@ def _build_pipeline_hooks(
 ) -> ReleasePipelineHooks:
     """Adapt the existing release primitives to one request-scoped runner."""
 
-    custom_proxy = request.custom_proxy
-    if custom_proxy.startswith("env:"):
-        custom_proxy = str(environment.get(custom_proxy[4:]) or "")
-        if not custom_proxy:
-            raise ValueError("custom proxy reference is unavailable")
-    child_environment = build_proxy_environment(
-        ProxySelection(label=request.proxy_label, endpoint=custom_proxy),
-        environment,
-    )
     resources = ExitStack()
     active_stage_lock = threading.Lock()
     state: dict[str, object] = {
@@ -931,8 +945,10 @@ def _build_pipeline_hooks(
         "assets": (),
         "uploaded_assets": (),
         "build_root": None,
+        "child_environment": None,
         "installer": None,
         "lock_token": "",
+        "publisher": None,
         "snapshot_root": None,
         "source_commit": "",
         "version_plan": None,
@@ -960,12 +976,35 @@ def _build_pipeline_hooks(
                 progress = state["active_progress"]
             emit("log", stage=stage, progress=progress, message=message)
 
-    publisher = GitHubReleasePublisher(
-        request.repository,
-        child_environment,
-        emit_log,
-        project_root=PROJECT_ROOT,
-    )
+    def resolve_release_context() -> tuple[dict[str, str], GitHubReleasePublisher]:
+        child_environment = state["child_environment"]
+        publisher = state["publisher"]
+        if isinstance(child_environment, dict) and publisher is not None:
+            return child_environment, publisher
+
+        proxy_label = request.proxy_label.strip()
+        if proxy_label.startswith("env:"):
+            proxy_label = str(environment.get(proxy_label[4:]) or "").strip()
+            if not proxy_label:
+                raise ValueError("proxy selection reference is unavailable")
+        custom_proxy = request.custom_proxy.strip()
+        if custom_proxy.startswith("env:"):
+            custom_proxy = str(environment.get(custom_proxy[4:]) or "").strip()
+            if not custom_proxy:
+                raise ValueError("custom proxy reference is unavailable")
+        child_environment = build_proxy_environment(
+            ProxySelection(label=proxy_label, endpoint=custom_proxy),
+            environment,
+        )
+        publisher = GitHubReleasePublisher(
+            request.repository,
+            child_environment,
+            emit_log,
+            project_root=PROJECT_ROOT,
+        )
+        state["child_environment"] = child_environment
+        state["publisher"] = publisher
+        return child_environment, publisher
 
     def plan_version(target_version: str):
         plan = plan_version_update(target_version, PROJECT_ROOT)
@@ -979,6 +1018,7 @@ def _build_pipeline_hooks(
         return result
 
     def validate_dependencies(_request: BuildRequest) -> None:
+        child_environment, _publisher = resolve_release_context()
         if request.release_notes_path:
             _require_readable_regular_file(Path(request.release_notes_path), label="release notes")
         if request.sign_manifest or request.upload_release_assets:
@@ -996,7 +1036,10 @@ def _build_pipeline_hooks(
 
     def prepare(_request: BuildRequest, mode: ReleaseMode) -> None:
         ensure_lock()
-        if formal_build and mode is ReleaseMode.NEW_RELEASE:
+        if (
+            mode is ReleaseMode.NEW_RELEASE
+            and _new_release_requires_clean_baseline(request)
+        ):
             _validate_release_baseline_clean()
 
     def ensure_snapshot() -> tuple[Path, str]:
@@ -1049,6 +1092,7 @@ def _build_pipeline_hooks(
         )
 
     def sign_manifest(_request: BuildRequest) -> tuple[Path, ...]:
+        child_environment, _publisher = resolve_release_context()
         snapshot_root, source_commit = ensure_snapshot()
         installer = state["installer"]
         if not isinstance(installer, Path):
@@ -1097,12 +1141,28 @@ def _build_pipeline_hooks(
             return commit
         return _run_git(["rev-parse", "HEAD"])
 
-    def push_main(_request: BuildRequest) -> None:
-        if formal_build:
-            _validate_release_baseline_clean()
-        _run_git(["push", "origin", "HEAD:main"])
+    def push_main(_request: BuildRequest, commit: str) -> None:
+        verified_commit = str(commit or _run_git(["rev-parse", "HEAD"])).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", verified_commit):
+            raise SystemExit("release push requires a verified full commit SHA")
+        _validate_release_baseline_clean()
+        if _run_git(["rev-parse", "HEAD"]).lower() != verified_commit:
+            raise SystemExit("HEAD changed after the release version commit was verified")
+        _run_git(
+            [
+                "push",
+                "origin",
+                f"{verified_commit}:refs/heads/main",
+            ]
+        )
+        remote_main = _run_git(
+            ["ls-remote", "--exit-code", "origin", "refs/heads/main"]
+        ).split()
+        if not remote_main or remote_main[0].lower() != verified_commit:
+            raise SystemExit("remote main does not match the verified release commit")
 
     def ensure_tag(_request: BuildRequest, commit: str) -> None:
+        _child_environment, publisher = resolve_release_context()
         if formal_build:
             _validate_release_baseline_clean()
         source_commit = commit or _run_git(["rev-parse", "HEAD"])
@@ -1116,6 +1176,7 @@ def _build_pipeline_hooks(
         publisher.ensure_tag(tag, source_commit)
 
     def ensure_release(_request: BuildRequest) -> None:
+        _child_environment, publisher = resolve_release_context()
         if not request.release_notes_path:
             raise ValueError("creating a release requires release_notes_path")
         publisher.ensure_release(
@@ -1126,6 +1187,7 @@ def _build_pipeline_hooks(
         )
 
     def upload_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        _child_environment, publisher = resolve_release_context()
         selected = list(assets or state["assets"])
         if request.upload_public_key:
             selected.append(_validate_public_key_path(_read_only_public_key_path()))
@@ -1134,11 +1196,13 @@ def _build_pipeline_hooks(
         publisher.upload_assets(tag, uploaded, repair=request.same_release_repair)
 
     def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        _child_environment, publisher = resolve_release_context()
         uploaded = state["uploaded_assets"]
         expected = uploaded if isinstance(uploaded, tuple) and uploaded else assets or state["assets"]
         publisher.verify_assets(tag, expected)
 
     def run_smoke_tests() -> None:
+        child_environment, _publisher = resolve_release_context()
         build_root = state["build_root"]
         if not isinstance(build_root, Path):
             raise RuntimeError("portable build context is unavailable for smoke testing")

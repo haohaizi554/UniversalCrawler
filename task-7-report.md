@@ -86,11 +86,32 @@ Implemented the cancellable release orchestration state machine.
   dependency validation without lock acquisition, public-key upload/verification
   parity, and missing or malformed public keys.
 
+## Fifth Review Fixes
+
+- Public `NEW_RELEASE` creation now also requires release asset upload and remote
+  asset verification, closing the remaining metadata-only publication path.
+- Clean Git baseline enforcement now applies to every real `NEW_RELEASE` request
+  capable of version mutation, source identity, or binary builds, including
+  non-public requests, before version application begins.
+- Main is pushed from the exact verified version commit using an explicit
+  `<commit>:refs/heads/main` refspec. The hook rejects HEAD races before push and
+  verifies that remote main resolves to the same full commit afterward.
+- Private-key preflight now reads and parses a non-empty Ed25519 private PEM.
+  Missing, unreadable, empty, malformed, public-only, or wrong-curve key material
+  fails inside runner-owned preflight with generic, redacted errors.
+- Proxy environment resolution and GitHub publisher construction are lazy
+  preflight dependencies, so missing proxy references and invalid repositories
+  emit exactly one terminal failure result and perform no lock, mutation, or
+  remote operation.
+- `proxy_label` now accepts only project-defined named choices or a syntactically
+  valid environment reference. Arbitrary URLs and credential-bearing values are
+  rejected generically; `custom_proxy` remains the sole explicit endpoint field.
+
 Verification:
 
 `python -m pytest tests/release/packaging/test_release_tool_runner.py tests/release/packaging/test_release_pipeline.py tests/release/packaging/test_release_tool_modes.py tests/release/packaging/test_release_tool_events.py tests/release/packaging/test_release_tool_publisher.py -q`
 
-Result: 325 passed.
+Result: 336 passed.
 
 `git diff --check`
 
