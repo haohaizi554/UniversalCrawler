@@ -63,11 +63,34 @@ Implemented the cancellable release orchestration state machine.
   signed artifact, smoke, publication order; smoke failure prevents remote Release
   creation. Added preflight and interruption probes.
 
+## Fourth Review Fixes
+
+- A `NEW_RELEASE` that creates or updates a public Release now requires the full
+  formal chain: version application and commit, main push, release tag, portable
+  and installer builds, manifest signing, smoke testing, and release notes.
+  Same-release repair retains its existing repair path and is not forced through
+  a new-version publication chain.
+- Runner preflight now invokes a read-only dependency hook for both real and
+  dry-run requests. It validates release notes, private-key references and
+  repository-external key safety, and public-key availability before any lock,
+  version write, or remote operation. Non-dry requests then run a request-scoped
+  preparation hook that acquires the shared release lock before version mutation.
+- Formal new releases reject a dirty Git worktree or index before applying a
+  version. Version commits use `git commit --only -- <version paths>`, reject
+  unexpected staged or unstaged files, and revalidate the committed path set and
+  clean baseline before push and tag operations.
+- Public-key uploads now persist the exact selected upload set and remote asset
+  verification consumes that same set. Missing, unreadable, empty, or invalid PEM
+  public keys fail during preflight rather than allowing a partial publication.
+- Added temporary-repository coverage for a pre-staged unrelated file, dry-run
+  dependency validation without lock acquisition, public-key upload/verification
+  parity, and missing or malformed public keys.
+
 Verification:
 
 `python -m pytest tests/release/packaging/test_release_tool_runner.py tests/release/packaging/test_release_pipeline.py tests/release/packaging/test_release_tool_modes.py tests/release/packaging/test_release_tool_events.py tests/release/packaging/test_release_tool_publisher.py -q`
 
-Result: 317 passed.
+Result: 325 passed.
 
 `git diff --check`
 

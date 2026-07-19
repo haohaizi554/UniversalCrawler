@@ -44,6 +44,8 @@ class ReleasePipelineHooks:
     ensure_release: Callable[[BuildRequest], None]
     upload_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
     verify_remote_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
+    validate_dependencies: Callable[[BuildRequest], None] = lambda _request: None
+    prepare: Callable[[BuildRequest, ReleaseMode], None] = lambda _request, _mode: None
     cleanup: Callable[[], None] = lambda: None
     activate_stage: Callable[[ReleaseStage, int], None] = lambda _stage, _progress: None
 
@@ -165,7 +167,14 @@ def run_release_request(
 
     interrupted = False
     try:
-        mode = run_stage(ReleaseStage.PREFLIGHT, lambda: _preflight(request))
+        def preflight() -> ReleaseMode:
+            resolved_mode = _preflight(request)
+            hooks.validate_dependencies(request)
+            if not request.dry_run:
+                hooks.prepare(request, resolved_mode)
+            return resolved_mode
+
+        mode = run_stage(ReleaseStage.PREFLIGHT, preflight)
         if request.dry_run:
             run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.plan_version(request.target_version))
             for stage in (

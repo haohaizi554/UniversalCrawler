@@ -213,6 +213,45 @@ def test_new_release_tag_for_an_applied_version_commit_requires_pushing_main():
     )
 
 
+def test_new_release_publication_requires_the_complete_formal_chain():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        create_or_update_release=True,
+    )
+
+    errors = validate_build_request(request)
+
+    assert {
+        "new release publication requires applying version changes",
+        "new release publication requires committing version changes",
+        "new release publication requires pushing main",
+        "new release publication requires creating or reusing the release tag",
+        "new release publication requires building portable artifacts",
+        "new release publication requires building installer artifacts",
+        "new release publication requires signing the manifest",
+        "new release publication requires smoke testing",
+    }.issubset(errors)
+
+
+def test_upload_public_key_requires_a_release_and_remote_verification():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        upload_public_key=True,
+    )
+
+    assert validate_build_request(request) == (
+        "upload public key requires creating or updating the release",
+        "upload public key requires remote asset verification",
+    )
+
+
 def test_models_normalize_versions_and_are_frozen():
     remote = RemoteReleaseInfo.available(" v3.6.22 ")
     request = BuildRequest(target_version="3.6.22", remote=remote)

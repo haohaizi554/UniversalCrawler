@@ -277,6 +277,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     calls: list[str] = []
     identity_ready = False
     tag_ready = False
+    version_staged = False
 
     class FakePublisher:
         def __init__(self, *_args, **_kwargs):
@@ -295,17 +296,24 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
             calls.append("remote_release")
 
     def fake_git(argv):
-        nonlocal identity_ready, tag_ready
+        nonlocal identity_ready, tag_ready, version_staged
         command = argv[0]
         calls.append(f"git:{command}")
         if command == "commit":
             identity_ready = True
+            version_staged = False
+        if command == "add":
+            version_staged = True
         if command == "tag":
             tag_ready = True
         if command == "rev-parse":
             if "--verify" in argv and not tag_ready:
                 raise subprocess.CalledProcessError(1, ["git", *argv])
             return source_commit
+        if command == "diff":
+            return "shared/version.py" if version_staged or "--cached" not in argv else ""
+        if command == "diff-tree":
+            return "shared/version.py"
         return ""
 
     def validate_identity(tag):
@@ -408,47 +416,176 @@ def test_portable_only_signed_build_does_not_validate_an_unbuilt_installer(tmp_p
 def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     tool = _load_tool()
     public_key = tmp_path / "manifest-public.pem"
-    public_key.write_text("public", encoding="utf-8")
+    public_key.write_text(
+        "-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----\n",
+        encoding="utf-8",
+    )
     stream = io.StringIO()
     emitter = ReleaseEventEmitter(stream=stream)
 
     class FakePublisher:
         def __init__(self, _repository, _environment, output, **_kwargs):
             self.output = output
+            self.uploaded: tuple[Path, ...] = ()
+            self.verified: tuple[Path, ...] = ()
 
-        def upload_assets(self, *_args, **_kwargs):
+        def ensure_release(self, *_args, **_kwargs):
+            self.output("publish output")
+
+        def upload_assets(self, _tag, assets, **_kwargs):
+            self.uploaded = tuple(assets)
             self.output("upload output")
 
-        def verify_assets(self, *_args, **_kwargs):
+        def verify_assets(self, _tag, assets, **_kwargs):
+            self.verified = tuple(assets)
             self.output("verify output")
 
     request = BuildRequest(
-        target_version="3.6.22",
+        target_version="3.6.21",
         remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path=str(tmp_path / "notes.md"),
         apply_version=False,
         build_portable=False,
         build_installer=False,
         run_smoke_tests=False,
+        same_release_repair=True,
+        create_or_update_release=True,
         upload_public_key=True,
         verify_remote_assets=True,
     )
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    publisher: FakePublisher | None = None
+
+    def make_publisher(*args, **kwargs):
+        nonlocal publisher
+        publisher = FakePublisher(*args, **kwargs)
+        return publisher
+
     with (
-        patch.object(tool, "GitHubReleasePublisher", FakePublisher),
-        patch.object(tool, "default_manifest_public_key_path", return_value=public_key),
+        patch.object(tool, "GitHubReleasePublisher", side_effect=make_publisher),
+        patch.object(tool, "_read_only_public_key_path", return_value=public_key),
     ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter)
         result = run_release_request(request, hooks, emitter, CancellationToken())
 
     assert result.succeeded
+    assert publisher is not None
+    assert publisher.uploaded == (public_key,)
+    assert publisher.verified == (public_key,)
     logs = [
         event
         for line in stream.getvalue().splitlines()
         if (event := parse_event_line(line)) is not None and event.kind == "log"
     ]
     assert [(event.stage, event.progress) for event in logs] == [
+        (tool.ReleaseStage.PUBLISHING, 75),
         (tool.ReleaseStage.UPLOADING, 85),
         (tool.ReleaseStage.VERIFYING, 95),
     ]
+
+
+def test_formal_new_release_rejects_a_pre_staged_unrelated_file_before_version_apply(tmp_path):
+    tool = _load_tool()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "release-test@example.invalid"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Release Test"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "baseline"], cwd=repository, check=True)
+    (repository / "unrelated.txt").write_text("must not be committed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=repository, check=True)
+    notes = tmp_path / "notes.md"
+    private_key = tmp_path / "private.pem"
+    public_key = tmp_path / "public.pem"
+    notes.write_text("notes\n", encoding="utf-8")
+    private_key.write_text("private\n", encoding="utf-8")
+    public_key.write_text("public\n", encoding="utf-8")
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path=str(notes),
+        private_key_path=str(private_key),
+        sign_manifest=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+    )
+    applied = Mock()
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "PROJECT_ROOT", repository),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_read_only_public_key_path", return_value=public_key),
+        patch.object(tool, "apply_version_update", applied),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    applied.assert_not_called()
+
+
+@pytest.mark.parametrize("public_key", [None, "not a public key"])
+def test_upload_public_key_dependency_rejects_missing_or_invalid_key_before_publish(tmp_path, public_key):
+    tool = _load_tool()
+    notes = tmp_path / "notes.md"
+    notes.write_text("notes\n", encoding="utf-8")
+    public_key_path = tmp_path / "public.pem"
+    if public_key is not None:
+        public_key_path.write_text(public_key, encoding="utf-8")
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path=str(notes),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        create_or_update_release=True,
+        upload_public_key=True,
+        verify_remote_assets=True,
+    )
+
+    with patch.object(tool, "_read_only_public_key_path", return_value=public_key_path):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    assert not result.succeeded
+
+
+def test_dry_run_dependency_preflight_rejects_missing_notes_without_acquiring_a_lock(tmp_path):
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path=str(tmp_path / "missing-notes.md"),
+        private_key_path=str(tmp_path / "missing-private.pem"),
+        dry_run=True,
+        sign_manifest=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    acquire_lock = Mock()
+
+    with patch.object(tool, "_release_build_lock", acquire_lock):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    acquire_lock.assert_not_called()
 
 
 def test_real_pipeline_hook_system_exit_is_redacted_and_terminal(tmp_path):

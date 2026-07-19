@@ -51,12 +51,14 @@ class RecordingHooks:
         on_build_portable=None,
         build_installer_error: BaseException | None = None,
         smoke_error: BaseException | None = None,
+        dependency_error: BaseException | None = None,
         cleanup=None,
     ) -> None:
         self.calls: list[str] = []
         self.on_build_portable = on_build_portable
         self.build_installer_error = build_installer_error
         self.smoke_error = smoke_error
+        self.dependency_error = dependency_error
         self.on_cleanup = cleanup
         self.version_after_failure = ""
         self._version = "3.6.21"
@@ -64,6 +66,14 @@ class RecordingHooks:
     def plan_version(self, target: str) -> VersionUpdatePlan:
         self.calls.append("plan_version")
         return VersionUpdatePlan(Path("."), self._version, target, ())
+
+    def validate_dependencies(self, _request: BuildRequest) -> None:
+        self.calls.append("validate_dependencies")
+        if self.dependency_error:
+            raise self.dependency_error
+
+    def prepare(self, _request: BuildRequest, _mode) -> None:
+        self.calls.append("prepare")
 
     def apply_version(self, target: str) -> VersionUpdateResult:
         self.calls.append("apply_version")
@@ -120,6 +130,8 @@ class RecordingHooks:
 
     def as_pipeline_hooks(self) -> ReleasePipelineHooks:
         return ReleasePipelineHooks(
+            validate_dependencies=self.validate_dependencies,
+            prepare=self.prepare,
             plan_version=self.plan_version,
             apply_version=self.apply_version,
             generate_key=self.generate_key,
@@ -153,7 +165,14 @@ def test_local_debug_runs_only_version_and_selected_build_stages():
     )
 
     assert result.succeeded is True
-    assert hooks.calls == ["apply_version", "build_portable", "build_installer", "smoke_test"]
+    assert hooks.calls == [
+        "validate_dependencies",
+        "prepare",
+        "apply_version",
+        "build_portable",
+        "build_installer",
+        "smoke_test",
+    ]
     assert events.stages == [
         ReleaseStage.PREFLIGHT,
         ReleaseStage.VERSION_SYNC,
@@ -178,6 +197,31 @@ def test_cancelled_pipeline_never_reports_success():
     assert result.succeeded is False
     assert ReleaseStage.SUCCEEDED not in events.stages
     assert [event["kind"] for event in events.events].count("result") == 1
+
+
+def test_dry_run_uses_read_only_dependency_preflight_without_preparation():
+    hooks = RecordingHooks()
+
+    result = run_release_request(
+        replace(local_debug_request(), dry_run=True),
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.succeeded
+    assert hooks.calls == ["validate_dependencies", "plan_version"]
+
+
+def test_dependency_preflight_blocks_preparation_and_all_side_effects():
+    hooks = RecordingHooks(dependency_error=ValueError("missing dependency"))
+
+    result = run_release_request(
+        local_debug_request(), hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken()
+    )
+
+    assert result.failed_stage is ReleaseStage.PREFLIGHT
+    assert hooks.calls == ["validate_dependencies"]
 
 
 def test_system_exit_from_stage_is_redacted_and_emits_one_terminal_result():
@@ -261,6 +305,8 @@ def test_new_release_defers_remote_release_until_after_signed_smoke():
 
     assert result.succeeded
     assert hooks.calls == [
+        "validate_dependencies",
+        "prepare",
         "apply_version",
         "commit_version_changes",
         "push_main",
@@ -316,7 +362,7 @@ def test_dry_run_plans_version_and_skips_every_side_effect():
     result = run_release_request(request, hooks.as_pipeline_hooks(), events, CancellationToken())
 
     assert result.succeeded is True
-    assert hooks.calls == ["plan_version"]
+    assert hooks.calls == ["validate_dependencies", "plan_version"]
     assert ReleaseStage.VERSION_SYNC in events.stages
     assert events.skipped_stages == [
         ReleaseStage.SOURCE_IDENTITY,
@@ -372,7 +418,7 @@ def test_valid_full_dry_run_still_calls_only_plan_hook():
     )
 
     assert result.succeeded
-    assert hooks.calls == ["plan_version"]
+    assert hooks.calls == ["validate_dependencies", "plan_version"]
 
 
 def test_build_failure_does_not_rollback_an_applied_version():

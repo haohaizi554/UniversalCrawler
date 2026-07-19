@@ -86,6 +86,20 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     if request.create_or_update_release and not request.release_notes_path.strip():
         errors.append("creating or updating a release requires release notes")
 
+    if mode is ReleaseMode.NEW_RELEASE and request.create_or_update_release:
+        for label, attribute in (
+            ("applying version changes", "apply_version"),
+            ("committing version changes", "commit_version_changes"),
+            ("pushing main", "push_main"),
+            ("creating or reusing the release tag", "create_or_reuse_tag"),
+            ("building portable artifacts", "build_portable"),
+            ("building installer artifacts", "build_installer"),
+            ("signing the manifest", "sign_manifest"),
+            ("smoke testing", "run_smoke_tests"),
+        ):
+            if not getattr(request, attribute):
+                errors.append(f"new release publication requires {label}")
+
     if request.upload_release_assets:
         if not request.sign_manifest:
             errors.append("upload release assets requires signing the manifest")
@@ -97,6 +111,12 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
             errors.append("upload release assets requires remote asset verification")
         if not request.build_installer:
             errors.append("upload release assets requires building the installer")
+
+    if request.upload_public_key:
+        if not request.create_or_update_release:
+            errors.append("upload public key requires creating or updating the release")
+        if not request.verify_remote_assets:
+            errors.append("upload public key requires remote asset verification")
 
     if request.run_smoke_tests and not request.build_portable:
         errors.append("smoke tests require building portable artifacts")

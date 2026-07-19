@@ -37,9 +37,11 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 from scripts.update_bootstrap import (  # noqa: E402
+    DEFAULT_PRIVATE_KEY_NAME,
+    DEFAULT_PUBLIC_KEY_NAME,
     default_manifest_private_key_path,
-    default_manifest_public_key_path,
     generate_manifest_key,
+    release_secrets_dir,
 )
 from release_lock import (  # noqa: E402
     LOCK_ROOT_ENV,
@@ -47,7 +49,7 @@ from release_lock import (  # noqa: E402
     release_build_lock,
     release_lock_path,
 )
-from release_tool.models import BuildRequest, ReleaseStage  # noqa: E402
+from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
 from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
 from release_tool.runner import ReleasePipelineHooks  # noqa: E402
@@ -445,6 +447,68 @@ def _validate_private_key_path(private_key: Path) -> Path:
             "python scripts/update_bootstrap.py generate-manifest-key"
         )
     return resolved
+
+
+def _read_only_secret_path(filename: str) -> Path:
+    return release_secrets_dir(project_root=PROJECT_ROOT, create=False) / filename
+
+
+def _read_only_public_key_path() -> Path:
+    return _read_only_secret_path(DEFAULT_PUBLIC_KEY_NAME)
+
+
+def _require_readable_regular_file(path: Path, *, label: str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    if not resolved.is_file():
+        raise ValueError(f"{label} is unavailable")
+    try:
+        with resolved.open("rb") as handle:
+            if not handle.read(1):
+                raise ValueError(f"{label} is unavailable")
+    except OSError as error:
+        raise ValueError(f"{label} is unavailable") from error
+    return resolved
+
+
+def _validate_public_key_path(public_key: Path) -> Path:
+    resolved = _require_readable_regular_file(public_key, label="manifest public key")
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("manifest public key is unavailable") from error
+    if "BEGIN PUBLIC KEY" not in content or "PRIVATE KEY" in content:
+        raise ValueError("manifest public key is invalid")
+    return resolved
+
+
+def _relative_release_paths(paths: tuple[Path, ...]) -> tuple[str, ...]:
+    root = PROJECT_ROOT.resolve()
+    relative_paths: list[str] = []
+    for path in paths:
+        try:
+            relative = Path(path).resolve().relative_to(root).as_posix()
+        except ValueError as error:
+            raise SystemExit("version update includes a path outside the repository") from error
+        relative_paths.append(relative)
+    return tuple(sorted(set(relative_paths)))
+
+
+def _git_path_set(argv: list[str]) -> set[str]:
+    output = _run_git(argv)
+    return {line.replace("\\", "/") for line in output.splitlines() if line.strip()}
+
+
+def _validate_release_baseline_clean() -> None:
+    if _run_git(["status", "--porcelain=v1", "--untracked-files=all"]):
+        raise SystemExit("formal release requires a clean Git worktree and index")
+
+
+def _validate_version_commit(paths: tuple[str, ...], commit: str) -> None:
+    expected = set(paths)
+    committed = _git_path_set(["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+    if committed != expected:
+        raise SystemExit("release version commit includes unexpected files")
+    _validate_release_baseline_clean()
 
 
 def _validate_repository(repository: str) -> str:
@@ -865,6 +929,7 @@ def _build_pipeline_hooks(
         "active_progress": 0,
         "active_stage": ReleaseStage.IDLE,
         "assets": (),
+        "uploaded_assets": (),
         "build_root": None,
         "installer": None,
         "lock_token": "",
@@ -874,7 +939,11 @@ def _build_pipeline_hooks(
         "version_result": None,
     }
     tag = f"v{request.target_version}"
-    formal_build = request.sign_manifest or request.upload_release_assets
+    formal_build = (
+        request.sign_manifest
+        or request.upload_release_assets
+        or request.create_or_update_release
+    )
 
     def activate_stage(stage: ReleaseStage, progress: int) -> None:
         with active_stage_lock:
@@ -909,6 +978,14 @@ def _build_pipeline_hooks(
         state["version_result"] = result
         return result
 
+    def validate_dependencies(_request: BuildRequest) -> None:
+        if request.release_notes_path:
+            _require_readable_regular_file(Path(request.release_notes_path), label="release notes")
+        if request.sign_manifest or request.upload_release_assets:
+            _private_key_path(request, child_environment)
+        if request.upload_public_key:
+            _validate_public_key_path(_read_only_public_key_path())
+
     def ensure_lock() -> str:
         lock_token = state["lock_token"]
         if isinstance(lock_token, str) and lock_token:
@@ -916,6 +993,11 @@ def _build_pipeline_hooks(
         lock_token = resources.enter_context(_release_build_lock(PROJECT_ROOT))
         state["lock_token"] = lock_token
         return lock_token
+
+    def prepare(_request: BuildRequest, mode: ReleaseMode) -> None:
+        ensure_lock()
+        if formal_build and mode is ReleaseMode.NEW_RELEASE:
+            _validate_release_baseline_clean()
 
     def ensure_snapshot() -> tuple[Path, str]:
         snapshot_root = state["snapshot_root"]
@@ -992,14 +1074,37 @@ def _build_pipeline_hooks(
         result = state["version_result"]
         paths = getattr(result, "changed_files", ())
         if paths:
-            _run_git(["add", "--", *(str(path) for path in paths)])
-            _run_git(["commit", "-m", f"chore: release {request.target_version}"])
+            relative_paths = _relative_release_paths(tuple(paths))
+            if _git_path_set(["diff", "--cached", "--name-only"]) or _git_path_set(
+                ["diff", "--name-only"]
+            ) != set(relative_paths):
+                raise SystemExit("version update has unexpected Git changes")
+            _run_git(["add", "--", *relative_paths])
+            if _git_path_set(["diff", "--cached", "--name-only"]) != set(relative_paths):
+                raise SystemExit("version update staged unexpected Git changes")
+            _run_git(
+                [
+                    "commit",
+                    "--only",
+                    "-m",
+                    f"chore: release {request.target_version}",
+                    "--",
+                    *relative_paths,
+                ]
+            )
+            commit = _run_git(["rev-parse", "HEAD"])
+            _validate_version_commit(relative_paths, commit)
+            return commit
         return _run_git(["rev-parse", "HEAD"])
 
     def push_main(_request: BuildRequest) -> None:
+        if formal_build:
+            _validate_release_baseline_clean()
         _run_git(["push", "origin", "HEAD:main"])
 
     def ensure_tag(_request: BuildRequest, commit: str) -> None:
+        if formal_build:
+            _validate_release_baseline_clean()
         source_commit = commit or _run_git(["rev-parse", "HEAD"])
         try:
             existing = _run_git(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
@@ -1023,14 +1128,15 @@ def _build_pipeline_hooks(
     def upload_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
         selected = list(assets or state["assets"])
         if request.upload_public_key:
-            public_key = default_manifest_public_key_path(project_root=PROJECT_ROOT)
-            if not public_key.is_file():
-                raise ValueError("manifest public key is unavailable for upload")
-            selected.append(public_key)
-        publisher.upload_assets(tag, selected, repair=request.same_release_repair)
+            selected.append(_validate_public_key_path(_read_only_public_key_path()))
+        uploaded = tuple(selected)
+        state["uploaded_assets"] = uploaded
+        publisher.upload_assets(tag, uploaded, repair=request.same_release_repair)
 
     def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
-        publisher.verify_assets(tag, assets or state["assets"])
+        uploaded = state["uploaded_assets"]
+        expected = uploaded if isinstance(uploaded, tuple) and uploaded else assets or state["assets"]
+        publisher.verify_assets(tag, expected)
 
     def run_smoke_tests() -> None:
         build_root = state["build_root"]
@@ -1080,6 +1186,8 @@ def _build_pipeline_hooks(
         ensure_release=ensure_release,
         upload_assets=upload_assets,
         verify_remote_assets=verify_remote_assets,
+        validate_dependencies=validate_dependencies,
+        prepare=prepare,
         cleanup=resources.close,
         activate_stage=activate_stage,
     )
@@ -1093,7 +1201,7 @@ def _private_key_path(request: BuildRequest, environment: Mapping[str, str]) -> 
         if not reference:
             raise ValueError("private key path reference is unavailable")
     return _validate_private_key_path(
-        Path(reference) if reference else default_manifest_private_key_path()
+        Path(reference) if reference else _read_only_secret_path(DEFAULT_PRIVATE_KEY_NAME)
     )
 
 
