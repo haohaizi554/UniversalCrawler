@@ -41,7 +41,7 @@ _GITHUB_TOKEN = re.compile(
     r"(?i)(?<![a-z0-9_])(?:gh[pours]_[a-z0-9_]+|github_pat_[a-z0-9_]+)(?![a-z0-9_])"
 )
 _URL_SCHEME = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://")
-_PROXY_ENDPOINT = re.compile(r"(?i)\bproxy\s*=\s*")
+_PROXY_ENDPOINT = re.compile(r"(?i)\b(?:https?_|all_)?proxy(?:_url)?\s*=\s*")
 _KEY_VALUE_PAIR = re.compile(
     r'''(?x)
     (?P<prefix>[?&;]|(?<![A-Za-z0-9_]))
@@ -152,7 +152,7 @@ _CREDENTIAL_KEY_SEGMENTS = frozenset(
     }
 )
 _KEY_CONTEXT_SEGMENTS = frozenset({"access", "api", "client", "private", "proxy", "signing", "x"})
-_AUTHORITY_TERMINATORS = frozenset("/?# \t\r\n,;\"'")
+_AUTHORITY_TERMINATORS = frozenset("/?# \t\r\n\"'")
 
 
 def redact_release_text(text: str) -> str:
@@ -236,6 +236,8 @@ def _redact_url_userinfo(text: str) -> str:
 
 
 def _userinfo_span(text: str, start: int) -> tuple[int, int] | None:
+    if start < len(text) and text[start] in "\"'":
+        start += 1
     end = start
     while end < len(text) and text[end] not in _AUTHORITY_TERMINATORS:
         end += 1
@@ -396,10 +398,11 @@ def _redact_complete_json(text: str) -> str | None:
         return None
     try:
         payload = _strict_json_loads(payload_text)
+        _validate_json_value(payload)
+        redacted = _redact_event_data(payload)
+        return f"{leading}{json.dumps(redacted, allow_nan=False, ensure_ascii=False, separators=(',', ':'))}{trailing}"
     except (json.JSONDecodeError, ValueError):
         return None
-    redacted = _redact_event_data(payload)
-    return f"{leading}{json.dumps(redacted, allow_nan=False, ensure_ascii=False, separators=(',', ':'))}{trailing}"
 
 
 def _timestamp_text(value: datetime) -> str:
@@ -480,6 +483,7 @@ class ReleaseEvent:
         data = payload.get("data", {})
         if not isinstance(data, Mapping):
             raise ValueError("release event data must be a mapping")
+        _validate_json_value(data)
 
         return cls(
             kind=kind,
@@ -487,8 +491,8 @@ class ReleaseEvent:
             timestamp=timestamp,
             stage=ReleaseStage(stage),
             progress=_validated_progress(progress),
-            message=redact_release_text(payload.get("message", "")),
-            data=_redact_event_data(data),
+            message=payload.get("message", ""),
+            data=data,
         )
 
 

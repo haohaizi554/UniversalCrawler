@@ -824,3 +824,93 @@ def test_release_event_direct_construction_redacts_and_deep_freezes_data():
     assert event.data["token"] == "[REDACTED]"
     with pytest.raises(TypeError):
         event.data["items"][0]["safe"] = "mutated"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    (
+        (
+            'proxy_url="https://alice:pa;ss,word@with-at@proxy.invalid:8080"',
+            "alice:pa;ss,word@with-at",
+            'proxy_url="https://[REDACTED]@proxy.invalid:8080"',
+        ),
+        (
+            'HTTP_PROXY="https://alice:password@with-at@proxy.invalid:8080"',
+            "alice:password@with-at",
+            'HTTP_PROXY="https://[REDACTED]@proxy.invalid:8080"',
+        ),
+        (
+            "https_proxy='alice:password@host:8080'",
+            "alice:password",
+            "https_proxy='[REDACTED]@host:8080'",
+        ),
+        (
+            'ALL_PROXY="alice:password@host:8080"',
+            "alice:password",
+            'ALL_PROXY="[REDACTED]@host:8080"',
+        ),
+        (
+            'all_proxy="https://git@github.com/openai/release-builder.git"',
+            "",
+            'all_proxy="https://git@github.com/openai/release-builder.git"',
+        ),
+    ),
+)
+def test_release_text_redacts_quoted_standard_proxy_aliases(text, secret, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    if secret:
+        assert secret not in redacted
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    (
+        ({"token": {"nested": math.nan}}, "finite"),
+        ({"token": {1: "non-string-key"}}, "keys"),
+        ({"token": {"nested": object()}}, "strict JSON"),
+    ),
+)
+def test_release_event_from_payload_validates_raw_data_before_redaction(data, message):
+    payload = {
+        "kind": "progress",
+        "sequence": 1,
+        "timestamp": "2026-07-19T04:05:06Z",
+        "stage": "preflight",
+        "progress": 10,
+        "data": data,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        ReleaseEvent.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("1e9999", "1e9999"),
+        ('{"nested":{"value":1e9999}}', '{"nested":{"value":1e9999}}'),
+        ('{"token":{"value":1e9999}}', '{"token":"[REDACTED]"}'),
+    ),
+)
+def test_release_text_safely_falls_back_from_non_finite_huge_json_exponents(text, expected):
+    assert redact_release_text(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ('{"nested":{"value":1e9999}}', '{"nested":{"value":1e9999}}'),
+        ('{"token":{"value":1e9999}}', '{"token":"[REDACTED]"}'),
+    ),
+)
+def test_emitter_and_log_writer_do_not_raise_for_huge_json_exponents(tmp_path: Path, text, expected):
+    emitter = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC)
+    path = tmp_path / "release.log"
+
+    event = emitter.emit("progress", stage=ReleaseStage.PREFLIGHT, progress=10, message=text)
+    ReleaseLogWriter(path).write_line(text)
+
+    assert event.message == expected
+    assert path.read_text(encoding="utf-8") == f"{expected}\n"
