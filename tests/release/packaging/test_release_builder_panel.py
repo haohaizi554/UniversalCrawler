@@ -634,6 +634,7 @@ class _DeferredCloseWriter:
         self.can_close = False
         self.active = True
         self.error = ""
+        self.progress_count = 0
 
     def submit(self, _line: str) -> None:
         return None
@@ -711,7 +712,8 @@ def test_writer_shutdown_deadline_allows_application_exit(tmp_path):
         log_directory=tmp_path / "logs",
         writer_factory=lambda _path: writer,
         writer_close_timeout_seconds=0.0,
-        writer_abandon_timeout_seconds=0.0,
+        writer_stall_timeout_seconds=0.0,
+        writer_hard_close_timeout_seconds=0.0,
     )
     controller._log_writer = writer
     controller.result = ReleaseResult(
@@ -725,6 +727,104 @@ def test_writer_shutdown_deadline_allows_application_exit(tmp_path):
 
     assert controller.shutdown_complete is True
     assert controller.result.succeeded is True
+    assert "may be incomplete" in controller.audit_log_warning
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_error"),
+    (
+        (
+            ReleaseResult(
+                mode=ReleaseMode.NEW_RELEASE,
+                stage=ReleaseStage.SUCCEEDED,
+            ),
+            "",
+        ),
+        (
+            ReleaseResult(
+                mode=ReleaseMode.NEW_RELEASE,
+                stage=ReleaseStage.FAILED,
+                errors=("upload failed",),
+                error="upload failed",
+            ),
+            "upload failed",
+        ),
+    ),
+)
+def test_writer_io_error_preserves_release_result(
+    tmp_path,
+    result,
+    expected_error,
+):
+    writer = _DeferredCloseWriter(tmp_path / "audit.log")
+    writer.can_close = True
+    writer.error = "failed to write release log"
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        writer_factory=lambda _path: writer,
+    )
+    controller._log_writer = writer
+    controller.result = result
+
+    controller._finish_writer_or_defer()
+
+    assert controller.result is result
+    assert controller.result.error == expected_error
+    assert controller.audit_log_warning == writer.error
+
+
+def test_writer_progress_refreshes_stall_deadline_until_hard_limit(tmp_path):
+    now = [0.0]
+    writer = _DeferredCloseWriter(tmp_path / "audit.log")
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        writer_factory=lambda _path: writer,
+        writer_close_timeout_seconds=0.0,
+        writer_stall_timeout_seconds=5.0,
+        writer_hard_close_timeout_seconds=30.0,
+        monotonic_clock=lambda: now[0],
+    )
+    controller._log_writer = writer
+
+    controller._finish_writer_or_defer()
+    for tick in (4.9, 9.8, 14.7):
+        now[0] = tick
+        writer.progress_count += 1
+        controller._poll_writer_close()
+        assert controller.log_writer_active is True
+
+    now[0] = 19.8
+    controller._poll_writer_close()
+
+    assert controller.log_writer_active is False
+    assert "may be incomplete" in controller.audit_log_warning
+
+
+def test_writer_hard_deadline_bounds_continuous_slow_progress(tmp_path):
+    now = [0.0]
+    writer = _DeferredCloseWriter(tmp_path / "audit.log")
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        writer_factory=lambda _path: writer,
+        writer_close_timeout_seconds=0.0,
+        writer_stall_timeout_seconds=5.0,
+        writer_hard_close_timeout_seconds=12.0,
+        monotonic_clock=lambda: now[0],
+    )
+    controller._log_writer = writer
+
+    controller._finish_writer_or_defer()
+    for tick in (4.0, 8.0):
+        now[0] = tick
+        writer.progress_count += 1
+        controller._poll_writer_close()
+        assert controller.log_writer_active is True
+
+    now[0] = 12.0
+    writer.progress_count += 1
+    controller._poll_writer_close()
+
+    assert controller.log_writer_active is False
     assert "may be incomplete" in controller.audit_log_warning
 
 
