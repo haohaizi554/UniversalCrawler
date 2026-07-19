@@ -31,8 +31,8 @@ _TRUNCATED_PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*\Z",
     re.DOTALL | re.IGNORECASE,
 )
-_SENSITIVE_HEADER = re.compile(
-    r"(?im)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*[^\r\n]+"
+_HEADER_FIELD = re.compile(
+    r"(?im)^(?P<key>[A-Za-z][A-Za-z0-9_-]*)(?P<separator>\s*:\s*)(?P<value>[^\r\n]*)$"
 )
 _BEARER_TOKEN = re.compile(
     r'''(?i)\bbearer\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[a-z0-9._~+/=-]+)'''
@@ -64,6 +64,8 @@ _SENSITIVE_KEY_NAMES = frozenset(
         "apikey",
         "apikeys",
         "auth",
+        "authtoken",
+        "authtokens",
         "authorization",
         "authorizations",
         "client_password",
@@ -104,6 +106,8 @@ _SENSITIVE_KEY_NAMES = frozenset(
         "refreshtoken",
         "refreshtokens",
         "secret",
+        "setcookie",
+        "setcookies",
         "secrets",
         "signing_key",
         "signingkey",
@@ -112,6 +116,7 @@ _SENSITIVE_KEY_NAMES = frozenset(
         "tokens",
     }
 )
+_TRANSPORT_KEY_PREFIXES = frozenset({"x"})
 
 
 def redact_release_text(text: str) -> str:
@@ -120,7 +125,7 @@ def redact_release_text(text: str) -> str:
     redacted = str(text)
     redacted = _PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     redacted = _TRUNCATED_PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
-    redacted = _SENSITIVE_HEADER.sub(lambda match: f"{match.group(0).split(':', 1)[0]}: {REDACTED}", redacted)
+    redacted = _HEADER_FIELD.sub(_redact_sensitive_header_field, redacted)
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
@@ -133,13 +138,25 @@ def _canonical_key_name(key: str) -> str:
 
 
 def _is_sensitive_key(key: str) -> bool:
-    return _canonical_key_name(key) in _SENSITIVE_KEY_NAMES
+    canonical = _canonical_key_name(key)
+    if canonical in _SENSITIVE_KEY_NAMES:
+        return True
+    return any(
+        canonical.startswith(prefix) and canonical[len(prefix) :] in _SENSITIVE_KEY_NAMES
+        for prefix in _TRANSPORT_KEY_PREFIXES
+    )
 
 
 def _redact_sensitive_key_value_pair(match: re.Match[str]) -> str:
     if not _is_sensitive_key(match.group("key")):
         return match.group(0)
     return f"{match.group('prefix')}{match.group('key')}{match.group('separator')}{REDACTED}"
+
+
+def _redact_sensitive_header_field(match: re.Match[str]) -> str:
+    if not _is_sensitive_key(match.group("key")):
+        return match.group(0)
+    return f"{match.group('key')}{match.group('separator')}{REDACTED}"
 
 
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:

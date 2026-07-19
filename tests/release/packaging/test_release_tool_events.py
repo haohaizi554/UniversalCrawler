@@ -176,6 +176,41 @@ def test_benign_keys_survive_mapping_assignment_and_query_values(key):
     assert redact_release_text(text) == text
 
 
+@pytest.mark.parametrize(
+    "key",
+    ("X-API-Key", "X-Auth-Token", "X-Access-Token", "X-Client-Secret"),
+)
+def test_transport_prefixed_credential_keys_redact_mapping_assignment_query_and_headers(key):
+    secret = "transport-secret"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: secret}},
+    )
+
+    assert event.data["nested"][key] == "[REDACTED]"
+    assert redact_release_text(f'{key}="{secret}"') == f"{key}=[REDACTED]"
+    assert redact_release_text(f"?{key}={secret}") == f"?{key}=[REDACTED]"
+    assert redact_release_text(f"{key}: {secret}") == f"{key}: [REDACTED]"
+
+
+@pytest.mark.parametrize("key", ("Monkey", "Keyframe", "X-Monkey"))
+def test_benign_header_and_transport_lookalike_keys_survive_every_surface(key):
+    value = "banana"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: value}},
+    )
+
+    assert event.data["nested"][key] == value
+    assert redact_release_text(f'{key}="{value}"') == f'{key}="{value}"'
+    assert redact_release_text(f"?{key}={value}") == f"?{key}={value}"
+    assert redact_release_text(f"{key}: {value}") == f"{key}: {value}"
+
+
 def test_event_round_trip_uses_fixed_prefix_and_monotonic_sequence(capsys):
     emitter = ReleaseEventEmitter(stream=sys.stdout, clock=lambda: FIXED_UTC)
 
