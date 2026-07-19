@@ -127,6 +127,15 @@ def _valid_request_payload() -> dict:
     }
 
 
+def _release_events(output: str):
+    events = []
+    for line in output.splitlines():
+        event = parse_event_line(line)
+        if event is not None:
+            events.append(event)
+    return events
+
+
 def test_python_main_empty_argv_keeps_headless_release_semantics():
     tool = _load_tool()
 
@@ -185,6 +194,70 @@ def test_script_headless_dry_run_builds_non_mutating_request():
     run.assert_called_once_with(version="3.6.21", build_only=True)
 
 
+def test_script_headless_legacy_routing_preserves_every_legacy_token():
+    tool = _load_tool()
+    legacy = [
+        "--version",
+        "3.6.21",
+        "--tag",
+        "v3.6.21",
+        "--repository",
+        "owner/repository",
+        "--build-only",
+    ]
+
+    with patch.object(tool, "main", return_value=0) as run:
+        assert tool.script_main(["--headless", *legacy]) == 0
+
+    run.assert_called_once_with(legacy)
+
+
+def test_script_dry_run_rejects_unsupported_legacy_arguments(capsys):
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_run_dry_run_request") as run,
+        pytest.raises(SystemExit) as caught,
+    ):
+        tool.script_main(
+            ["--headless", "--dry-run", "--tag", "v3.6.21-secret-value"]
+        )
+
+    assert caught.value.code == 2
+    run.assert_not_called()
+    captured = capsys.readouterr()
+    assert "secret-value" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--repository", "owner/repository"],
+        ["--version", "3.6.22"],
+        ["--build-only"],
+        ["--dry-run"],
+    ],
+)
+def test_script_request_file_rejects_unsupported_routed_arguments(
+    tmp_path, capsys, extra
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_run_request_file") as run,
+        pytest.raises(SystemExit) as caught,
+    ):
+        tool.script_main(
+            ["--headless", "--request-file", str(request_file), *extra]
+        )
+
+    assert caught.value.code == 2
+    run.assert_not_called()
+    assert "unsupported arguments for --request-file" in capsys.readouterr().err
+
+
 def test_request_file_is_deleted_after_loading_and_runs_the_unified_runner(tmp_path):
     request_file = tmp_path / "request.json"
     request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
@@ -205,21 +278,37 @@ def test_request_file_is_deleted_after_loading_and_runs_the_unified_runner(tmp_p
     assert not request_file.exists()
 
 
-def test_request_file_is_deleted_when_strict_loading_fails(tmp_path):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"target_version": "3.6.21",',
+        json.dumps({**_valid_request_payload(), "token": "top-secret"}),
+    ],
+)
+def test_invalid_request_file_is_deleted_and_emits_one_redacted_terminal_result(
+    tmp_path, capsys, payload
+):
     request_file = tmp_path / "request.json"
-    request_file.write_text(
-        json.dumps({**_valid_request_payload(), "token": "secret"}),
-        encoding="utf-8",
-    )
+    request_file.write_text(payload, encoding="utf-8")
     tool = _load_tool()
 
-    with pytest.raises(ValueError, match="unknown"):
-        tool._run_request_file(request_file)
+    exit_code = tool._run_request_file(request_file)
 
+    assert exit_code != 0
     assert not request_file.exists()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err
+    assert "top-secret" not in captured.out + captured.err
+    assert '"token"' not in captured.out + captured.err
+    events = _release_events(captured.out)
+    result_events = [event for event in events if event.kind == "result"]
+    assert len(result_events) == 1
+    assert result_events[0].stage is tool.ReleaseStage.FAILED
+    assert result_events[0].data["status"] == "failed"
+    assert len([event for event in events if event.kind == "error"]) == 1
 
 
-def test_dry_run_request_uses_the_unified_runner_with_no_mutating_actions():
+def test_dry_run_request_sets_every_dependent_action_explicitly():
     tool = _load_tool()
 
     with patch.object(tool, "_run_release_request", return_value=0) as run:
@@ -230,6 +319,50 @@ def test_dry_run_request_uses_the_unified_runner_with_no_mutating_actions():
     assert request.target_version == "3.6.21"
     assert request.build_portable is True
     assert request.build_installer is True
+    assert request.remote == RemoteReleaseInfo.available("3.6.21")
+    assert request.run_smoke_tests is False
+    assert request.apply_version is False
+    assert request.generate_manifest_key is False
+    assert request.rotate_trust_anchor is False
+    assert request.sign_manifest is False
+    assert request.commit_version_changes is False
+    assert request.push_main is False
+    assert request.create_or_reuse_tag is False
+    assert request.create_or_update_release is False
+    assert request.upload_release_assets is False
+    assert request.upload_public_key is False
+    assert request.verify_remote_assets is False
+
+
+@pytest.mark.parametrize("build_only", [False, True])
+def test_actual_dry_run_is_a_successful_read_only_plan(capsys, build_only):
+    tool = _load_tool()
+    forbidden = Mock(side_effect=AssertionError("dry run attempted a side effect"))
+    publisher = Mock()
+
+    with (
+        patch.object(tool, "_release_build_lock", forbidden),
+        patch.object(tool, "_run_git", forbidden),
+        patch.object(tool.subprocess, "run", forbidden),
+        patch.object(tool, "apply_version_update", forbidden),
+        patch.object(tool, "_build_binaries", forbidden),
+        patch.object(tool, "_prepare_release_assets", forbidden),
+        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "GitHubReleasePublisher", return_value=publisher),
+    ):
+        exit_code = tool._run_dry_run_request(
+            version=tool.read_project_version(tool.PROJECT_ROOT),
+            build_only=build_only,
+        )
+
+    assert exit_code == 0
+    forbidden.assert_not_called()
+    assert publisher.method_calls == []
+    events = _release_events(capsys.readouterr().out)
+    result_events = [event for event in events if event.kind == "result"]
+    assert len(result_events) == 1
+    assert result_events[0].stage is tool.ReleaseStage.SUCCEEDED
+    assert result_events[0].data["status"] == "succeeded"
 
 
 def test_release_mode_fails_before_build_when_manifest_key_is_missing(tmp_path):

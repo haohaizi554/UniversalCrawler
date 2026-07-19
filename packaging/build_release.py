@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
 from typing import Iterator
@@ -52,7 +53,12 @@ from release_lock import (  # noqa: E402
     release_lock_path,
 )
 from release_tool.events import ReleaseEventEmitter  # noqa: E402
-from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
+from release_tool.models import (  # noqa: E402
+    BuildRequest,
+    ReleaseMode,
+    ReleaseStage,
+    RemoteReleaseInfo,
+)
 from release_tool.modes import resolve_release_mode  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
 from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
@@ -1322,29 +1328,75 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_release_request(request: BuildRequest) -> int:
+def _run_release_request(
+    request: BuildRequest,
+    *,
+    preflight_error: BaseException | None = None,
+) -> int:
     emitter = ReleaseEventEmitter(stream=sys.stdout)
     hooks = _build_pipeline_hooks(request, os.environ.copy(), emitter)
+    if preflight_error is not None:
+        def reject_request(_request: BuildRequest) -> None:
+            raise preflight_error from None
+
+        hooks = replace(hooks, validate_dependencies=reject_request)
     result = run_release_request(request, hooks, emitter, CancellationToken())
     return 0 if result.succeeded else 1
 
 
 def _run_request_file(request_file: Path) -> int:
     path = Path(request_file)
+    request: BuildRequest | None = None
+    load_error: BaseException | None = None
     try:
-        request = load_request_file(path)
+        try:
+            request = load_request_file(path)
+        except (Exception, SystemExit) as error:
+            load_error = error
     finally:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            load_error = ValueError("release request file could not be deleted")
+    if load_error is not None:
+        return _run_release_request(
+            _build_dry_run_request(version="0.0.0", build_only=False),
+            preflight_error=load_error,
+        )
+    if request is None:
+        return _run_release_request(
+            _build_dry_run_request(version="0.0.0", build_only=False),
+            preflight_error=ValueError("release request file could not be loaded"),
+        )
     return _run_release_request(request)
 
 
-def _run_dry_run_request(*, version: str, build_only: bool) -> int:
-    request = BuildRequest(
+def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
+    return BuildRequest(
         target_version=version,
-        dry_run=True,
+        remote=RemoteReleaseInfo.available(version),
+        apply_version=False,
         build_portable=build_only,
         build_installer=build_only,
+        run_smoke_tests=False,
+        dry_run=True,
+        same_release_repair=False,
+        offline_debug=False,
+        generate_manifest_key=False,
+        rotate_trust_anchor=False,
+        sign_manifest=False,
+        commit_version_changes=False,
+        push_main=False,
+        create_or_reuse_tag=False,
+        create_or_update_release=False,
+        upload_release_assets=False,
+        upload_public_key=False,
+        verify_remote_assets=False,
     )
+
+
+def _run_dry_run_request(*, version: str, build_only: bool) -> int:
+    request = _build_dry_run_request(version=version, build_only=build_only)
     return _run_release_request(request)
 
 
@@ -1369,10 +1421,23 @@ def script_main(argv: list[str]) -> int:
     raw = list(argv)
     if "--gui" in raw or not raw:
         return _launch_panel()
-    args, _unknown = build_script_parser().parse_known_args(raw)
+    parser = build_script_parser()
+    args, unknown = parser.parse_known_args(raw)
     if args.request_file:
+        if (
+            unknown
+            or args.dry_run
+            or args.build_only
+            or any(
+                token == "--version" or token.startswith("--version=")
+                for token in raw
+            )
+        ):
+            parser.error("unsupported arguments for --request-file")
         return _run_request_file(Path(args.request_file))
     if args.dry_run:
+        if unknown:
+            parser.error("unsupported arguments for --dry-run")
         return _run_dry_run_request(
             version=args.version or read_project_version(PROJECT_ROOT),
             build_only=bool(args.build_only),

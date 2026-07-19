@@ -33,3 +33,27 @@ Request files use the existing strict loader, which rejects unknown fields and
 inline private-key material. The temporary request file is deleted after its
 read attempt, including validation failures. No credential contents are logged
 or recorded here.
+
+## Important Review Fixes
+
+- Dry-run requests now provide a known equal remote version and explicitly
+  disable every mutating or dependent action. Both build-only states complete
+  through the unified runner as read-only plans.
+- Dry-run and request-file routes reject unsupported or conflicting arguments
+  with argparse status 2 and generic messages. Ordinary headless legacy routing
+  still forwards every legacy token unchanged.
+- Invalid and malformed request files are deleted before failure handling. The
+  unified runner owns the resulting preflight failure and emits one redacted
+  terminal result without an uncaught traceback.
+
+### Review Verification
+
+- RED: focused review regressions produced `10 failed, 1 passed`, with failures
+  corresponding to all three review findings.
+- GREEN: the same focused selection passed (`11 passed`).
+- `python -m pytest tests/release/packaging/test_release_pipeline.py -q`
+  - `79 passed in 15.29s`.
+- `python -m ruff check packaging/build_release.py tests/release/packaging/test_release_pipeline.py`
+  - Passed.
+- `git diff --check`
+  - Passed.
