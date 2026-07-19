@@ -18,6 +18,7 @@ from release_tool.models import BuildRequest, ReleaseStage, RemoteReleaseInfo
 from release_tool.runner import (
     CancellationToken,
     ReleasePipelineHooks,
+    SigningMaterial,
     load_request_file,
     run_release_request,
 )
@@ -83,8 +84,14 @@ class RecordingHooks:
         self._version = target
         return VersionUpdateResult(previous, target, ())
 
-    def generate_key(self, generate: bool, rotate: bool) -> None:
-        self.calls.append("generate_key")
+    def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+        self.calls.append("resolve_signing_material")
+        return SigningMaterial(
+            private_key_path=Path("release-secrets/private-key.pem"),
+            public_key_path=Path("release-secrets/public-key.pem"),
+            fingerprint="A" * 64,
+            trust_anchor_changed=request.rotate_trust_anchor,
+        )
 
     def build_portable(self) -> None:
         self.calls.append("build_portable")
@@ -136,7 +143,7 @@ class RecordingHooks:
             prepare=self.prepare,
             plan_version=self.plan_version,
             apply_version=self.apply_version,
-            generate_key=self.generate_key,
+            resolve_signing_material=self.resolve_signing_material,
             build_portable=self.build_portable,
             build_installer=self.build_installer,
             run_smoke_tests=self.run_smoke_tests,
@@ -186,6 +193,20 @@ def test_local_debug_runs_only_version_and_selected_build_stages():
     assert "sign_manifest" not in hooks.calls
     assert "upload_assets" not in hooks.calls
     assert [event["kind"] for event in events.events].count("result") == 1
+
+
+def test_local_debug_never_resolves_or_mutates_signing_material():
+    hooks = RecordingHooks()
+
+    result = run_release_request(
+        local_debug_request(),
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.succeeded is True
+    assert "resolve_signing_material" not in hooks.calls
 
 
 def test_cancelled_pipeline_never_reports_success():
@@ -339,6 +360,7 @@ def test_new_release_defers_remote_release_until_after_signed_smoke():
     assert hooks.calls == [
         "validate_dependencies",
         "prepare",
+        "resolve_signing_material",
         "apply_version",
         "commit_version_changes",
         "push_main",
@@ -364,6 +386,83 @@ def test_new_release_defers_remote_release_until_after_signed_smoke():
         ReleaseStage.VERIFYING,
         ReleaseStage.SUCCEEDED,
     ]
+
+
+def test_rotated_signing_material_is_resolved_before_commit_and_build():
+    hooks = RecordingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.succeeded
+    assert hooks.calls.index("resolve_signing_material") < hooks.calls.index(
+        "commit_version_changes"
+    )
+    assert hooks.calls.index("resolve_signing_material") < hooks.calls.index(
+        "build_portable"
+    )
+    assert hooks.calls.index("resolve_signing_material") < hooks.calls.index(
+        "build_installer"
+    )
+    assert hooks.calls.index("commit_version_changes") < hooks.calls.index(
+        "build_portable"
+    )
+    assert hooks.calls.index("push_main") < hooks.calls.index("build_portable")
+    assert hooks.calls.index("ensure_tag") < hooks.calls.index("build_portable")
+
+
+def test_signing_material_paths_are_never_emitted():
+    secret_name = "private-ghp_super-secret.pem"
+
+    class SecretNamedHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets") / secret_name,
+                public_key_path=Path("release-secrets/public.pem"),
+                fingerprint="B" * 64,
+                trust_anchor_changed=False,
+            )
+
+    hooks = SecretNamedHooks()
+    events = RecordingEmitter()
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        same_release_repair=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        sign_manifest=True,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        events,
+        CancellationToken(),
+    )
+
+    assert result.succeeded
+    assert secret_name not in repr(events.events)
 
 
 def test_new_release_smoke_failure_does_not_create_a_remote_release():

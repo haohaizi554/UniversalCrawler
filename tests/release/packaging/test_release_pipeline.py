@@ -11,7 +11,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from Crypto.PublicKey import ECC
 
+from scripts.update_bootstrap import ManifestKeyResult
 from tests.support.paths import PROJECT_ROOT
 
 
@@ -684,6 +686,10 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     version_plan = VersionUpdatePlan(tool.PROJECT_ROOT, "3.6.21", "3.6.22", ())
     version_result = VersionUpdateResult("3.6.21", "3.6.22", (tool.PROJECT_ROOT / "shared/version.py",))
     (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    (tmp_path / "private.pem").write_text(
+        ECC.generate(curve="Ed25519").export_key(format="PEM"),
+        encoding="utf-8",
+    )
     with (
         patch.object(tool, "GitHubReleasePublisher", FakePublisher),
         patch.object(tool, "plan_version_update", return_value=version_plan),
@@ -695,7 +701,6 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
         patch.object(tool, "_validate_windows_release_tools"),
         patch.object(tool, "_project_release_metadata", return_value=("3.6.22", installer)),
         patch.object(tool, "_build_binaries", side_effect=fake_build),
-        patch.object(tool, "_private_key_path", return_value=tmp_path / "private.pem"),
         patch.object(tool, "_prepare_release_assets", side_effect=fake_prepare),
         patch.object(
             tool.subprocess,
@@ -751,7 +756,7 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     tool = _load_tool()
     public_key = tmp_path / "manifest-public.pem"
     public_key.write_text(
-        "-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----\n",
+        ECC.generate(curve="Ed25519").public_key().export_key(format="PEM"),
         encoding="utf-8",
     )
     stream = io.StringIO()
@@ -812,6 +817,7 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
         if (event := parse_event_line(line)) is not None and event.kind == "log"
     ]
     assert [(event.stage, event.progress) for event in logs] == [
+        (tool.ReleaseStage.PREFLIGHT, 0),
         (tool.ReleaseStage.PUBLISHING, 75),
         (tool.ReleaseStage.UPLOADING, 85),
         (tool.ReleaseStage.VERIFYING, 95),
@@ -973,6 +979,180 @@ def test_source_identity_refuses_to_push_when_head_moves_after_verified_commit(t
 
     assert result.failed_stage is tool.ReleaseStage.SOURCE_IDENTITY
     assert not any(call[0] == "push" for call in git_calls)
+
+
+def test_rotated_trust_anchor_is_included_in_exact_release_commit(tmp_path):
+    tool = _load_tool()
+    expected_paths = (
+        "app/config/update_trust.py",
+        "shared/version.py",
+    )
+    private_key = tmp_path / "outside" / "manifest-private.pem"
+    public_key = tmp_path / "outside" / "manifest-public.pem"
+    private_key.parent.mkdir()
+    private_key.write_text("private", encoding="utf-8")
+    public_key.write_text(
+        "-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----\n",
+        encoding="utf-8",
+    )
+    key_result = ManifestKeyResult(
+        private_key_path=private_key,
+        public_key_path=public_key,
+        public_key_fingerprint_sha256="A" * 64,
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        build_installer=True,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+    )
+    version_plan = VersionUpdatePlan(tool.PROJECT_ROOT, "3.6.21", "3.6.22", ())
+    version_result = VersionUpdateResult(
+        "3.6.21",
+        "3.6.22",
+        (
+            tool.UPDATE_TRUST_CONFIG,
+            tool.PROJECT_ROOT / "shared/version.py",
+            tool.UPDATE_TRUST_CONFIG,
+        ),
+    )
+    staged = False
+    git_calls: list[list[str]] = []
+
+    def fake_git(argv):
+        nonlocal staged
+        git_calls.append(list(argv))
+        if argv[0] == "status":
+            return ""
+        if argv[0] == "diff":
+            if "--cached" in argv:
+                return "\n".join(expected_paths) if staged else ""
+            return "" if staged else "\n".join(expected_paths)
+        if argv[0] == "add":
+            staged = True
+            return ""
+        if argv[0] == "commit":
+            return ""
+        if argv[0] == "diff-tree":
+            return "\n".join(expected_paths)
+        if argv[:2] == ["rev-parse", "HEAD"]:
+            return "a" * 40
+        return ""
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "plan_version_update", return_value=version_plan),
+        patch.object(tool, "apply_version_update", return_value=version_result),
+        patch.object(tool, "generate_manifest_key", return_value=key_result) as generate,
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_run_git", side_effect=fake_git),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        hooks.prepare(request, tool.ReleaseMode.NEW_RELEASE)
+        material = hooks.resolve_signing_material(request)
+        hooks.apply_version(request.target_version)
+        commit = hooks.commit_version_changes(request)
+
+    assert material.trust_anchor_changed is True
+    assert commit == "a" * 40
+    assert generate.call_args.kwargs["config_path"] == tool.UPDATE_TRUST_CONFIG
+    add_call = next(call for call in git_calls if call[0] == "add")
+    assert add_call[2:] == list(expected_paths)
+    commit_call = next(call for call in git_calls if call[0] == "commit")
+    assert commit_call[-2:] == list(expected_paths)
+
+
+def test_normal_signing_reuses_external_key_without_rotating_trust_anchor(tmp_path):
+    tool = _load_tool()
+    key = ECC.generate(curve="Ed25519")
+    private_key = tmp_path / "external" / "manifest-private.pem"
+    private_key.parent.mkdir()
+    private_key.write_text(key.export_key(format="PEM"), encoding="utf-8")
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        private_key_path=str(private_key),
+        sign_manifest=True,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+    )
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream)
+
+    with patch.object(
+        tool,
+        "generate_manifest_key",
+        side_effect=AssertionError("normal signing must not generate a key"),
+    ) as generate:
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=emitter)
+        material = hooks.resolve_signing_material(request)
+
+    generate.assert_not_called()
+    assert material.private_key_path == private_key.resolve()
+    assert material.trust_anchor_changed is False
+    output = stream.getvalue()
+    assert private_key.name in output
+    assert str(private_key.parent) not in output
+    assert "BEGIN PRIVATE KEY" not in output
+    assert material.fingerprint in output
+
+
+def test_private_key_validation_error_does_not_expose_workspace_path():
+    tool = _load_tool()
+    private_key = tool.PROJECT_ROOT / "sensitive" / "manifest-private.pem"
+
+    with pytest.raises(SystemExit) as error:
+        tool._validate_private_key_path(private_key)
+
+    message = str(error.value)
+    assert str(private_key) not in message
+    assert str(private_key.parent) not in message
+
+
+def test_public_key_upload_uses_external_standalone_asset(tmp_path):
+    tool = _load_tool()
+    key = ECC.generate(curve="Ed25519")
+    public_key = tmp_path / "external" / "manifest-public.pem"
+    public_key.parent.mkdir()
+    public_key.write_text(
+        key.public_key().export_key(format="PEM"),
+        encoding="utf-8",
+    )
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        create_or_update_release=True,
+        upload_public_key=True,
+        verify_remote_assets=True,
+    )
+    publisher = Mock()
+    manifest = tmp_path / "release-assets" / "latest.json"
+
+    with (
+        patch.object(tool, "GitHubReleasePublisher", return_value=publisher),
+        patch.object(tool, "_read_only_public_key_path", return_value=public_key),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        material = hooks.resolve_signing_material(request)
+        hooks.upload_assets(request, (manifest,))
+
+    assert material.public_key_path == public_key.resolve()
+    uploaded = publisher.upload_assets.call_args.args[1]
+    assert uploaded == (manifest, public_key.resolve())
+    with pytest.raises(ValueError):
+        public_key.resolve().relative_to(tool.PROJECT_ROOT.resolve())
 
 
 def test_new_release_tag_hook_rejects_an_empty_verified_commit_without_reading_head():

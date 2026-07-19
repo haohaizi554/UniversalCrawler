@@ -31,10 +31,20 @@ class ReleaseEventSink(Protocol):
 
 
 @dataclass(frozen=True)
+class SigningMaterial:
+    """Resolved release signing inputs without exposing their contents."""
+
+    private_key_path: Path | None
+    public_key_path: Path | None
+    fingerprint: str
+    trust_anchor_changed: bool
+
+
+@dataclass(frozen=True)
 class ReleasePipelineHooks:
     plan_version: Callable[[str], VersionUpdatePlan]
     apply_version: Callable[[str], VersionUpdateResult]
-    generate_key: Callable[[bool, bool], object]
+    resolve_signing_material: Callable[[BuildRequest], SigningMaterial]
     build_portable: Callable[[], None]
     build_installer: Callable[[], None]
     run_smoke_tests: Callable[[], None]
@@ -190,6 +200,7 @@ def run_release_request(
             ):
                 skip_stage(stage)
         else:
+            resolve_signing_material(request, hooks.resolve_signing_material)
             if request.apply_version:
                 run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.apply_version(request.target_version))
             if _needs_source_identity_stage(request):
@@ -217,13 +228,11 @@ def run_release_request(
                 run_stage(ReleaseStage.BUILDING_PORTABLE, hooks.build_portable)
             if request.build_installer:
                 run_stage(ReleaseStage.BUILDING_INSTALLER, hooks.build_installer)
-            if request.generate_manifest_key or request.sign_manifest:
-                def sign() -> tuple[Path, ...]:
-                    if request.generate_manifest_key:
-                        hooks.generate_key(True, request.rotate_trust_anchor)
-                    return hooks.sign_manifest(request) if request.sign_manifest else ()
-
-                artifacts = run_stage(ReleaseStage.SIGNING, sign)
+            if request.sign_manifest:
+                artifacts = run_stage(
+                    ReleaseStage.SIGNING,
+                    lambda: hooks.sign_manifest(request),
+                )
             if request.run_smoke_tests:
                 run_stage(ReleaseStage.SMOKE_TESTING, hooks.run_smoke_tests)
             if request.create_or_update_release:
@@ -272,6 +281,29 @@ def run_release_request(
         stage=ReleaseStage.SUCCEEDED,
         artifacts=tuple(str(path) for path in artifacts),
     )
+
+
+def resolve_signing_material(
+    request: BuildRequest,
+    resolver: Callable[[BuildRequest], SigningMaterial],
+) -> SigningMaterial | None:
+    """Resolve signing inputs before source identity or build side effects."""
+
+    if not (
+        request.generate_manifest_key
+        or request.sign_manifest
+        or request.upload_release_assets
+        or request.upload_public_key
+    ):
+        return None
+    material = resolver(request)
+    if not isinstance(material, SigningMaterial):
+        raise TypeError("release signing material resolver returned an invalid result")
+    if request.rotate_trust_anchor and not material.trust_anchor_changed:
+        raise ValueError("trust anchor rotation did not update the production trust anchor")
+    if not request.rotate_trust_anchor and material.trust_anchor_changed:
+        raise ValueError("production trust anchor changed without explicit rotation")
+    return material
 
 
 def load_request_file(path: Path) -> BuildRequest:
@@ -436,6 +468,8 @@ def _failure_message(error: BaseException) -> str:
 __all__ = [
     "CancellationToken",
     "ReleasePipelineHooks",
+    "SigningMaterial",
     "load_request_file",
+    "resolve_signing_material",
     "run_release_request",
 ]

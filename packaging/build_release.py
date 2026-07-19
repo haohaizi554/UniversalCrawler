@@ -65,6 +65,7 @@ from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
 from release_tool.runner import (  # noqa: E402
     CancellationToken,
     ReleasePipelineHooks,
+    SigningMaterial,
     load_request_file,
     run_release_request,
 )
@@ -456,7 +457,7 @@ def _validate_private_key_path(private_key: Path) -> Path:
     except ValueError:
         pass
     else:
-        raise SystemExit(f"manifest 私钥不得位于 Git 工作区内：{resolved}")
+        raise SystemExit("manifest private key must not be inside the Git working tree")
     if not resolved.is_file():
         raise SystemExit(
             "未找到 update manifest 私钥，请先运行："
@@ -502,6 +503,28 @@ def _validate_public_key_path(public_key: Path) -> Path:
     if "BEGIN PUBLIC KEY" not in content or "PRIVATE KEY" in content:
         raise ValueError("manifest public key is invalid")
     return resolved
+
+
+def _manifest_public_key_from_private(private_key: Path) -> tuple[str, str]:
+    try:
+        key = ECC.import_key(Path(private_key).read_text(encoding="utf-8"))
+        public_pem = key.public_key().export_key(format="PEM")
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest private key is invalid") from None
+    fingerprint = hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
+    return public_pem.strip(), fingerprint
+
+
+def _manifest_public_key_fingerprint(public_key: Path) -> tuple[str, str]:
+    resolved = _validate_public_key_path(public_key)
+    try:
+        public_pem = ECC.import_key(
+            resolved.read_text(encoding="utf-8")
+        ).export_key(format="PEM")
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest public key is invalid") from None
+    fingerprint = hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
+    return public_pem.strip(), fingerprint
 
 
 def _relative_release_paths(paths: tuple[Path, ...]) -> tuple[str, ...]:
@@ -965,6 +988,7 @@ def _build_pipeline_hooks(
         "publisher": None,
         "snapshot_root": None,
         "source_commit": "",
+        "signing_material": None,
         "version_plan": None,
         "version_result": None,
     }
@@ -973,6 +997,7 @@ def _build_pipeline_hooks(
         request.sign_manifest
         or request.upload_release_assets
         or request.create_or_update_release
+        or request.rotate_trust_anchor
     )
 
     def activate_stage(stage: ReleaseStage, progress: int) -> None:
@@ -1042,9 +1067,11 @@ def _build_pipeline_hooks(
         child_environment, _publisher = resolve_release_context()
         if request.release_notes_path:
             _require_readable_regular_file(Path(request.release_notes_path), label="release notes")
-        if request.sign_manifest or request.upload_release_assets:
+        if (
+            request.sign_manifest or request.upload_release_assets
+        ) and not request.generate_manifest_key:
             _private_key_path(request, child_environment)
-        if request.upload_public_key:
+        if request.upload_public_key and not request.generate_manifest_key:
             _validate_public_key_path(_read_only_public_key_path())
 
     def ensure_lock() -> str:
@@ -1062,6 +1089,69 @@ def _build_pipeline_hooks(
             and _new_release_requires_clean_baseline(request)
         ):
             _validate_release_baseline_clean()
+
+    def resolve_request_signing_material(
+        _request: BuildRequest,
+    ) -> SigningMaterial:
+        child_environment, _publisher = resolve_release_context()
+        if request.generate_manifest_key:
+            existing_private = _read_only_secret_path(DEFAULT_PRIVATE_KEY_NAME)
+            if not request.rotate_trust_anchor and not existing_private.is_file():
+                raise ValueError(
+                    "generating a new manifest key requires explicit trust anchor rotation"
+                )
+            result = generate_manifest_key(
+                project_root=PROJECT_ROOT,
+                rotate=request.rotate_trust_anchor,
+                write_public_key_to_config=request.rotate_trust_anchor,
+                config_path=UPDATE_TRUST_CONFIG,
+            )
+            material = SigningMaterial(
+                private_key_path=Path(result.private_key_path).resolve(),
+                public_key_path=Path(result.public_key_path).resolve(),
+                fingerprint=str(result.public_key_fingerprint_sha256),
+                trust_anchor_changed=request.rotate_trust_anchor,
+            )
+        else:
+            private_key: Path | None = None
+            public_key: Path | None = None
+            private_public_pem = ""
+            fingerprint = ""
+            if request.sign_manifest or request.upload_release_assets:
+                private_key = _private_key_path(request, child_environment)
+                private_public_pem, fingerprint = _manifest_public_key_from_private(
+                    private_key
+                )
+            if request.upload_public_key:
+                public_key = _validate_public_key_path(
+                    _read_only_public_key_path()
+                )
+                public_pem, public_fingerprint = _manifest_public_key_fingerprint(
+                    public_key
+                )
+                if private_public_pem and public_pem != private_public_pem:
+                    raise ValueError(
+                        "manifest public key does not match the selected private key"
+                    )
+                fingerprint = public_fingerprint
+            material = SigningMaterial(
+                private_key_path=private_key,
+                public_key_path=public_key,
+                fingerprint=fingerprint,
+                trust_anchor_changed=False,
+            )
+        state["signing_material"] = material
+        filenames = [
+            path.name
+            for path in (material.private_key_path, material.public_key_path)
+            if path is not None
+        ]
+        label = ", ".join(filenames) if filenames else "public trust asset"
+        emit_log(
+            "manifest signing material ready: "
+            f"{label}; public fingerprint={material.fingerprint}"
+        )
+        return material
 
     def ensure_snapshot() -> tuple[Path, str]:
         snapshot_root = state["snapshot_root"]
@@ -1113,12 +1203,15 @@ def _build_pipeline_hooks(
         )
 
     def sign_manifest(_request: BuildRequest) -> tuple[Path, ...]:
-        child_environment, _publisher = resolve_release_context()
+        _child_environment, _publisher = resolve_release_context()
         snapshot_root, source_commit = ensure_snapshot()
         installer = state["installer"]
         if not isinstance(installer, Path):
             raise RuntimeError("release installer is unavailable for manifest signing")
-        private_key = _private_key_path(request, child_environment)
+        material = state["signing_material"]
+        if not isinstance(material, SigningMaterial) or material.private_key_path is None:
+            raise RuntimeError("release signing material was not resolved before build")
+        private_key = _validate_private_key_path(material.private_key_path)
         notes = _release_notes(request.release_notes_path)
         release_dir = _prepare_release_assets(
             installer=installer,
@@ -1137,7 +1230,10 @@ def _build_pipeline_hooks(
 
     def commit_version_changes(_request: BuildRequest) -> str:
         result = state["version_result"]
-        paths = getattr(result, "changed_files", ())
+        paths = list(getattr(result, "changed_files", ()))
+        material = state["signing_material"]
+        if isinstance(material, SigningMaterial) and material.trust_anchor_changed:
+            paths.append(UPDATE_TRUST_CONFIG)
         if paths:
             relative_paths = _relative_release_paths(tuple(paths))
             if _git_path_set(["diff", "--cached", "--name-only"]) or _git_path_set(
@@ -1224,7 +1320,13 @@ def _build_pipeline_hooks(
         _child_environment, publisher = resolve_release_context()
         selected = list(assets or state["assets"])
         if request.upload_public_key:
-            selected.append(_validate_public_key_path(_read_only_public_key_path()))
+            material = state["signing_material"]
+            if (
+                not isinstance(material, SigningMaterial)
+                or material.public_key_path is None
+            ):
+                raise RuntimeError("release public key asset was not resolved")
+            selected.append(_validate_public_key_path(material.public_key_path))
         uploaded = tuple(selected)
         state["uploaded_assets"] = uploaded
         publisher.upload_assets(tag, uploaded, repair=request.same_release_repair)
@@ -1269,11 +1371,7 @@ def _build_pipeline_hooks(
     return ReleasePipelineHooks(
         plan_version=plan_version,
         apply_version=apply_version,
-        generate_key=lambda _generate, rotate: generate_manifest_key(
-            project_root=PROJECT_ROOT,
-            rotate=rotate,
-            write_public_key_to_config=rotate,
-        ),
+        resolve_signing_material=resolve_request_signing_material,
         build_portable=lambda: build_selected(portable=True, installer=False),
         build_installer=lambda: build_selected(portable=False, installer=True),
         run_smoke_tests=run_smoke_tests,

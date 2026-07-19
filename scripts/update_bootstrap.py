@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -116,6 +117,87 @@ def _public_key_fingerprint(public_pem: str) -> str:
     return hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
 
 
+def _atomic_write_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    mode: int | None = None,
+) -> None:
+    target = Path(path)
+    descriptor = -1
+    temporary_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(
+            descriptor,
+            "wb",
+        ) as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            try:
+                temporary_path.chmod(mode)
+            except OSError:
+                pass
+        os.replace(temporary_path, target)
+        temporary_path = None
+    except (OSError, UnicodeError) as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise BootstrapError(
+            f"could not atomically write {target.name}"
+        ) from error
+
+
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    mode: int | None = None,
+) -> None:
+    try:
+        payload = content.encode("utf-8")
+    except UnicodeError as error:
+        raise BootstrapError(f"could not encode {Path(path).name}") from error
+    _atomic_write_bytes(path, payload, mode=mode)
+
+
+def _read_optional_bytes(path: Path, *, description: str) -> bytes | None:
+    try:
+        return Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise BootstrapError(f"{description} is unavailable") from error
+
+
+def _restore_file(path: Path, previous: bytes | None, *, mode: int | None) -> bool:
+    try:
+        if previous is None:
+            Path(path).unlink(missing_ok=True)
+        else:
+            _atomic_write_bytes(path, previous, mode=mode)
+    except (OSError, BootstrapError):
+        return False
+    return True
+
+
 def generate_manifest_key(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -134,33 +216,110 @@ def generate_manifest_key(
     public_path = secret_root / DEFAULT_PUBLIC_KEY_NAME
     rotated_private: Path | None = None
 
-    if private_path.exists() and rotate:
-        suffix = time.strftime("%Y%m%d-%H%M%S")
-        rotated_private = private_path.with_name(f"{private_path.stem}.{suffix}.bak{private_path.suffix}")
-        private_path.replace(rotated_private)
-        if public_path.exists():
-            public_path.replace(public_path.with_name(f"{public_path.stem}.{suffix}.bak{public_path.suffix}"))
-    elif private_path.exists() and not rotate:
-        key = ECC.import_key(private_path.read_text(encoding="utf-8"))
+    previous_private_bytes = _read_optional_bytes(
+        private_path,
+        description="existing manifest private key",
+    )
+    previous_public_bytes = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    previous_config_bytes = (
+        _read_optional_bytes(
+            Path(config_path),
+            description="update trust config",
+        )
+        if write_public_key_to_config
+        else None
+    )
+    previous_private: str | None = None
+    if previous_private_bytes is not None:
+        try:
+            previous_private = previous_private_bytes.decode("utf-8")
+        except UnicodeError as error:
+            raise BootstrapError("existing manifest private key is invalid") from error
+
+    try:
+        if previous_private is not None and rotate:
+            suffix = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
+            rotated_private = private_path.with_name(
+                f"{private_path.stem}.{suffix}.bak{private_path.suffix}"
+            )
+            _atomic_write_bytes(
+                rotated_private,
+                previous_private_bytes,
+                mode=0o600,
+            )
+            if previous_public_bytes is not None:
+                _atomic_write_bytes(
+                    public_path.with_name(
+                        f"{public_path.stem}.{suffix}.bak{public_path.suffix}"
+                    ),
+                    previous_public_bytes,
+                )
+        elif previous_private is not None:
+            key = ECC.import_key(previous_private)
+            public_pem = key.public_key().export_key(format="PEM")
+            canonical_public_bytes = public_pem.encode("utf-8")
+            if previous_public_bytes != canonical_public_bytes:
+                _atomic_write_text(public_path, public_pem)
+            if write_public_key_to_config:
+                inject_public_key(
+                    public_key_path=public_path,
+                    config_path=config_path,
+                )
+            return ManifestKeyResult(
+                private_path,
+                public_path,
+                _public_key_fingerprint(public_pem),
+            )
+
+        key = ECC.generate(curve="Ed25519")
+        private_pem = key.export_key(format="PEM")
         public_pem = key.public_key().export_key(format="PEM")
-        if not public_path.exists():
-            public_path.write_text(public_pem, encoding="utf-8")
+        _atomic_write_text(private_path, private_pem, mode=0o600)
+        _atomic_write_text(public_path, public_pem)
         if write_public_key_to_config:
             inject_public_key(public_key_path=public_path, config_path=config_path)
-        return ManifestKeyResult(private_path, public_path, _public_key_fingerprint(public_pem))
-
-    key = ECC.generate(curve="Ed25519")
-    private_pem = key.export_key(format="PEM")
-    public_pem = key.public_key().export_key(format="PEM")
-    private_path.write_text(private_pem, encoding="utf-8")
-    public_path.write_text(public_pem, encoding="utf-8")
-    try:
-        private_path.chmod(0o600)
-    except OSError:
-        pass
-    if write_public_key_to_config:
-        inject_public_key(public_key_path=public_path, config_path=config_path)
-    return ManifestKeyResult(private_path, public_path, _public_key_fingerprint(public_pem), rotated_private)
+        return ManifestKeyResult(
+            private_path,
+            public_path,
+            _public_key_fingerprint(public_pem),
+            rotated_private,
+        )
+    except (
+        BootstrapError,
+        IndexError,
+        OSError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        restore_results = [
+            _restore_file(
+                private_path,
+                previous_private_bytes,
+                mode=0o600,
+            ),
+            _restore_file(
+                public_path,
+                previous_public_bytes,
+                mode=None,
+            ),
+        ]
+        if write_public_key_to_config:
+            restore_results.append(
+                _restore_file(
+                    Path(config_path),
+                    previous_config_bytes,
+                    mode=None,
+                )
+            )
+        if not all(restore_results):
+            raise BootstrapError(
+                "manifest key update failed and previous material could not be restored"
+            ) from error
+        raise
 
 
 def _replace_top_level_assignment(source: str, name: str, replacement: str) -> str:
@@ -204,6 +363,10 @@ def _compile_python_file(path: Path) -> None:
 
 def _assert_update_trust_config_safe(path: Path) -> None:
     source = Path(path).read_text(encoding="utf-8")
+    _assert_update_trust_source_safe(source)
+
+
+def _assert_update_trust_source_safe(source: str) -> None:
     if re.search(r"BEGIN\s+(?:EC\s+|RSA\s+|ENCRYPTED\s+)?PRIVATE\s+KEY", source):
         raise BootstrapError("update trust config contains a private key marker")
     forbidden = (".pfx", ".p12", "UCRAWL_SIGN_PFX_PASSWORD")
@@ -215,15 +378,34 @@ def _assert_update_trust_config_safe(path: Path) -> None:
 def inject_public_key(*, public_key_path: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> None:
     """只把 Ed25519 公钥写入生产信任配置。"""
 
-    public_pem = Path(public_key_path).read_text(encoding="utf-8").strip()
+    try:
+        public_pem = Path(public_key_path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as error:
+        raise BootstrapError("manifest public key is unavailable") from error
     if "BEGIN PUBLIC KEY" not in public_pem or "PRIVATE KEY" in public_pem:
         raise BootstrapError("expected a PEM public key, not private signing material")
     config = Path(config_path)
-    source = config.read_text(encoding="utf-8")
+    try:
+        original = config.read_bytes()
+        source = original.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise BootstrapError("update trust config is unavailable") from error
     source = _replace_top_level_assignment(source, "UPDATE_PUBLIC_KEY_PEM", _format_pem_assignment("UPDATE_PUBLIC_KEY_PEM", public_pem))
-    config.write_text(source, encoding="utf-8")
-    _compile_python_file(config)
-    _assert_update_trust_config_safe(config)
+    try:
+        compile(source, config.name, "exec")
+    except (SyntaxError, ValueError, TypeError) as error:
+        raise BootstrapError("updated trust config is not valid Python") from error
+    _assert_update_trust_source_safe(source)
+    _atomic_write_text(config, source)
+    try:
+        _assert_update_trust_config_safe(config)
+    except (BootstrapError, OSError, UnicodeError) as error:
+        if not _restore_file(config, original, mode=None):
+            raise BootstrapError(
+                "update trust config validation failed and previous content "
+                "could not be restored"
+            ) from error
+        raise
 
 
 def normalize_fingerprint(value: Any) -> str:

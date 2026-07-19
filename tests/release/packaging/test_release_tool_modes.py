@@ -146,6 +146,31 @@ def test_trust_anchor_rotation_requires_key_generation_and_installer_rebuild():
     assert validate_build_request(request) == (
         "rotating the trust anchor requires generating a manifest key",
         "rotating the trust anchor requires building the installer",
+        "rotating the trust anchor requires committing source identity",
+        "rotating the trust anchor requires pushing main",
+        "rotating the trust anchor requires creating or reusing the release tag",
+    )
+
+
+def test_trust_anchor_rotation_cannot_bypass_new_release_source_identity():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        apply_version=False,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    errors = validate_build_request(request)
+
+    assert "rotating the trust anchor requires applying version changes" in errors
+    assert "rotating the trust anchor requires committing source identity" in errors
+    assert "rotating the trust anchor requires pushing main" in errors
+    assert (
+        "rotating the trust anchor requires creating or reusing the release tag"
+        in errors
     )
 
 
@@ -181,6 +206,24 @@ def test_upload_release_assets_accepts_the_complete_upload_bundle():
         push_main=True,
         create_or_reuse_tag=True,
         create_or_update_release=True,
+        verify_remote_assets=True,
+    )
+
+    assert validate_build_request(request) == ()
+
+
+def test_upload_release_assets_accepts_generated_default_signing_material():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        sign_manifest=True,
+        release_notes_path="notes.md",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
         verify_remote_assets=True,
     )
 
@@ -383,8 +426,13 @@ def test_validation_errors_have_deterministic_cross_rule_precedence():
         "upload release assets requires creating or updating the release",
         "upload release assets requires remote asset verification",
         "upload release assets requires building the installer",
+        "rotating the trust anchor requires a new release version",
         "rotating the trust anchor requires generating a manifest key",
         "rotating the trust anchor requires building the installer",
+        "rotating the trust anchor requires applying version changes",
+        "rotating the trust anchor requires committing source identity",
+        "rotating the trust anchor requires pushing main",
+        "rotating the trust anchor requires creating or reusing the release tag",
         "dry run cannot rotate trust anchors",
         "dry run cannot sign manifests",
         "dry run cannot upload release assets",

@@ -105,7 +105,10 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     if request.upload_release_assets:
         if not request.sign_manifest:
             errors.append("upload release assets requires signing the manifest")
-        if not request.private_key_path.strip():
+        if (
+            not request.generate_manifest_key
+            and not request.private_key_path.strip()
+        ):
             errors.append("upload release assets requires a private key")
         if not request.create_or_update_release:
             errors.append("upload release assets requires creating or updating the release")
@@ -159,10 +162,22 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
                 errors.append(f"{mode.value} mode cannot {label}")
 
     if request.rotate_trust_anchor:
+        if mode is not ReleaseMode.NEW_RELEASE:
+            errors.append("rotating the trust anchor requires a new release version")
         if not request.generate_manifest_key:
             errors.append("rotating the trust anchor requires generating a manifest key")
         if not request.build_installer:
             errors.append("rotating the trust anchor requires building the installer")
+        if not request.apply_version:
+            errors.append("rotating the trust anchor requires applying version changes")
+        if not request.commit_version_changes:
+            errors.append("rotating the trust anchor requires committing source identity")
+        if not request.push_main:
+            errors.append("rotating the trust anchor requires pushing main")
+        if not request.create_or_reuse_tag:
+            errors.append(
+                "rotating the trust anchor requires creating or reusing the release tag"
+            )
 
     if request.dry_run:
         for label, attribute in _DRY_RUN_OPTIONS:
