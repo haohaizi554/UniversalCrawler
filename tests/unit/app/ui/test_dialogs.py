@@ -287,8 +287,12 @@ class DispatcherQtDialogTests(unittest.TestCase):
         src = inspect.getsource(mode_selection_ui._prompt_mode_with_qt)
         self.assertIn("ChromedDialog", src)
         self.assertIn("theme_colors", src)
-        self.assertIn('"cardReport", Mode.REPORT, "6"', src)
-        self.assertIn("支持数字键 1-6 快速选择", src)
+        self.assertIn("btn_specs = _visible_qt_mode_specs()", src)
+        self.assertIn("len(btn_specs)", src)
+        self.assertIn(
+            ("cardReport", mode_selection_ui.Mode.REPORT, "6"),
+            tuple(spec[:3] for spec in mode_selection_ui._QT_MODE_SPECS),
+        )
         self.assertNotIn("dialog = QDialog()", src)
 
     def test_load_app_icon_meipass(self):
