@@ -27,10 +27,16 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
     re.DOTALL | re.IGNORECASE,
 )
+_TRUNCATED_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
 _SENSITIVE_HEADER = re.compile(
     r"(?im)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*[^\r\n]+"
 )
-_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
+_BEARER_TOKEN = re.compile(
+    r'''(?i)\bbearer\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[a-z0-9._~+/=-]+)'''
+)
 _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _SENSITIVE_QUERY_VALUE = re.compile(
     r"(?i)([?&;][^=&\s]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^=&\s]*\s*=)[^&#\s]*"
@@ -38,9 +44,23 @@ _SENSITIVE_QUERY_VALUE = re.compile(
 _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)\b[^\s=,;]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^\s=,;]*\s*=\s*[^\s,;#&]+"
 )
-_SENSITIVE_DATA_KEY = re.compile(
-    r"(?i)(?:token|key|password|passwd|secret|authorization|cookie|credential)"
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
+_SENSITIVE_KEY_SEGMENTS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+    }
 )
+_PROXY_CREDENTIAL_SEGMENTS = _SENSITIVE_KEY_SEGMENTS | frozenset({"user", "username"})
 
 
 def redact_release_text(text: str) -> str:
@@ -48,6 +68,7 @@ def redact_release_text(text: str) -> str:
 
     redacted = str(text)
     redacted = _PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
+    redacted = _TRUNCATED_PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     redacted = _SENSITIVE_HEADER.sub(lambda match: f"{match.group(0).split(':', 1)[0]}: {REDACTED}", redacted)
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
@@ -55,8 +76,18 @@ def redact_release_text(text: str) -> str:
     return _SENSITIVE_ASSIGNMENT.sub(REDACTED, redacted)
 
 
+def _is_sensitive_data_key(key: str) -> bool:
+    normalized = _CAMEL_CASE_BOUNDARY.sub("_", key).casefold()
+    segments = frozenset(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
+    if not segments:
+        return False
+    if segments & _SENSITIVE_KEY_SEGMENTS:
+        return True
+    return "proxy" in segments and bool(segments & _PROXY_CREDENTIAL_SEGMENTS)
+
+
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
-    if key and _SENSITIVE_DATA_KEY.search(key):
+    if key and _is_sensitive_data_key(key):
         return REDACTED
     if isinstance(value, str):
         return redact_release_text(value)

@@ -102,6 +102,31 @@ def test_release_logs_redact_sensitive_material(secret):
     assert "[REDACTED]" in redacted
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('before Bearer "ghp_quoted_token" after', "before Bearer [REDACTED] after"),
+        ("before Bearer 'ghp_quoted_token' after", "before Bearer [REDACTED] after"),
+    ],
+)
+def test_release_logs_redact_quoted_bearer_values_without_losing_context(text, expected):
+    assert redact_release_text(text) == expected
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+    ),
+)
+def test_release_logs_redact_truncated_private_key_material_through_end_of_text(marker):
+    text = f"before\n{marker}\nprivate material\nstill truncated"
+
+    assert redact_release_text(text) == "before\n[REDACTED]"
+
+
 def test_emitter_recursively_redacts_hostile_message_and_data(capsys):
     token = "ghp_abcdefghijklmnopqrstuvwxyz"
     password = "do-not-log-this"
@@ -156,6 +181,36 @@ def test_emitter_redacts_nested_plain_sensitive_mapping_keys():
     assert event.data["key"] == "[REDACTED]"
     assert event.data["private_key"] == "[REDACTED]"
     assert all(value == "[REDACTED]" for value in event.data["publication"].values())
+
+
+def test_emitter_redacts_semantic_credential_key_segments_without_overmatching_benign_keys():
+    secret = "never-emit-this"
+    emitter = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC)
+    sensitive_keys = (
+        "key",
+        "api_key",
+        "private-key",
+        "token",
+        "access_token",
+        "password",
+        "secret",
+        "cookie",
+        "authorization",
+        "proxy_username",
+        "proxy-password",
+        "proxyCredentials",
+    )
+    benign_data = {"monkey": "banana", "keyframe": "frame", "tokenize": "words"}
+
+    event = emitter.emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={**{key: secret for key in sensitive_keys}, **benign_data},
+    )
+
+    assert all(event.data[key] == "[REDACTED]" for key in sensitive_keys)
+    assert {key: event.data[key] for key in benign_data} == benign_data
 
 
 @pytest.mark.parametrize(
