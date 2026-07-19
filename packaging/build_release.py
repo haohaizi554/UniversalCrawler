@@ -13,8 +13,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
 from typing import Iterator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +34,25 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
-from scripts.update_bootstrap import default_manifest_private_key_path  # noqa: E402
+from scripts.update_bootstrap import (  # noqa: E402
+    default_manifest_private_key_path,
+    default_manifest_public_key_path,
+    generate_manifest_key,
+)
 from release_lock import (  # noqa: E402
     LOCK_ROOT_ENV,
     LOCK_TOKEN_ENV,
     release_build_lock,
     release_lock_path,
+)
+from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
+from release_tool.modes import resolve_release_mode  # noqa: E402
+from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
+from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
+from release_tool.runner import ReleasePipelineHooks  # noqa: E402
+from release_tool.versioning import (  # noqa: E402
+    apply_version_update,
+    plan_version_update,
 )
 
 
@@ -793,6 +807,8 @@ def _build_binaries(
     lock_token: str,
     lock_root: Path,
     enforce_source_immutability: bool = True,
+    build_portable: bool = True,
+    build_installer: bool = True,
 ) -> None:
     root = Path(project_root).resolve()
     source_fingerprints = (
@@ -804,24 +820,236 @@ def _build_binaries(
         trust = _validate_production_trust(
             config_path=root / "app" / "config" / "update_trust.py"
         )
-    _run_build(
-        "build_portable.py",
-        root,
-        lock_token=lock_token,
-        lock_root=lock_root,
-    )
-    _run_build(
-        "build_installer.py",
-        root,
-        lock_token=lock_token,
-        lock_root=lock_root,
-    )
+    if build_portable:
+        _run_build(
+            "build_portable.py",
+            root,
+            lock_token=lock_token,
+            lock_root=lock_root,
+        )
+    if build_installer:
+        _run_build(
+            "build_installer.py",
+            root,
+            lock_token=lock_token,
+            lock_root=lock_root,
+        )
     if enforce_source_immutability:
         _validate_snapshot_source_unchanged(root, source_fingerprints)
     if signed_build and trust is not None:
         _version, installer = _project_release_metadata(root)
         signer = _extract_windows_trust(installer, project_root=root)
         _validate_windows_signer_identity(trust, signer)
+
+
+def _build_pipeline_hooks(
+    request: BuildRequest,
+    environment: Mapping[str, str],
+    emitter: object | None,
+) -> ReleasePipelineHooks:
+    """Adapt the existing release primitives to one request-scoped runner."""
+
+    mode = resolve_release_mode(
+        request.target_version,
+        request.remote,
+        same_release_repair=request.same_release_repair,
+        offline_debug=request.offline_debug,
+    )
+    custom_proxy = request.custom_proxy
+    if custom_proxy.startswith("env:"):
+        custom_proxy = str(environment.get(custom_proxy[4:]) or "")
+        if not custom_proxy:
+            raise ValueError("custom proxy reference is unavailable")
+    child_environment = build_proxy_environment(
+        ProxySelection(label=request.proxy_label, endpoint=custom_proxy),
+        environment,
+    )
+    resources = ExitStack()
+    state: dict[str, object] = {
+        "assets": (),
+        "installer": None,
+        "snapshot_root": None,
+        "source_commit": "",
+        "version_plan": None,
+        "version_result": None,
+    }
+    tag = f"v{request.target_version}"
+
+    def emit_log(message: str) -> None:
+        if emitter is None:
+            return
+        emit = getattr(emitter, "emit", None)
+        if callable(emit):
+            emit("log", stage=ReleaseStage.GIT, progress=75, message=message)
+
+    publisher = GitHubReleasePublisher(
+        request.repository,
+        child_environment,
+        emit_log,
+        project_root=PROJECT_ROOT,
+    )
+
+    def plan_version(target_version: str):
+        plan = plan_version_update(target_version, PROJECT_ROOT)
+        state["version_plan"] = plan
+        return plan
+
+    def apply_version(target_version: str):
+        plan = plan_version(target_version)
+        result = apply_version_update(plan)
+        state["version_result"] = result
+        return result
+
+    def ensure_snapshot() -> tuple[Path, str]:
+        snapshot_root = state["snapshot_root"]
+        source_commit = state["source_commit"]
+        if isinstance(snapshot_root, Path) and isinstance(source_commit, str) and source_commit:
+            return snapshot_root, source_commit
+        source_commit = _validate_git_release_state(tag)
+        lock_token = resources.enter_context(_release_build_lock(PROJECT_ROOT))
+        if _validate_git_release_state(tag) != source_commit:
+            raise SystemExit("HEAD or release tag changed while waiting for the release build lock")
+        snapshot_root = resources.enter_context(
+            _source_snapshot(source_commit, repository_root=PROJECT_ROOT)
+        )
+        _validate_windows_release_tools(snapshot_root)
+        snapshot_version, installer = _project_release_metadata(snapshot_root)
+        _validate_release_identity(
+            package_version=snapshot_version,
+            version=request.target_version,
+            tag=tag,
+        )
+        state["snapshot_root"] = snapshot_root
+        state["source_commit"] = source_commit
+        state["installer"] = installer
+        state["lock_token"] = lock_token
+        return snapshot_root, source_commit
+
+    def build_selected(*, portable: bool, installer: bool) -> None:
+        if mode in {
+            ReleaseMode.LOCAL_DEBUG,
+            ReleaseMode.LOCAL_REBUILD,
+            ReleaseMode.OFFLINE_DEBUG,
+        }:
+            with _release_build_lock(PROJECT_ROOT) as lock_token:
+                _build_binaries(
+                    PROJECT_ROOT,
+                    lock_token=lock_token,
+                    lock_root=PROJECT_ROOT,
+                    enforce_source_immutability=False,
+                    build_portable=portable,
+                    build_installer=installer,
+                )
+            return
+        snapshot_root, _source_commit = ensure_snapshot()
+        lock_token = str(state["lock_token"])
+        _build_binaries(
+            snapshot_root,
+            lock_token=lock_token,
+            lock_root=PROJECT_ROOT,
+            build_portable=portable,
+            build_installer=installer,
+        )
+
+    def sign_manifest(_request: BuildRequest) -> tuple[Path, ...]:
+        snapshot_root, source_commit = ensure_snapshot()
+        installer = state["installer"]
+        if not isinstance(installer, Path):
+            raise RuntimeError("release installer is unavailable for manifest signing")
+        private_key = _private_key_path(request, child_environment)
+        notes = _release_notes(request.release_notes_path)
+        release_dir = _prepare_release_assets(
+            installer=installer,
+            private_key=private_key,
+            version=request.target_version,
+            tag=tag,
+            source_commit=source_commit,
+            repository=request.repository,
+            output_root=Path(request.output_root) if request.output_root else RELEASE_ASSETS_ROOT,
+            notes=notes,
+            project_root=snapshot_root,
+        )
+        assets = tuple(sorted(release_dir.iterdir()))
+        state["assets"] = assets
+        return assets
+
+    def commit_version_changes(_request: BuildRequest) -> str:
+        result = state["version_result"]
+        paths = getattr(result, "changed_files", ())
+        if paths:
+            _run_git(["add", "--", *(str(path) for path in paths)])
+            _run_git(["commit", "-m", f"chore: release {request.target_version}"])
+        return _run_git(["rev-parse", "HEAD"])
+
+    def push_main(_request: BuildRequest) -> None:
+        _run_git(["push", "origin", "HEAD:main"])
+
+    def ensure_tag(_request: BuildRequest, commit: str) -> None:
+        publisher.ensure_tag(tag, commit or _run_git(["rev-parse", "HEAD"]))
+
+    def ensure_release(_request: BuildRequest) -> None:
+        if not request.release_notes_path:
+            raise ValueError("creating a release requires release_notes_path")
+        publisher.ensure_release(
+            tag,
+            f"UniversalCrawler {request.target_version}",
+            request.release_notes_path,
+            repair=request.same_release_repair,
+        )
+
+    def upload_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        selected = list(assets or state["assets"])
+        if request.upload_public_key:
+            public_key = default_manifest_public_key_path(project_root=PROJECT_ROOT)
+            if not public_key.is_file():
+                raise ValueError("manifest public key is unavailable for upload")
+            selected.append(public_key)
+        publisher.upload_assets(tag, selected, repair=request.same_release_repair)
+
+    def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        publisher.verify_assets(tag, assets or state["assets"])
+
+    return ReleasePipelineHooks(
+        plan_version=plan_version,
+        apply_version=apply_version,
+        generate_key=lambda _generate, rotate: generate_manifest_key(
+            project_root=PROJECT_ROOT,
+            rotate=rotate,
+            write_public_key_to_config=rotate,
+        ),
+        build_portable=lambda: build_selected(portable=True, installer=False),
+        build_installer=lambda: build_selected(portable=False, installer=True),
+        run_smoke_tests=lambda: None,
+        sign_manifest=sign_manifest,
+        commit_version_changes=commit_version_changes,
+        push_main=push_main,
+        ensure_tag=ensure_tag,
+        ensure_release=ensure_release,
+        upload_assets=upload_assets,
+        verify_remote_assets=verify_remote_assets,
+        cleanup=resources.close,
+    )
+
+
+def _private_key_path(request: BuildRequest, environment: Mapping[str, str]) -> Path:
+    reference = request.private_key_path.strip()
+    if reference.startswith("env:"):
+        variable = reference[4:]
+        reference = str(environment.get(variable) or "")
+        if not reference:
+            raise ValueError("private key path reference is unavailable")
+    return _validate_private_key_path(
+        Path(reference) if reference else default_manifest_private_key_path()
+    )
+
+
+def _release_notes(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("release notes path is unreadable") from error
 
 
 def build_parser() -> argparse.ArgumentParser:

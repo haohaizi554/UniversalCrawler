@@ -14,6 +14,11 @@ _REMOTE_WRITE_OPTIONS = (
     ("upload public keys", "upload_public_key"),
 )
 
+_LOCAL_MANIFEST_OPTIONS = (
+    ("generate manifest keys", "generate_manifest_key"),
+    ("sign manifests", "sign_manifest"),
+)
+
 _DRY_RUN_OPTIONS = (
     ("apply version changes", "apply_version"),
     ("build portable artifacts", "build_portable"),
@@ -96,6 +101,9 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
         ReleaseMode.OFFLINE_DEBUG,
     }:
         for label, attribute in _REMOTE_WRITE_OPTIONS:
+            if getattr(request, attribute):
+                errors.append(f"{mode.value} mode cannot {label}")
+        for label, attribute in _LOCAL_MANIFEST_OPTIONS:
             if getattr(request, attribute):
                 errors.append(f"{mode.value} mode cannot {label}")
 

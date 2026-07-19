@@ -14,6 +14,14 @@ import pytest
 from tests.support.paths import PROJECT_ROOT
 
 
+RELEASE_TOOL_ROOT = PROJECT_ROOT / "packaging"
+if str(RELEASE_TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(RELEASE_TOOL_ROOT))
+
+
+from release_tool.models import BuildRequest, RemoteReleaseInfo
+
+
 BUILD_RELEASE_TOOL = PROJECT_ROOT / "packaging" / "build_release.py"
 UPDATE_MANIFEST_TOOL = PROJECT_ROOT / "packaging" / "update_manifest.py"
 
@@ -158,6 +166,37 @@ def test_build_only_is_an_explicit_escape_hatch_that_does_not_prepare_update_ass
     ]
     assert all(call.args[1] == PROJECT_ROOT for call in run_build.call_args_list)
     prepare_assets.assert_not_called()
+
+
+def test_pipeline_hooks_use_the_existing_local_build_primitive_without_source_immutability():
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_installer=False,
+        run_smoke_tests=False,
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_build_binaries") as build_binaries,
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        hooks.build_portable()
+
+    build_binaries.assert_called_once_with(
+        tool.PROJECT_ROOT,
+        lock_token="release-token",
+        lock_root=tool.PROJECT_ROOT,
+        enforce_source_immutability=False,
+        build_portable=True,
+        build_installer=False,
+    )
 
 
 def test_run_build_passes_the_snapshot_project_root_to_each_build_script(tmp_path):

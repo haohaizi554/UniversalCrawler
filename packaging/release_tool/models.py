@@ -105,10 +105,16 @@ class ReleaseResult:
     stage: ReleaseStage
     errors: tuple[str, ...] = ()
     artifacts: tuple[str, ...] = ()
+    failed_stage: ReleaseStage | None = None
+    error: str = ""
 
     @property
     def succeeded(self) -> bool:
-        return self.stage is ReleaseStage.SUCCEEDED and not self.errors
+        return self.stage is ReleaseStage.SUCCEEDED and not self.errors and not self.error
+
+    @property
+    def cancelled(self) -> bool:
+        return self.stage is ReleaseStage.CANCELLED
 
 
 __all__ = [
