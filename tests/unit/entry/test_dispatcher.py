@@ -100,6 +100,25 @@ class DispatcherTests(unittest.TestCase):
         with patch.dict(os.environ, {"UCRAWL_MODE": ""}, clear=False):
             self.assertEqual(parse_env_mode(), None)
 
+    def test_packaged_launcher_menu_hides_source_only_tools(self):
+        from entry import dispatcher
+
+        with patch.object(dispatcher.sys, "frozen", True, create=True):
+            items = dispatcher._runtime_menu_items()
+
+        modes = {mode for _key, _label, mode in items}
+        self.assertNotIn(dispatcher.Mode.TEST, modes)
+        self.assertNotIn(dispatcher.Mode.REPORT, modes)
+        self.assertTrue(
+            {
+                dispatcher.Mode.GUI,
+                dispatcher.Mode.WEB,
+                dispatcher.Mode.INTERACTIVE,
+                dispatcher.Mode.CLI,
+                None,
+            }.issubset(modes)
+        )
+
     def test_detect_mode_no_args_no_tty_defaults_to_cli(self):
         """无参 + 非 TTY → CLI。"""
         from entry.dispatcher import detect_mode, Mode

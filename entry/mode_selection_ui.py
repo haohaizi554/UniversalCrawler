@@ -11,7 +11,13 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-from entry.dispatcher import Mode, _BANNER, _MenuUnavailable, is_tty
+from entry.dispatcher import (
+    Mode,
+    _BANNER,
+    _MenuUnavailable,
+    _launcher_mode_visible,
+    is_tty,
+)
 from entry.qt_entry_utils import MAIN_APP_USER_MODEL_ID, ensure_windows_app_user_model_id, load_qt_icon
 
 if TYPE_CHECKING:
@@ -27,6 +33,18 @@ _MENU_ITEMS = [
     ("6", "代码量统计  (生成并打开 HTML 报告)", Mode.REPORT),
     ("q", "退出", None),
 ]
+_QT_MODE_SPECS = (
+    ("cardGui", Mode.GUI, "1", "桌面 GUI", "PyQt6 图形界面，支持完整可视化操作", "推荐", "cardTagGui"),
+    ("cardWeb", Mode.WEB, "2", "Web UI", "浏览器访问，跨设备，FastAPI 后端", "", "cardTagWeb"),
+    ("cardInt", Mode.INTERACTIVE, "3", "交互式引导", "在独立终端逐步选择平台和参数，适合新手", "", "cardTagInt"),
+    ("cardCli", Mode.CLI, "4", "CLI 命令行终端", "在独立终端查看用法后可继续输入命令", "", "cardTagCli"),
+    ("cardTest", Mode.TEST, "5", "测试套件", "全量/单元/UI/浏览器，多类别可勾选", "工程", "cardTagTest"),
+    ("cardReport", Mode.REPORT, "6", "代码量统计", "扫描项目代码，生成并直接打开 HTML 报告", "报告", "cardTagReport"),
+)
+
+
+def _visible_qt_mode_specs() -> tuple[tuple[str, Mode, str, str, str, str, str], ...]:
+    return tuple(spec for spec in _QT_MODE_SPECS if _launcher_mode_visible(spec[1]))
 
 def _display_width(text: str) -> int:
     """计算字符串在终端的显示宽度（汉字/East Asian Wide 字符按 2 计算）。"""
@@ -102,6 +120,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     except Exception:
         return None
 
+    btn_specs = _visible_qt_mode_specs()
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
@@ -304,22 +323,13 @@ def _prompt_mode_with_qt() -> Mode | None:
     title_label.setObjectName("heroTitle")
     title_box.addWidget(title_label)
 
-    subtitle = QLabel("请选择启动模式  ·  支持数字键 1-6 快速选择")
+    subtitle = QLabel(f"请选择启动模式  ·  支持数字键 1-{len(btn_specs)} 快速选择")
     subtitle.setObjectName("heroSubtitle")
     title_box.addWidget(subtitle)
     header.addLayout(title_box)
     header.addStretch(1)
     body.addLayout(header)
     body.addSpacing(22)
-
-    btn_specs = [
-        ("cardGui", Mode.GUI, "1", "桌面 GUI", "PyQt6 图形界面，支持完整可视化操作", "推荐", "cardTagGui"),
-        ("cardWeb", Mode.WEB, "2", "Web UI", "浏览器访问，跨设备，FastAPI 后端", "", "cardTagWeb"),
-        ("cardInt", Mode.INTERACTIVE, "3", "交互式引导", "在独立终端逐步选择平台和参数，适合新手", "", "cardTagInt"),
-        ("cardCli", Mode.CLI, "4", "CLI 命令行终端", "在独立终端查看用法后可继续输入命令", "", "cardTagCli"),
-        ("cardTest", Mode.TEST, "5", "测试套件", "全量/单元/UI/浏览器，多类别可勾选", "工程", "cardTagTest"),
-        ("cardReport", Mode.REPORT, "6", "代码量统计", "扫描项目代码，生成并直接打开 HTML 报告", "报告", "cardTagReport"),
-    ]
 
     cards: list[tuple[Mode, QPushButton]] = []
 
@@ -503,17 +513,20 @@ def prompt_mode_menu() -> Mode | None:
         )
         raise _MenuUnavailable()
 
-    width = max(_display_width(f"[{key}] {label}") for key, label, _ in _MENU_ITEMS) + 2
+    menu_items = tuple(item for item in _MENU_ITEMS if _launcher_mode_visible(item[2]))
+    width = max(_display_width(f"[{key}] {label}") for key, label, _ in menu_items) + 2
 
     sys.stderr.write(_BANNER)
     sys.stderr.write("  🎯 请选择启动模式 (输入数字或字母):\n\n")
-    for key, label, mode in _MENU_ITEMS:
+    for key, label, mode in menu_items:
         _write_menu_item(key, label, mode, width)
     sys.stderr.write("\n")
     sys.stderr.flush()
 
+    choices = {key: mode for key, _label, mode in menu_items}
+    prompt_keys = "/".join(choices)
     try:
-        raw = input("请输入 [1/2/3/4/5/6/q]: ").strip().lower()
+        raw = input(f"请输入 [{prompt_keys}]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         sys.stderr.write("\n")
         return None
@@ -521,12 +534,10 @@ def prompt_mode_menu() -> Mode | None:
     if raw in ("q", "quit", "exit", "0"):
         return None
 
-    if raw in ("1", "2", "3", "4", "5", "6"):
-        idx = int(raw) - 1
-        if 0 <= idx < len(_MENU_ITEMS) - 1:
-            return _MENU_ITEMS[idx][2]
+    if raw in choices:
+        return choices[raw]
 
-    for _key, label, mode in _MENU_ITEMS:
+    for _key, label, mode in menu_items:
         if mode is not None and (raw == mode.value or raw in label.lower()):
             return mode
 

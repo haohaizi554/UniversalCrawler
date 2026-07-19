@@ -8,6 +8,21 @@ def test_mode_selection_dialog_minimum_stays_inside_available_geometry():
     assert mode_selection_ui._viewport_safe_dialog_minimum(400, 300) == (368, 268)
 
 
+def test_packaged_qt_panel_hides_test_and_report_cards(monkeypatch):
+    monkeypatch.setattr(mode_selection_ui.sys, "frozen", True, raising=False)
+
+    modes = {spec[1] for spec in mode_selection_ui._visible_qt_mode_specs()}
+
+    assert mode_selection_ui.Mode.TEST not in modes
+    assert mode_selection_ui.Mode.REPORT not in modes
+    assert modes == {
+        mode_selection_ui.Mode.GUI,
+        mode_selection_ui.Mode.WEB,
+        mode_selection_ui.Mode.INTERACTIVE,
+        mode_selection_ui.Mode.CLI,
+    }
+
+
 def test_mode_cards_use_button_semantics_focus_activation_and_scroll_container():
     source = Path(mode_selection_ui.__file__).read_text(encoding="utf-8")
 

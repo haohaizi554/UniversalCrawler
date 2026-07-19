@@ -256,6 +256,20 @@ _MENU_ITEMS = [
     ("6", "代码量统计  (生成并打开 HTML 报告)",       Mode.REPORT),
     ("q", "退出",                                    None),
 ]
+_SOURCE_ONLY_MENU_MODES = frozenset({Mode.TEST, Mode.REPORT})
+
+
+def _launcher_mode_visible(mode: Mode | None) -> bool:
+    """安装包面板只展示面向最终用户的运行入口。"""
+
+    return not (
+        bool(getattr(sys, "frozen", False))
+        and mode in _SOURCE_ONLY_MENU_MODES
+    )
+
+
+def _runtime_menu_items() -> tuple[tuple[str, str, Mode | None], ...]:
+    return tuple(item for item in _MENU_ITEMS if _launcher_mode_visible(item[2]))
 
 def _display_width(text: str) -> int:
     """计算字符串在终端的显示宽度（汉字/East Asian Wide 字符按 2 计算）。"""
@@ -356,12 +370,13 @@ def prompt_mode_menu() -> Mode | None:
         )
         return None
 
+    menu_items = _runtime_menu_items()
     # 选最长 label 宽度做对齐
-    width = max(_display_width(f"[{k}] {label}") for k, label, _ in _MENU_ITEMS) + 2
+    width = max(_display_width(f"[{k}] {label}") for k, label, _ in menu_items) + 2
 
     sys.stderr.write(_BANNER)
     sys.stderr.write("  🎯 请选择启动模式 (输入数字或字母):\n\n")
-    for key, label, mode in _MENU_ITEMS:
+    for key, label, mode in menu_items:
         marker = "" if mode is None else "  → "
         if mode is None:
             # 退出项用虚线分隔
@@ -374,8 +389,10 @@ def prompt_mode_menu() -> Mode | None:
     sys.stderr.write("\n")
     sys.stderr.flush()
 
+    choices = {key: mode for key, _label, mode in menu_items}
+    prompt_keys = "/".join(choices)
     try:
-        raw = input("请输入 [1/2/3/4/5/6/q]: ").strip().lower()
+        raw = input(f"请输入 [{prompt_keys}]: ").strip().lower()
     except EOFError:
         sys.stderr.write("\n")
         return None
@@ -386,14 +403,11 @@ def prompt_mode_menu() -> Mode | None:
     if raw in ("q", "quit", "exit", "0"):
         return None
 
-    # 接受数字 1-6
-    if raw in ("1", "2", "3", "4", "5", "6"):
-        idx = int(raw) - 1
-        if 0 <= idx < len(_MENU_ITEMS) - 1:  # 排除退出项
-            return _MENU_ITEMS[idx][2]
+    if raw in choices:
+        return choices[raw]
 
     # 接受完整关键字
-    for _key, label, mode in _MENU_ITEMS:
+    for _key, label, mode in menu_items:
         if mode is not None and (raw == mode.value or raw in label.lower()):
             return mode
 
