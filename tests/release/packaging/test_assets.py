@@ -801,15 +801,17 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("--noconfirm", source)
         self.assertIn("--clean", source)
 
-class PackagingMetadataTests(unittest.TestCase):
+class ProjectMetaTests(unittest.TestCase):
     """project_meta.py 与 pyproject.toml 的一致性。"""
 
     def test_project_meta_exists(self):
         self.assertTrue(PROJECT_META.exists())
 
-    def test_project_meta_reads_package_version(self):
+    def test_project_meta_reads_the_canonical_package_version(self):
         source = PROJECT_META.read_text(encoding="utf-8")
-        self.assertIn('PACKAGE_VERSION = _project_field("version")', source)
+        self.assertIn("from shared.version import __version__", source)
+        self.assertIn("PACKAGE_VERSION = __version__", source)
+        self.assertNotIn('_project_field("version")', source)
         self.assertIn('PACKAGE_NAME = _project_field("name")', source)
 
     def test_installer_basename_uses_version(self):

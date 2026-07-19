@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ucrawl"
-version = "3.6.21"
+dynamic = ["version"]
 description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -75,6 +75,9 @@ ucrawl-test-gui = "entry.test_entry:main"
 
 [tool.setuptools]
 py-modules = ["count_project"]
+
+[tool.setuptools.dynamic]
+version = {attr = "shared.version.__version__"}
 
 [tool.setuptools.data-files]
 "share/ucrawl" = ["analytics.ico"]
