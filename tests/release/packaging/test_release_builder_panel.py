@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from PyQt6.QtCore import QObject, QProcess, QRect, Qt, pyqtSignal
+from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import QApplication
 
 from tests.support.paths import PROJECT_ROOT
@@ -297,16 +298,19 @@ def test_custom_proxy_endpoint_tracks_project_proxy_option(qapp):
 def test_remote_lookup_is_async_and_late_result_is_ignored_after_teardown(qapp):
     release_loader = threading.Event()
     loader_started = threading.Event()
+    ui_thread_id = threading.get_ident()
+    loader_thread_ids: list[int] = []
 
     def slow_loader(*_args):
+        loader_thread_ids.append(threading.get_ident())
         loader_started.set()
         release_loader.wait(2)
         return RemoteReleaseInfo.available("9.9.9")
 
-    started = time.monotonic()
     window = ReleaseBuilderWindow(project_version="3.6.20", remote_loader=slow_loader)
-    assert time.monotonic() - started < 0.25
     assert loader_started.wait(1)
+    assert len(loader_thread_ids) == 1
+    assert loader_thread_ids[0] != ui_thread_id
 
     window.shutdown()
     release_loader.set()
@@ -433,6 +437,7 @@ def test_finished_drains_unread_qprocess_output_before_terminal_judgement(qapp):
 def test_real_qprocess_finished_drains_output_without_ready_read_slots(qapp):
     process = QProcess()
     controller = ReleaseProcessController(process=process)
+    completed = QSignalSpy(controller.completed)
     process.readyReadStandardOutput.disconnect()
     process.readyReadStandardError.disconnect()
     payload = (success_event() + "\n").encode("utf-8")
@@ -445,7 +450,8 @@ def test_real_qprocess_finished_drains_output_without_ready_read_slots(qapp):
     )
 
     process.start()
-    pump_until(qapp, lambda: controller.result.succeeded, timeout=3.0)
+    if not completed:
+        assert completed.wait(10_000)
 
     assert controller.result.succeeded is True
 

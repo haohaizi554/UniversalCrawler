@@ -190,3 +190,14 @@ python -m scripts.update_bootstrap scan-secrets
 
 最后确认工作树只包含预期公开文件，且私钥、token、代理密码、请求临时文件均未被 Git
 跟踪。
+
+### 2026-07-19 验收记录
+
+- Release 打包与更新器分区：`764 passed in 97.04s`。
+- Headless 规划烟测：
+  `python packaging/build_release.py --headless --dry-run --version 3.6.21 --build-only`，
+  返回码为 `0`，且不会修改统一版本源。
+- 私钥扫描区分文档/测试中的短合成占位文本与真实 PEM 载荷；真实私钥即使落入测试目录也会
+  阻断发布。
+- 正式发布仍必须完成 installer、`latest.json`、`latest.json.sig` 三项远端回读，不能用
+  dry-run 或本地构建结果替代。

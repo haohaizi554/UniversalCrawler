@@ -288,6 +288,59 @@ def test_scan_secrets_detects_private_key_marker(tmp_path, monkeypatch):
     assert any("private key" in finding.reason for finding in findings)
 
 
+def test_scan_secrets_allows_short_synthetic_private_key_fixture_in_tests(
+    tmp_path,
+    monkeypatch,
+):
+    repo = tmp_path / "repo"
+    fixture = repo / "tests" / "test_redaction.py"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(
+        'KEY = """-----BEGIN PRIVATE KEY-----\n'
+        "synthetic-fixture\n"
+        '-----END PRIVATE KEY-----"""\n',
+        encoding="utf-8",
+    )
+    _git_init(repo)
+    monkeypatch.setenv("UCRAWL_RELEASE_SECRETS_DIR", str(tmp_path / "outside"))
+    subprocess.run(
+        ["git", "add", "tests/test_redaction.py"],
+        cwd=repo,
+        check=True,
+        shell=False,
+    )
+
+    findings = bootstrap.scan_repository_for_secrets(project_root=repo)
+
+    assert findings == []
+
+
+def test_scan_secrets_detects_real_private_key_material_even_in_tests(
+    tmp_path,
+    monkeypatch,
+):
+    repo = tmp_path / "repo"
+    fixture = repo / "tests" / "test_accidental_key.py"
+    fixture.parent.mkdir(parents=True)
+    private_key = ECC.generate(curve="Ed25519").export_key(format="PEM")
+    fixture.write_text(
+        f'KEY = """{private_key}"""\n',
+        encoding="utf-8",
+    )
+    _git_init(repo)
+    monkeypatch.setenv("UCRAWL_RELEASE_SECRETS_DIR", str(tmp_path / "outside"))
+    subprocess.run(
+        ["git", "add", "tests/test_accidental_key.py"],
+        cwd=repo,
+        check=True,
+        shell=False,
+    )
+
+    findings = bootstrap.scan_repository_for_secrets(project_root=repo)
+
+    assert any("private key" in finding.reason for finding in findings)
+
+
 def test_scan_secrets_detects_dangerous_untracked_signing_file(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

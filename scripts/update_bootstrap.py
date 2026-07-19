@@ -22,7 +22,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 # ``Crypto`` 来自仍在维护的 PyCryptodome 包，而非已废弃的 PyCrypto。
 from Crypto.PublicKey import ECC  # nosec B413
@@ -880,7 +880,17 @@ def inject_windows_trust(
     return info
 
 
-_PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+(?:EC\s+|RSA\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE\s+KEY", re.IGNORECASE)
+_PRIVATE_KEY_PATTERN = re.compile(
+    r"-----BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?-----",
+    re.IGNORECASE,
+)
+_PRIVATE_KEY_BLOCK_PATTERN = re.compile(
+    r"-----BEGIN\s+(?P<label>(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?)-----"
+    r"(?P<body>.*?)"
+    r"-----END\s+(?P=label)-----",
+    re.DOTALL | re.IGNORECASE,
+)
+_PRIVATE_KEY_PAYLOAD_LINE = re.compile(r"[A-Za-z0-9+/=]{24,}")
 _PFX_ENV_ASSIGNMENT_PATTERN = re.compile(r"UCRAWL_SIGN_PFX_PASSWORD\s*=\s*\S+", re.IGNORECASE)
 _PFX_PASSPHRASE_PATTERN = re.compile(r"PFX\s+pass(?:word|phrase)\s*[:=]\s*\S+", re.IGNORECASE)
 _DANGEROUS_SUFFIXES = (
@@ -936,9 +946,53 @@ def _read_small_text(path: Path) -> str:
         return ""
 
 
-def _scan_text_for_sensitive_markers(text: str, *, label: str) -> list[SecretFinding]:
+def _allows_synthetic_private_key_fixture(path_label: str) -> bool:
+    normalized = path_label.replace("\\", "/").lower()
+    return normalized.startswith("tests/") or normalized.startswith(
+        "docs/superpowers/plans/"
+    )
+
+
+def _private_key_payload_length(lines: Iterable[str]) -> int:
+    payload_length = 0
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("+"):
+            line = line[1:].strip()
+        if not line:
+            continue
+        if ":" in line and payload_length == 0:
+            continue
+        if not _PRIVATE_KEY_PAYLOAD_LINE.fullmatch(line):
+            break
+        payload_length += len(line)
+    return payload_length
+
+
+def _contains_realistic_private_key_payload(text: str) -> bool:
+    for match in _PRIVATE_KEY_BLOCK_PATTERN.finditer(text):
+        if _private_key_payload_length(match.group("body").splitlines()) >= 64:
+            return True
+
+    for marker in _PRIVATE_KEY_PATTERN.finditer(text):
+        payload_lines = text[marker.end() : marker.end() + 8192].splitlines()
+        if _private_key_payload_length(payload_lines) >= 64:
+            return True
+    return False
+
+
+def _scan_text_for_sensitive_markers(
+    text: str,
+    *,
+    label: str,
+    allow_synthetic_private_keys: bool = False,
+) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
-    if _PRIVATE_KEY_PATTERN.search(text):
+    private_key_marker = _PRIVATE_KEY_PATTERN.search(text)
+    if private_key_marker and (
+        not allow_synthetic_private_keys
+        or _contains_realistic_private_key_payload(text)
+    ):
         findings.append(SecretFinding(label, "private key PEM marker"))
     if _PFX_ENV_ASSIGNMENT_PATTERN.search(text):
         findings.append(SecretFinding(label, "PFX passphrase environment assignment"))
@@ -960,21 +1014,55 @@ def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[Se
             findings.append(SecretFinding(rel, "release secret directory is tracked"))
         if _is_dangerous_secret_path(path):
             findings.append(SecretFinding(rel, "dangerous signing file is tracked"))
-        findings.extend(_scan_text_for_sensitive_markers(_read_small_text(path), label=rel))
+        findings.extend(
+            _scan_text_for_sensitive_markers(
+                _read_small_text(path),
+                label=rel,
+                allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                    rel
+                ),
+            )
+        )
 
     for label, diff_args, name_args in (
         ("staged diff", ["diff", "--cached", "--no-ext-diff", "--unified=0"], ["diff", "--cached", "--name-only", "-z"]),
         ("working tree diff", ["diff", "--no-ext-diff", "--unified=0"], ["diff", "--name-only", "-z"]),
     ):
-        findings.extend(_scan_text_for_sensitive_markers(_git_stdout(diff_args, project_root=project_root), label=label))
         for path in _git_paths(name_args, project_root=project_root):
+            rel = path.relative_to(project_root).as_posix()
+            diff_text = _git_stdout(
+                [*diff_args, "--", rel],
+                project_root=project_root,
+            )
+            findings.extend(
+                _scan_text_for_sensitive_markers(
+                    diff_text,
+                    label=f"{label}: {rel}",
+                    allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                        rel
+                    ),
+                )
+            )
             if _is_dangerous_secret_path(path):
-                findings.append(SecretFinding(path.relative_to(project_root).as_posix(), f"dangerous signing file in {label}"))
+                findings.append(
+                    SecretFinding(rel, f"dangerous signing file in {label}")
+                )
 
     for path in _git_paths(["ls-files", "--others", "--exclude-standard", "-z"], project_root=project_root):
+        rel = path.relative_to(project_root).as_posix()
         if _is_dangerous_secret_path(path):
-            findings.append(SecretFinding(path.relative_to(project_root).as_posix(), "dangerous untracked signing file"))
-        findings.extend(_scan_text_for_sensitive_markers(_read_small_text(path), label=path.relative_to(project_root).as_posix()))
+            findings.append(
+                SecretFinding(rel, "dangerous untracked signing file")
+            )
+        findings.extend(
+            _scan_text_for_sensitive_markers(
+                _read_small_text(path),
+                label=rel,
+                allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                    rel
+                ),
+            )
+        )
 
     try:
         secret_root = release_secrets_dir(project_root=project_root, create=False)
