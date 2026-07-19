@@ -11,6 +11,10 @@ author: UCrawl Team
 
 **CLI / SDK / REST API / 桌面 GUI 四层输入输出完全一致。**
 
+> 维护者发布入口统一为 `python packaging/build_release.py`；版本模式、无界面兼容、
+> 签名材料与信任锚约束见
+> [`docs/guides/release-builder.md`](../../docs/guides/release-builder.md)。
+
 ## 何时使用
 
 - 用户要批量搜索某个关键词在多个平台上的视频

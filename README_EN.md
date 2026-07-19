@@ -642,7 +642,7 @@ This project is not only meant for source execution; practical delivery and dist
 | :-- | :-- | :-- |
 | **Portable Build** | unzip and run, includes Playwright Chromium | `packaging/build_portable.py` |
 | **Installer Build** | Inno Setup installer, supports Start Menu and desktop shortcuts | `packaging/build_installer.py` |
-| **One-Click Release** | builds portable package and installer sequentially | `packaging/build_release.py` |
+| **Release Builder** | themed panel or headless pipeline for versioning, builds, signing, and publishing | `packaging/build_release.py` |
 
 ### What Is Included In The Portable Build
 
@@ -666,7 +666,8 @@ This project is not only meant for source execution; practical delivery and dist
 
 - [`packaging/build_portable.py`](packaging/build_portable.py) — portable build
 - [`packaging/build_installer.py`](packaging/build_installer.py) — installer build
-- [`packaging/build_release.py`](packaging/build_release.py) — one-click release
+- [`packaging/build_release.py`](packaging/build_release.py) — release-builder panel and headless pipeline
+- [`docs/guides/release-builder.md`](docs/guides/release-builder.md) — maintainer guide for release modes, signing, and trust-anchor rotation
 - [`packaging/portable.spec`](packaging/portable.spec) — PyInstaller spec
 - [`packaging/installer.iss`](packaging/installer.iss) — Inno Setup installer script
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — runtime initialization hook
@@ -692,7 +693,9 @@ If you change the packaging chain, do not only edit `packaging/`:
 - whether user configuration and cookies are confirmed not to be bundled into outputs
 - whether development mode still writes to project-root `user_data/`, while packaged mode writes to `%LOCALAPPDATA%`
 
-For details, see the [Packaging And Release Guide](docs/guides/packaging.md) and [Packaging Script Notes](packaging/README.md).
+For details, see the [Release Builder Maintainer Guide](docs/guides/release-builder.md),
+the [Packaging And Release Guide](docs/guides/packaging.md), and
+[Packaging Script Notes](packaging/README.md).
 
 ---
 

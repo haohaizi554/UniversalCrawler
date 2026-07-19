@@ -9,6 +9,7 @@
 | 分类 | 入口 | 内容 |
 | --- | --- | --- |
 | 架构与开发 | [guides/](guides/README.md) | 架构、接口、配置、测试、打包和开发指南 |
+| 发布维护 | [guides/release-builder.md](guides/release-builder.md) | Qt 发布面板、无界面流水线、签名、信任锚与远端验收 |
 | CLI / SDK | [cli/](cli/README.md) | 命令行、REST API 与 Python SDK 使用说明 |
 | 工程实践 | [engineering/](engineering/README.md) | Windows 原生窗口、前端刷新、异步流水线、浏览器挑战和设置控件契约 |
 | 修复记录 | [fixes/](fixes/README.md) | GUI、WebUI、配置中心和运行时修复记录 |

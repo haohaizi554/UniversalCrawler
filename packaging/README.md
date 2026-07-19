@@ -139,24 +139,28 @@ python packaging/build_installer.py
 dist/installer/UniversalCrawlerPro_Setup_<version>.exe
 ```
 
-## 一键发布
+## 发布构建器
 
 ```bash
 python packaging/build_release.py
 ```
 
-执行顺序：
+无参数运行会打开主题化 Qt 面板；自动化或兼容旧脚本时使用
+`--headless`。完整操作矩阵见
+[发布构建器维护指南](../docs/guides/release-builder.md)。
 
-1. 校验工作树干净、版本一致且同名 tag 指向 `HEAD`
-2. 从 `sourceCommit` 导出独立 `git archive` 快照；将 Git LFS 指针物化为真实对象，并按 LFS OID 和声明大小逐个校验
-3. 要求随包的 `N_m3u8DL-RE.exe`、`ffmpeg.exe`、`ffprobe.exe` 已物化为有效 PE 文件，而不是 LFS 指针或异常小的占位文件
-4. 校验 manifest 私钥位于仓库外；从同一快照运行构建、清单生成器与客户端验证器
-5. 构建便携版与安装包，并校验快照源码树未被脚本修改、新增或删除
-6. 开启 Windows 签名时，要求源码中已提交生产信任锚且 `UPDATE_REQUIRE_OS_SIGNATURE=True`；便携版只冻结一次，最终安装包签名人必须与冻结信任一致
-7. 在临时目录生成并用快照中的客户端公钥重新验签 manifest，复核安装包 SHA-256、URL、平台和源提交
-8. 原子生成 `dist/release-assets/v<version>/`，其中只能包含安装包、`latest.json`、`latest.json.sig`
+正式发布流水线执行顺序：
 
-`build_release.py`、`build_portable.py` 与 `build_installer.py` 共用同一个跨进程发布锁。顶层发布通过一次性父令牌授权子构建；直接运行任一叶子脚本也必须独立获取同一把锁，不能绕过并发发布门禁。构建脚本不会在发布过程中回写信任配置，需要更换签名证书时必须先审核并提交新的信任锚。
+1. 查询远端版本并解析本地调试、同版本修复或新版本发布模式。
+2. 在任何版本提交或构建快照之前解析仓库外签名材料；显式轮换时原子注入并提交公开信任锚。
+3. 校验工作树、版本提交与 tag 身份，再从 `sourceCommit` 导出独立 `git archive` 快照。
+4. 将 Git LFS 指针物化为真实对象，并按 LFS OID、声明大小、PE 头和最小体积逐个校验。
+5. 从同一快照构建便携版与安装包，并校验快照源码树未被脚本修改、新增或删除。
+6. 开启 Windows 签名时，要求源码中已提交生产信任锚且 `UPDATE_REQUIRE_OS_SIGNATURE=True`；最终安装包签名人必须与冻结信任一致。
+7. 在临时目录生成并用快照中的客户端公钥重新验签 manifest，复核安装包 SHA-256、URL、平台和源提交。
+8. 原子生成 `dist/release-assets/v<version>/`；公开 PEM 只能作为独立、可选的 Release 审计资产，不进入 portable/installer。
+
+`build_release.py`、`build_portable.py` 与 `build_installer.py` 共用同一个跨进程发布锁。顶层发布通过一次性父令牌授权子构建；直接运行任一叶子脚本也必须独立获取同一把锁，不能绕过并发发布门禁。普通构建绝不回写生产信任配置；只有新版本发布中显式选择“轮换信任锚”时，工具才会在版本提交和快照构建之前事务化写入新公钥。验证版本提交形成前失败会回滚轮换，提交形成后保留已提交源身份，并强制推送、创建 tag 与重建安装包。
 
 Windows 正式发布快照默认放在仓库同级的 `.ucrawl-release-tmp` 短目录中，并使用短工作区名称，避免 Playwright 深层资源在 Inno Setup 内部处理时触发传统 Win32 路径上限。发布机需要改用其他磁盘时可设置 `UCRAWL_RELEASE_TEMP_ROOT`；该值必须指向短、可写的本地目录，不应放在仓库内或网络共享中。
 

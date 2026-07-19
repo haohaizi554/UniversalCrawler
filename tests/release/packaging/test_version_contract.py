@@ -98,6 +98,23 @@ def test_project_meta_imports_the_canonical_version():
     assert '_project_field("version")' not in source
 
 
+def test_release_builder_guide_is_linked_from_docs_index():
+    index = (PROJECT_ROOT / "docs/README.md").read_text(encoding="utf-8")
+
+    assert "guides/release-builder.md" in index
+
+
+def test_version_projection_allowlist_matches_documented_files():
+    versioning = _require_versioning_module()
+
+    assert set(versioning.VERSION_PROJECTION_PATHS) == {
+        Path("README.md"),
+        Path("README_EN.md"),
+        Path("docs/README.md"),
+        Path("cli/skill/SKILL.md"),
+    }
+
+
 @pytest.mark.parametrize(
     "relative_path",
     [

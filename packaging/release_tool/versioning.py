@@ -11,6 +11,12 @@ from pathlib import Path
 
 SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _VERSION_ASSIGNMENT_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
+VERSION_PROJECTION_PATHS = (
+    Path("README.md"),
+    Path("README_EN.md"),
+    Path("docs/README.md"),
+    Path("cli/skill/SKILL.md"),
+)
 
 
 class VersionUpdateError(RuntimeError):
@@ -47,10 +53,10 @@ class _VersionProjection:
 
 _VERSION_PROJECTIONS = (
     _VersionProjection("canonical version", Path("shared/version.py")),
-    _VersionProjection("Chinese README", Path("README.md")),
-    _VersionProjection("English README", Path("README_EN.md")),
-    _VersionProjection("documentation index", Path("docs/README.md")),
-    _VersionProjection("CLI skill manifest", Path("cli/skill/SKILL.md")),
+    _VersionProjection("Chinese README", VERSION_PROJECTION_PATHS[0]),
+    _VersionProjection("English README", VERSION_PROJECTION_PATHS[1]),
+    _VersionProjection("documentation index", VERSION_PROJECTION_PATHS[2]),
+    _VersionProjection("CLI skill manifest", VERSION_PROJECTION_PATHS[3]),
 )
 
 
@@ -247,6 +253,7 @@ def _remove_temporary_files(paths: object) -> None:
 
 
 __all__ = [
+    "VERSION_PROJECTION_PATHS",
     "VersionFileChange",
     "VersionUpdateError",
     "VersionUpdatePlan",
