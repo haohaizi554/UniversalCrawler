@@ -6,7 +6,7 @@ import json
 import re
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Protocol, TypeVar
 from urllib.parse import urlparse
@@ -30,6 +30,10 @@ class ReleaseEventSink(Protocol):
     ) -> object: ...
 
 
+def _noop_signing_transaction() -> None:
+    return None
+
+
 @dataclass(frozen=True)
 class SigningMaterial:
     """Resolved release signing inputs without exposing their contents."""
@@ -38,6 +42,16 @@ class SigningMaterial:
     public_key_path: Path | None
     fingerprint: str
     trust_anchor_changed: bool
+    commit_transaction: Callable[[], None] = field(
+        default=_noop_signing_transaction,
+        repr=False,
+        compare=False,
+    )
+    rollback_transaction: Callable[[], None] = field(
+        default=_noop_signing_transaction,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -148,6 +162,8 @@ def run_release_request(
     current_stage = ReleaseStage.PREFLIGHT
     artifacts: tuple[Path, ...] = ()
     cleaned_up = False
+    signing_material: SigningMaterial | None = None
+    signing_transaction_finalized = False
 
     def emit(kind: str, stage: ReleaseStage, *, message: str = "", data: Mapping[str, object] | None = None) -> None:
         hooks.activate_stage(stage, _PROGRESS[stage])
@@ -176,6 +192,20 @@ def run_release_request(
         cleaned_up = True
         hooks.cleanup()
 
+    def commit_signing_transaction() -> None:
+        nonlocal signing_transaction_finalized
+        if signing_material is None or signing_transaction_finalized:
+            return
+        signing_material.commit_transaction()
+        signing_transaction_finalized = True
+
+    def rollback_signing_transaction() -> None:
+        nonlocal signing_transaction_finalized
+        if signing_material is None or signing_transaction_finalized:
+            return
+        signing_material.rollback_transaction()
+        signing_transaction_finalized = True
+
     interrupted = False
     try:
         def preflight() -> ReleaseMode:
@@ -200,7 +230,10 @@ def run_release_request(
             ):
                 skip_stage(stage)
         else:
-            resolve_signing_material(request, hooks.resolve_signing_material)
+            signing_material = resolve_signing_material(
+                request,
+                hooks.resolve_signing_material,
+            )
             if request.apply_version:
                 run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.apply_version(request.target_version))
             if _needs_source_identity_stage(request):
@@ -218,6 +251,11 @@ def run_release_request(
                         raise ValueError(
                             "new release tag requires a verified version commit"
                         )
+                    if (
+                        signing_material is not None
+                        and signing_material.trust_anchor_changed
+                    ):
+                        commit_signing_transaction()
                     if request.push_main:
                         hooks.push_main(request, commit)
                     if request.create_or_reuse_tag:
@@ -247,18 +285,44 @@ def run_release_request(
         cancel_token.raise_if_cancelled()
         cleanup_once()
         cancel_token.raise_if_cancelled()
+        commit_signing_transaction()
         cancel_token.mark_completed()
     except (KeyboardInterrupt, GeneratorExit):
         interrupted = True
         raise
     except PipelineCancelled:
+        try:
+            rollback_signing_transaction()
+        except (Exception, SystemExit) as error:
+            _cleanup_once_safely(cleanup_once)
+            message = _failure_message(error)
+            emit("error", current_stage, message=message)
+            emit("stage", ReleaseStage.FAILED)
+            emit(
+                "result",
+                ReleaseStage.FAILED,
+                data={"status": "failed", "error": message},
+            )
+            return ReleaseResult(
+                mode=mode,
+                stage=ReleaseStage.FAILED,
+                errors=(message,),
+                artifacts=tuple(str(path) for path in artifacts),
+                failed_stage=current_stage,
+                error=message,
+            )
         _cleanup_once_safely(cleanup_once)
         emit("stage", ReleaseStage.CANCELLED)
         emit("result", ReleaseStage.CANCELLED, data={"status": "cancelled"})
         return ReleaseResult(mode=mode, stage=ReleaseStage.CANCELLED, failed_stage=current_stage)
     except (Exception, SystemExit) as error:
+        failure = error
+        try:
+            rollback_signing_transaction()
+        except (Exception, SystemExit) as rollback_error:
+            failure = rollback_error
         _cleanup_once_safely(cleanup_once)
-        message = _failure_message(error)
+        message = _failure_message(failure)
         emit("error", current_stage, message=message)
         emit("stage", ReleaseStage.FAILED)
         emit("result", ReleaseStage.FAILED, data={"status": "failed", "error": message})
@@ -272,6 +336,7 @@ def run_release_request(
         )
     finally:
         if interrupted:
+            _cleanup_after_interruption(rollback_signing_transaction)
             _cleanup_after_interruption(cleanup_once)
 
     emit("stage", ReleaseStage.SUCCEEDED)
@@ -299,10 +364,21 @@ def resolve_signing_material(
     material = resolver(request)
     if not isinstance(material, SigningMaterial):
         raise TypeError("release signing material resolver returned an invalid result")
-    if request.rotate_trust_anchor and not material.trust_anchor_changed:
-        raise ValueError("trust anchor rotation did not update the production trust anchor")
-    if not request.rotate_trust_anchor and material.trust_anchor_changed:
-        raise ValueError("production trust anchor changed without explicit rotation")
+    try:
+        if request.rotate_trust_anchor and not material.trust_anchor_changed:
+            raise ValueError(
+                "trust anchor rotation did not update the production trust anchor"
+            )
+        if not request.rotate_trust_anchor and material.trust_anchor_changed:
+            raise ValueError(
+                "production trust anchor changed without explicit rotation"
+            )
+    except (Exception, SystemExit) as error:
+        try:
+            material.rollback_transaction()
+        except (Exception, SystemExit) as rollback_error:
+            raise rollback_error from error
+        raise
     return material
 
 

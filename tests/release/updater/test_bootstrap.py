@@ -181,6 +181,96 @@ def test_manifest_rotation_restores_keys_and_trust_config_when_injection_fails(
     assert original_result.private_key_path.read_bytes() == original_private
     assert original_result.public_key_path.read_bytes() == original_public
     assert config.read_bytes() == original_config
+    assert list(secret_root.glob("*.bak.pem")) == []
+
+
+@pytest.mark.parametrize(
+    "failure_type",
+    (KeyboardInterrupt, GeneratorExit, SystemExit, RuntimeError),
+)
+def test_manifest_rotation_restores_material_when_injection_is_interrupted(
+    tmp_path,
+    monkeypatch,
+    failure_type,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret_root = tmp_path / "outside" / "release-secrets"
+    monkeypatch.setenv("UCRAWL_RELEASE_SECRETS_DIR", str(secret_root))
+    original_result = bootstrap.generate_manifest_key(project_root=repo)
+    config = repo / "app" / "config" / "update_trust.py"
+    _minimal_update_trust(config)
+    bootstrap.inject_public_key(
+        public_key_path=original_result.public_key_path,
+        config_path=config,
+    )
+    original_private = original_result.private_key_path.read_bytes()
+    original_public = original_result.public_key_path.read_bytes()
+    original_config = config.read_bytes()
+
+    def interrupt_after_partial_config_write(*, public_key_path, config_path):
+        del public_key_path
+        Path(config_path).write_text("partial trust config\n", encoding="utf-8")
+        raise failure_type("interrupted")
+
+    with (
+        patch.object(
+            bootstrap,
+            "inject_public_key",
+            side_effect=interrupt_after_partial_config_write,
+        ),
+        pytest.raises(failure_type, match="interrupted"),
+    ):
+        bootstrap.generate_manifest_key(
+            project_root=repo,
+            rotate=True,
+            write_public_key_to_config=True,
+            config_path=config,
+        )
+
+    assert original_result.private_key_path.read_bytes() == original_private
+    assert original_result.public_key_path.read_bytes() == original_public
+    assert config.read_bytes() == original_config
+    assert list(secret_root.glob("*.bak.pem")) == []
+
+
+def test_manifest_key_transaction_restores_keys_and_trust_config(
+    tmp_path,
+    monkeypatch,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret_root = tmp_path / "outside" / "release-secrets"
+    monkeypatch.setenv("UCRAWL_RELEASE_SECRETS_DIR", str(secret_root))
+    original_result = bootstrap.generate_manifest_key(project_root=repo)
+    config = repo / "app" / "config" / "update_trust.py"
+    _minimal_update_trust(config)
+    bootstrap.inject_public_key(
+        public_key_path=original_result.public_key_path,
+        config_path=config,
+    )
+    original_private = original_result.private_key_path.read_bytes()
+    original_public = original_result.public_key_path.read_bytes()
+    original_config = config.read_bytes()
+
+    transaction = bootstrap.begin_manifest_key_transaction(
+        project_root=repo,
+        rotate=True,
+        write_public_key_to_config=True,
+        config_path=config,
+    )
+
+    assert transaction.result.private_key_path.read_bytes() != original_private
+    assert transaction.result.public_key_path.read_bytes() != original_public
+    assert config.read_bytes() != original_config
+    assert len(list(secret_root.glob("*.bak.pem"))) == 2
+
+    transaction.rollback()
+
+    assert original_result.private_key_path.read_bytes() == original_private
+    assert original_result.public_key_path.read_bytes() == original_public
+    assert config.read_bytes() == original_config
+    assert list(secret_root.glob("*.bak.pem")) == []
 
 
 def test_scan_secrets_detects_private_key_marker(tmp_path, monkeypatch):

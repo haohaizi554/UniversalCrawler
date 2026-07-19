@@ -47,6 +47,85 @@ class ManifestKeyResult:
     public_key_path: Path
     public_key_fingerprint_sha256: str
     rotated_private_key_path: Path | None = None
+    rotated_public_key_path: Path | None = None
+
+
+class ManifestKeyTransaction:
+    """Hold rollback material until the release source identity is committed."""
+
+    def __init__(
+        self,
+        result: ManifestKeyResult,
+        *,
+        private_key_path: Path,
+        public_key_path: Path,
+        config_path: Path | None,
+        previous_private: bytes | None,
+        previous_public: bytes | None,
+        previous_config: bytes | None,
+    ) -> None:
+        self.result = result
+        self._private_key_path = Path(private_key_path)
+        self._public_key_path = Path(public_key_path)
+        self._config_path = Path(config_path) if config_path is not None else None
+        self._previous_private = previous_private
+        self._previous_public = previous_public
+        self._previous_config = previous_config
+        self._rollback_cleanup_paths = tuple(
+            Path(path)
+            for path in (
+                result.rotated_private_key_path,
+                result.rotated_public_key_path,
+            )
+            if path is not None
+        )
+        self._active = True
+
+    def commit(self) -> None:
+        """Forget rollback bytes after a verified release commit exists."""
+
+        self._active = False
+        self._clear_snapshots()
+
+    def rollback(self) -> None:
+        """Restore all participating files or fail without hiding the problem."""
+
+        if not self._active:
+            return
+        results = [
+            _restore_file(
+                self._private_key_path,
+                self._previous_private,
+                mode=0o600,
+            ),
+            _restore_file(
+                self._public_key_path,
+                self._previous_public,
+                mode=None,
+            ),
+        ]
+        if self._config_path is not None:
+            results.append(
+                _restore_file(
+                    self._config_path,
+                    self._previous_config,
+                    mode=None,
+                )
+            )
+        results.extend(
+            _remove_file(path)
+            for path in self._rollback_cleanup_paths
+        )
+        if not all(results):
+            raise BootstrapError("manifest signing material rollback failed")
+        self._active = False
+        self._clear_snapshots()
+
+    def _clear_snapshots(self) -> None:
+        self._previous_private = None
+        self._previous_public = None
+        self._previous_config = None
+        self._rollback_cleanup_paths = ()
 
 
 @dataclass(frozen=True)
@@ -198,6 +277,44 @@ def _restore_file(path: Path, previous: bytes | None, *, mode: int | None) -> bo
     return True
 
 
+def _remove_file(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+def ensure_manifest_public_key(
+    *,
+    private_key_path: Path,
+    public_key_path: Path,
+) -> ManifestKeyResult:
+    """Derive and atomically repair the public PEM for an existing private key."""
+
+    private_path = Path(private_key_path)
+    public_path = Path(public_key_path)
+    try:
+        key = ECC.import_key(private_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError) as error:
+        raise BootstrapError("existing manifest private key is invalid") from error
+    if not key.has_private() or key.curve != "Ed25519":
+        raise BootstrapError("existing manifest private key is invalid")
+    public_pem = key.public_key().export_key(format="PEM")
+    expected = public_pem.encode("utf-8")
+    current = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    if current != expected:
+        _atomic_write_text(public_path, public_pem)
+    return ManifestKeyResult(
+        private_path,
+        public_path,
+        _public_key_fingerprint(public_pem),
+    )
+
+
 def generate_manifest_key(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -215,6 +332,7 @@ def generate_manifest_key(
     private_path = secret_root / DEFAULT_PRIVATE_KEY_NAME
     public_path = secret_root / DEFAULT_PUBLIC_KEY_NAME
     rotated_private: Path | None = None
+    rotated_public: Path | None = None
 
     previous_private_bytes = _read_optional_bytes(
         private_path,
@@ -251,28 +369,24 @@ def generate_manifest_key(
                 mode=0o600,
             )
             if previous_public_bytes is not None:
+                rotated_public = public_path.with_name(
+                    f"{public_path.stem}.{suffix}.bak{public_path.suffix}"
+                )
                 _atomic_write_bytes(
-                    public_path.with_name(
-                        f"{public_path.stem}.{suffix}.bak{public_path.suffix}"
-                    ),
+                    rotated_public,
                     previous_public_bytes,
                 )
         elif previous_private is not None:
-            key = ECC.import_key(previous_private)
-            public_pem = key.public_key().export_key(format="PEM")
-            canonical_public_bytes = public_pem.encode("utf-8")
-            if previous_public_bytes != canonical_public_bytes:
-                _atomic_write_text(public_path, public_pem)
+            result = ensure_manifest_public_key(
+                private_key_path=private_path,
+                public_key_path=public_path,
+            )
             if write_public_key_to_config:
                 inject_public_key(
                     public_key_path=public_path,
                     config_path=config_path,
                 )
-            return ManifestKeyResult(
-                private_path,
-                public_path,
-                _public_key_fingerprint(public_pem),
-            )
+            return result
 
         key = ECC.generate(curve="Ed25519")
         private_pem = key.export_key(format="PEM")
@@ -286,15 +400,9 @@ def generate_manifest_key(
             public_path,
             _public_key_fingerprint(public_pem),
             rotated_private,
+            rotated_public,
         )
-    except (
-        BootstrapError,
-        IndexError,
-        OSError,
-        TypeError,
-        UnicodeError,
-        ValueError,
-    ) as error:
+    except BaseException as error:
         restore_results = [
             _restore_file(
                 private_path,
@@ -315,11 +423,62 @@ def generate_manifest_key(
                     mode=None,
                 )
             )
+        restore_results.extend(
+            _remove_file(path)
+            for path in (rotated_private, rotated_public)
+            if path is not None
+        )
         if not all(restore_results):
             raise BootstrapError(
                 "manifest key update failed and previous material could not be restored"
             ) from error
         raise
+
+
+def begin_manifest_key_transaction(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    rotate: bool,
+    write_public_key_to_config: bool = False,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> ManifestKeyTransaction:
+    """Mutate signing material now, but retain rollback bytes until committed."""
+
+    secret_root = release_secrets_dir(project_root=project_root)
+    private_path = secret_root / DEFAULT_PRIVATE_KEY_NAME
+    public_path = secret_root / DEFAULT_PUBLIC_KEY_NAME
+    config = Path(config_path) if write_public_key_to_config else None
+    previous_private = _read_optional_bytes(
+        private_path,
+        description="existing manifest private key",
+    )
+    previous_public = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    previous_config = (
+        _read_optional_bytes(
+            config,
+            description="update trust config",
+        )
+        if config is not None
+        else None
+    )
+    result = generate_manifest_key(
+        project_root=project_root,
+        rotate=rotate,
+        write_public_key_to_config=write_public_key_to_config,
+        config_path=config_path,
+    )
+    return ManifestKeyTransaction(
+        result,
+        private_key_path=private_path,
+        public_key_path=public_path,
+        config_path=config,
+        previous_private=previous_private,
+        previous_public=previous_public,
+        previous_config=previous_config,
+    )
 
 
 def _replace_top_level_assignment(source: str, name: str, replacement: str) -> str:

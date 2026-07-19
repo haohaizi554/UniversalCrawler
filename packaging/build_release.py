@@ -42,8 +42,9 @@ if str(PACKAGING_DIR) not in sys.path:
 from scripts.update_bootstrap import (  # noqa: E402
     DEFAULT_PRIVATE_KEY_NAME,
     DEFAULT_PUBLIC_KEY_NAME,
+    begin_manifest_key_transaction,
     default_manifest_private_key_path,
-    generate_manifest_key,
+    ensure_manifest_public_key,
     release_secrets_dir,
 )
 from release_lock import (  # noqa: E402
@@ -109,12 +110,19 @@ def _run_build(
 def _run_manifest_tool(argv: list[str], *, project_root: Path) -> None:
     root = Path(project_root).resolve()
     tool = root / "packaging" / "update_manifest.py"
-    subprocess.run(
-        [sys.executable, str(tool), *argv],
-        cwd=root,
-        check=True,
-        shell=False,
-    )
+    try:
+        subprocess.run(
+            [sys.executable, str(tool), *argv],
+            cwd=root,
+            check=True,
+            shell=False,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"manifest tool failed with status {error.returncode}"
+        ) from None
+    except OSError:
+        raise RuntimeError("manifest tool could not start") from None
 
 
 def _run_git(argv: list[str]) -> str:
@@ -1071,8 +1079,6 @@ def _build_pipeline_hooks(
             request.sign_manifest or request.upload_release_assets
         ) and not request.generate_manifest_key:
             _private_key_path(request, child_environment)
-        if request.upload_public_key and not request.generate_manifest_key:
-            _validate_public_key_path(_read_only_public_key_path())
 
     def ensure_lock() -> str:
         lock_token = state["lock_token"]
@@ -1100,17 +1106,20 @@ def _build_pipeline_hooks(
                 raise ValueError(
                     "generating a new manifest key requires explicit trust anchor rotation"
                 )
-            result = generate_manifest_key(
+            transaction = begin_manifest_key_transaction(
                 project_root=PROJECT_ROOT,
                 rotate=request.rotate_trust_anchor,
                 write_public_key_to_config=request.rotate_trust_anchor,
                 config_path=UPDATE_TRUST_CONFIG,
             )
+            result = transaction.result
             material = SigningMaterial(
                 private_key_path=Path(result.private_key_path).resolve(),
                 public_key_path=Path(result.public_key_path).resolve(),
                 fingerprint=str(result.public_key_fingerprint_sha256),
                 trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=transaction.commit,
+                rollback_transaction=transaction.rollback,
             )
         else:
             private_key: Path | None = None
@@ -1123,17 +1132,38 @@ def _build_pipeline_hooks(
                     private_key
                 )
             if request.upload_public_key:
-                public_key = _validate_public_key_path(
-                    _read_only_public_key_path()
-                )
-                public_pem, public_fingerprint = _manifest_public_key_fingerprint(
-                    public_key
-                )
-                if private_public_pem and public_pem != private_public_pem:
-                    raise ValueError(
-                        "manifest public key does not match the selected private key"
+                if private_key is None:
+                    default_private = _read_only_secret_path(
+                        DEFAULT_PRIVATE_KEY_NAME
                     )
-                fingerprint = public_fingerprint
+                    if request.private_key_path.strip() or default_private.is_file():
+                        private_key = _private_key_path(request, child_environment)
+                        private_public_pem, fingerprint = (
+                            _manifest_public_key_from_private(private_key)
+                        )
+                if private_key is not None:
+                    repaired = ensure_manifest_public_key(
+                        private_key_path=private_key,
+                        public_key_path=_read_only_public_key_path(),
+                    )
+                    public_key = _validate_public_key_path(
+                        repaired.public_key_path
+                    )
+                    public_pem, public_fingerprint = (
+                        _manifest_public_key_fingerprint(public_key)
+                    )
+                    if public_pem != private_public_pem:
+                        raise ValueError(
+                            "manifest public key repair did not match the selected private key"
+                        )
+                    fingerprint = public_fingerprint
+                else:
+                    public_key = _validate_public_key_path(
+                        _read_only_public_key_path()
+                    )
+                    _public_pem, fingerprint = (
+                        _manifest_public_key_fingerprint(public_key)
+                    )
             material = SigningMaterial(
                 private_key_path=private_key,
                 public_key_path=public_key,

@@ -427,6 +427,223 @@ def test_rotated_signing_material_is_resolved_before_commit_and_build():
     assert hooks.calls.index("ensure_tag") < hooks.calls.index("build_portable")
 
 
+def test_rotated_signing_material_rolls_back_when_version_application_fails():
+    transaction_calls: list[str] = []
+
+    class FailingVersionHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=lambda: transaction_calls.append("commit"),
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+        def apply_version(self, target: str) -> VersionUpdateResult:
+            self.calls.append("apply_version")
+            raise RuntimeError(f"cannot apply {target}")
+
+    hooks = FailingVersionHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.VERSION_SYNC
+    assert transaction_calls == ["rollback"]
+
+
+def test_rotated_signing_material_commits_before_later_build_failure():
+    transaction_calls: list[str] = []
+
+    class TransactionHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=lambda: transaction_calls.append("commit"),
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    def fail_build() -> None:
+        raise RuntimeError("portable build failed")
+
+    hooks = TransactionHooks(on_build_portable=fail_build)
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.BUILDING_PORTABLE
+    assert transaction_calls == ["commit"]
+
+
+def test_rotated_signing_material_rolls_back_when_version_commit_fails():
+    transaction_calls: list[str] = []
+
+    class FailingCommitHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=lambda: transaction_calls.append("commit"),
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+        def commit_version_changes(self, request: BuildRequest) -> str:
+            self.calls.append("commit_version_changes")
+            raise RuntimeError(
+                f"cannot commit release {request.target_version}"
+            )
+
+    hooks = FailingCommitHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.SOURCE_IDENTITY
+    assert transaction_calls == ["rollback"]
+
+
+def test_rotated_signing_material_rolls_back_when_version_commit_is_empty():
+    transaction_calls: list[str] = []
+
+    class EmptyCommitHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=lambda: transaction_calls.append("commit"),
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+        def commit_version_changes(self, request: BuildRequest) -> str:
+            self.calls.append("commit_version_changes")
+            return ""
+
+    hooks = EmptyCommitHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.SOURCE_IDENTITY
+    assert transaction_calls == ["rollback"]
+
+
+def test_invalid_signing_material_contract_rolls_back_resolver_side_effects():
+    transaction_calls: list[str] = []
+
+    class InvalidMaterialHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                commit_transaction=lambda: transaction_calls.append("commit"),
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    hooks = InvalidMaterialHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        build_portable=True,
+        build_installer=True,
+        run_smoke_tests=False,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.PREFLIGHT
+    assert transaction_calls == ["rollback"]
+
+
 def test_signing_material_paths_are_never_emitted():
     secret_name = "private-ghp_super-secret.pem"
 

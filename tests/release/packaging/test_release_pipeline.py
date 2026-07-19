@@ -349,7 +349,7 @@ def test_actual_dry_run_is_a_successful_read_only_plan(capsys, build_only):
         patch.object(tool, "apply_version_update", forbidden),
         patch.object(tool, "_build_binaries", forbidden),
         patch.object(tool, "_prepare_release_assets", forbidden),
-        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "begin_manifest_key_transaction", forbidden),
         patch.object(tool, "GitHubReleasePublisher", return_value=publisher),
     ):
         exit_code = tool._run_dry_run_request(
@@ -379,7 +379,7 @@ def test_invalid_direct_dry_run_is_a_redacted_read_only_terminal_failure(capsys)
         patch.object(tool, "apply_version_update", forbidden),
         patch.object(tool, "_build_binaries", forbidden),
         patch.object(tool, "_prepare_release_assets", forbidden),
-        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "begin_manifest_key_transaction", forbidden),
         patch.object(tool, "GitHubReleasePublisher", forbidden),
     ):
         exit_code = tool._run_dry_run_request(
@@ -412,7 +412,7 @@ def test_script_invalid_dry_run_version_returns_one_terminal_failure(capsys):
         patch.object(tool, "apply_version_update", forbidden),
         patch.object(tool, "_build_binaries", forbidden),
         patch.object(tool, "_prepare_release_assets", forbidden),
-        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "begin_manifest_key_transaction", forbidden),
         patch.object(tool, "GitHubReleasePublisher", forbidden),
     ):
         exit_code = tool.script_main(
@@ -1049,7 +1049,15 @@ def test_rotated_trust_anchor_is_included_in_exact_release_commit(tmp_path):
     with (
         patch.object(tool, "plan_version_update", return_value=version_plan),
         patch.object(tool, "apply_version_update", return_value=version_result),
-        patch.object(tool, "generate_manifest_key", return_value=key_result) as generate,
+        patch.object(
+            tool,
+            "begin_manifest_key_transaction",
+            return_value=Mock(
+                result=key_result,
+                commit=Mock(),
+                rollback=Mock(),
+            ),
+        ) as begin_transaction,
         patch.object(tool, "_release_build_lock", side_effect=fake_lock),
         patch.object(tool, "_run_git", side_effect=fake_git),
     ):
@@ -1061,7 +1069,10 @@ def test_rotated_trust_anchor_is_included_in_exact_release_commit(tmp_path):
 
     assert material.trust_anchor_changed is True
     assert commit == "a" * 40
-    assert generate.call_args.kwargs["config_path"] == tool.UPDATE_TRUST_CONFIG
+    assert (
+        begin_transaction.call_args.kwargs["config_path"]
+        == tool.UPDATE_TRUST_CONFIG
+    )
     add_call = next(call for call in git_calls if call[0] == "add")
     assert add_call[2:] == list(expected_paths)
     commit_call = next(call for call in git_calls if call[0] == "commit")
@@ -1088,13 +1099,13 @@ def test_normal_signing_reuses_external_key_without_rotating_trust_anchor(tmp_pa
 
     with patch.object(
         tool,
-        "generate_manifest_key",
+        "begin_manifest_key_transaction",
         side_effect=AssertionError("normal signing must not generate a key"),
-    ) as generate:
+    ) as begin_transaction:
         hooks = tool._build_pipeline_hooks(request, {}, emitter=emitter)
         material = hooks.resolve_signing_material(request)
 
-    generate.assert_not_called()
+    begin_transaction.assert_not_called()
     assert material.private_key_path == private_key.resolve()
     assert material.trust_anchor_changed is False
     output = stream.getvalue()
@@ -1153,6 +1164,47 @@ def test_public_key_upload_uses_external_standalone_asset(tmp_path):
     assert uploaded == (manifest, public_key.resolve())
     with pytest.raises(ValueError):
         public_key.resolve().relative_to(tool.PROJECT_ROOT.resolve())
+
+
+@pytest.mark.parametrize("public_state", ["missing", "mismatched"])
+def test_public_key_upload_repairs_external_public_pem_from_private_key(
+    tmp_path,
+    public_state,
+):
+    tool = _load_tool()
+    key = ECC.generate(curve="Ed25519")
+    private_key = tmp_path / "external" / "manifest-private.pem"
+    public_key = tmp_path / "external" / "manifest-public.pem"
+    private_key.parent.mkdir()
+    private_key.write_text(key.export_key(format="PEM"), encoding="utf-8")
+    if public_state == "mismatched":
+        public_key.write_text(
+            ECC.generate(curve="Ed25519").public_key().export_key(format="PEM"),
+            encoding="utf-8",
+        )
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        create_or_update_release=True,
+        upload_public_key=True,
+        verify_remote_assets=True,
+        private_key_path=str(private_key),
+    )
+
+    with patch.object(tool, "_read_only_public_key_path", return_value=public_key):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        hooks.validate_dependencies(request)
+        material = hooks.resolve_signing_material(request)
+
+    expected_public = key.public_key().export_key(format="PEM")
+    assert material.private_key_path == private_key.resolve()
+    assert material.public_key_path == public_key.resolve()
+    assert public_key.read_text(encoding="utf-8") == expected_public
 
 
 def test_new_release_tag_hook_rejects_an_empty_verified_commit_without_reading_head():
@@ -1274,7 +1326,19 @@ def test_upload_public_key_dependency_rejects_missing_or_invalid_key_before_publ
         verify_remote_assets=True,
     )
 
-    with patch.object(tool, "_read_only_public_key_path", return_value=public_key_path):
+    missing_private_key = tmp_path / "missing-private.pem"
+    with (
+        patch.object(
+            tool,
+            "_read_only_public_key_path",
+            return_value=public_key_path,
+        ),
+        patch.object(
+            tool,
+            "_read_only_secret_path",
+            return_value=missing_private_key,
+        ),
+    ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
         result = run_release_request(request, hooks, Mock(), CancellationToken())
 
@@ -2101,6 +2165,34 @@ def test_manifest_generation_and_verification_use_snapshot_tools(tmp_path):
     assert "-I" in verify_argv
     assert str(snapshot_root.resolve()) in verify_argv
     assert run.call_args.kwargs["cwd"] == snapshot_root.resolve()
+
+
+def test_manifest_tool_failure_does_not_expose_private_key_path(tmp_path):
+    tool = _load_tool()
+    private_key = tmp_path / "release-secrets" / "manifest-private.pem"
+    command = [
+        sys.executable,
+        str(tool.UPDATE_MANIFEST_TOOL),
+        "--private-key",
+        str(private_key),
+    ]
+
+    with (
+        patch.object(
+            tool.subprocess,
+            "run",
+            side_effect=subprocess.CalledProcessError(1, command),
+        ),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        tool._run_manifest_tool(
+            ["--private-key", str(private_key)],
+            project_root=tool.PROJECT_ROOT,
+        )
+
+    message = str(caught.value)
+    assert str(private_key) not in message
+    assert str(private_key.parent) not in message
 
 
 def test_release_identity_must_match_the_built_package_version():
