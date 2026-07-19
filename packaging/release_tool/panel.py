@@ -2,24 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import os
-import queue
-import re
 import sys
-import tempfile
-import threading
-from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from PyQt6.QtCore import (
     QObject,
-    QProcess,
-    QProcessEnvironment,
     QRect,
     QSignalBlocker,
     QThread,
@@ -62,29 +52,23 @@ from app.ui.styles import (
     theme_colors,
 )
 
-from .events import EVENT_PREFIX, ReleaseEvent, parse_event_line, redact_release_text
+from .events import redact_release_text
 from .icon_builder import release_builder_icon_path
 from .models import (
     BuildRequest,
     ReleaseMode,
     ReleaseResult,
-    ReleaseStage,
     RemoteReleaseInfo,
 )
 from .modes import resolve_release_mode, validate_build_request
+from .process_controller import ReleaseProcessController
 from .proxy import ProxySelection, build_proxy_environment, project_proxy_options
 from .remote import fetch_latest_release
 from .versioning import read_project_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BUILD_SCRIPT = PROJECT_ROOT / "packaging" / "build_release.py"
 DEFAULT_REPOSITORY = "haohaizi554/UniversalCrawler"
-LOG_INTERVAL_MS = 50
-MAX_LINES_PER_TICK = 200
-DEFAULT_LOG_CAPACITY = 5000
-WRITER_CAPACITY = 4096
-_SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _ACTIVE_REMOTE_THREADS: set[QThread] = set()
 
 
@@ -113,500 +97,6 @@ class _RemoteLoaderWorker(QObject):
         except Exception as error:
             result = RemoteReleaseInfo.unavailable(redact_release_text(str(error)))
         self.completed.emit(self._generation, result)
-
-
-class _BackgroundLogWriter:
-    """Write redacted log lines on one bounded background queue."""
-
-    def __init__(self, path: Path, *, capacity: int = WRITER_CAPACITY) -> None:
-        self.path = Path(path)
-        self._queue: queue.Queue[str] = queue.Queue(maxsize=max(1, int(capacity)))
-        self._stop = threading.Event()
-        self._dropped = 0
-        self.error = ""
-        self._thread = threading.Thread(
-            target=self._run,
-            name="release-log-writer",
-            daemon=False,
-        )
-        self._thread.start()
-
-    @property
-    def active(self) -> bool:
-        return self._thread.is_alive()
-
-    def submit(self, line: str) -> None:
-        safe_line = redact_release_text(str(line)).rstrip("\r\n")
-        try:
-            self._queue.put_nowait(safe_line)
-        except queue.Full:
-            self._dropped += 1
-
-    def close(self) -> None:
-        if self._stop.is_set():
-            if self._thread.is_alive():
-                self._thread.join()
-            return
-        if self._dropped:
-            try:
-                self._queue.put_nowait(
-                    f"[log writer dropped {self._dropped} lines during a burst]"
-                )
-            except queue.Full:
-                pass
-        self._stop.set()
-        self._thread.join()
-
-    def _run(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8", newline="\n") as stream:
-                while not self._stop.is_set() or not self._queue.empty():
-                    try:
-                        line = self._queue.get(timeout=0.05)
-                    except queue.Empty:
-                        continue
-                    stream.write(f"{line}\n")
-                    self._queue.task_done()
-                stream.flush()
-        except (OSError, UnicodeError):
-            self.error = "failed to write release log"
-            while True:
-                try:
-                    self._queue.get_nowait()
-                    self._queue.task_done()
-                except queue.Empty:
-                    break
-
-
-class ReleaseProcessController(QObject):
-    """Own one release child process and its fail-closed event protocol."""
-
-    log_lines_ready = pyqtSignal(object)
-    stage_changed = pyqtSignal(str, int, str)
-    error_reported = pyqtSignal(str)
-    running_changed = pyqtSignal(bool)
-    completed = pyqtSignal(object)
-
-    def __init__(
-        self,
-        parent: QObject | None = None,
-        *,
-        process: QProcess | None = None,
-        project_root: Path = PROJECT_ROOT,
-        request_directory: Path | None = None,
-        log_directory: Path | None = None,
-        log_capacity: int = DEFAULT_LOG_CAPACITY,
-    ) -> None:
-        super().__init__(parent)
-        self.project_root = Path(project_root).resolve()
-        self.request_directory = (
-            Path(request_directory) if request_directory is not None else Path(tempfile.gettempdir())
-        )
-        self.log_directory = (
-            Path(log_directory)
-            if log_directory is not None
-            else self.project_root / "dist" / "release-logs"
-        )
-        self.process = process if process is not None else QProcess(self)
-        self.cancel_timer = QTimer(self)
-        self.cancel_timer.setSingleShot(True)
-        self.cancel_timer.setInterval(5000)
-        self.cancel_timer.timeout.connect(self.escalate_cancel)
-        self._log_timer = QTimer(self)
-        self._log_timer.setInterval(LOG_INTERVAL_MS)
-        self._log_timer.timeout.connect(self.flush_log_batch)
-        self._pending_logs: deque[str] = deque(maxlen=max(1, int(log_capacity)))
-        self._stdout_partial = ""
-        self._stderr_partial = ""
-        self._last_sequence = 0
-        self._last_progress = 0
-        self._terminal_event: ReleaseEvent | None = None
-        self._protocol_error = ""
-        self._request_file: Path | None = None
-        self._log_writer: _BackgroundLogWriter | None = None
-        self._running = False
-        self._finished = False
-        self._mode = ReleaseMode.LOCAL_DEBUG
-        self.result = ReleaseResult(
-            mode=self._mode,
-            stage=ReleaseStage.IDLE,
-        )
-        self.persistent_log_path: Path | None = None
-        self._connect_process_signals()
-
-    @property
-    def running(self) -> bool:
-        return self._running
-
-    @property
-    def request_file(self) -> Path:
-        if self._request_file is None:
-            raise RuntimeError("release request has not been created")
-        return self._request_file
-
-    @property
-    def pending_log_count(self) -> int:
-        return len(self._pending_logs)
-
-    @property
-    def log_writer_active(self) -> bool:
-        return self._log_writer is not None and self._log_writer.active
-
-    def start(self, request: BuildRequest, proxy: ProxySelection) -> None:
-        if self._running:
-            raise RuntimeError("release process is already running")
-        self._reset_protocol()
-        self._mode = resolve_release_mode(
-            request.target_version,
-            request.remote,
-            same_release_repair=request.same_release_repair,
-            offline_debug=request.offline_debug,
-        )
-        errors = validate_build_request(request)
-        if errors:
-            raise ValueError("; ".join(errors))
-
-        try:
-            self._request_file = self._write_request_file(request)
-            self.persistent_log_path = self._new_log_path(
-                self._mode,
-                request.target_version,
-            )
-            self._log_writer = _BackgroundLogWriter(self.persistent_log_path)
-            environment = build_proxy_environment(proxy, os.environ)
-            process_environment = QProcessEnvironment()
-            for key, value in environment.items():
-                process_environment.insert(str(key), str(value))
-            arguments = [
-                str(self.project_root / "packaging" / "build_release.py"),
-                "--headless",
-                "--request-file",
-                str(self._request_file),
-            ]
-            self.process.setProgram(sys.executable)
-            self.process.setArguments(arguments)
-            self.process.setProcessEnvironment(process_environment)
-            self.process.setWorkingDirectory(str(self.project_root))
-            self._running = True
-            self.running_changed.emit(True)
-            self.process.start()
-        except BaseException:
-            self._running = False
-            self.running_changed.emit(False)
-            self._cleanup_request_file()
-            self._close_log_writer()
-            raise
-
-    def feed_stdout(self, data: bytes | bytearray | str) -> None:
-        self._stdout_partial = self._feed_stream(
-            self._stdout_partial,
-            self._decoded(data),
-            structured=True,
-        )
-
-    def feed_stderr(self, data: bytes | bytearray | str) -> None:
-        self._stderr_partial = self._feed_stream(
-            self._stderr_partial,
-            self._decoded(data),
-            structured=False,
-        )
-
-    @pyqtSlot()
-    def read_stdout(self) -> None:
-        self.feed_stdout(bytes(self.process.readAllStandardOutput()))
-
-    @pyqtSlot()
-    def read_stderr(self) -> None:
-        self.feed_stderr(bytes(self.process.readAllStandardError()))
-
-    @pyqtSlot()
-    def flush_log_batch(self) -> None:
-        if not self._pending_logs:
-            self._log_timer.stop()
-            return
-        lines = [
-            self._pending_logs.popleft()
-            for _ in range(min(MAX_LINES_PER_TICK, len(self._pending_logs)))
-        ]
-        self.log_lines_ready.emit(lines)
-        if not self._pending_logs:
-            self._log_timer.stop()
-
-    @pyqtSlot()
-    def cancel(self) -> None:
-        if not self._running:
-            return
-        self.process.terminate()
-        self.cancel_timer.start()
-        self.stage_changed.emit(
-            ReleaseStage.CANCELLED.value,
-            self._last_progress,
-            "Cancellation requested",
-        )
-
-    @pyqtSlot()
-    def escalate_cancel(self) -> None:
-        if not self._process_is_running():
-            return
-        process_id = int(self.process.processId())
-        if not isinstance(self.process, QProcess):
-            self.process.kill()
-            return
-        if sys.platform.startswith("win") and process_id > 0:
-            QProcess.startDetached(
-                "taskkill",
-                ["/PID", str(process_id), "/T", "/F"],
-            )
-        else:
-            self.process.kill()
-
-    @pyqtSlot(int, QProcess.ExitStatus)
-    def on_finished(
-        self,
-        exit_code: int,
-        exit_status: QProcess.ExitStatus,
-    ) -> None:
-        if self._finished:
-            return
-        self._finished = True
-        self.cancel_timer.stop()
-        self._flush_partial_streams()
-        self._running = False
-        error = self._completion_error(exit_code, exit_status)
-        terminal = self._terminal_event
-        if not error and terminal is not None:
-            self.result = ReleaseResult(
-                mode=self._mode,
-                stage=ReleaseStage.SUCCEEDED,
-            )
-        else:
-            stage = terminal.stage if terminal is not None else ReleaseStage.FAILED
-            if stage is ReleaseStage.SUCCEEDED:
-                stage = ReleaseStage.FAILED
-            terminal_error = error or self._terminal_error(terminal)
-            self.result = ReleaseResult(
-                mode=self._mode,
-                stage=stage,
-                errors=(terminal_error,) if terminal_error else (),
-                error=terminal_error,
-            )
-        self._cleanup_request_file()
-        self._close_log_writer()
-        self.flush_log_batch()
-        self.running_changed.emit(False)
-        self.completed.emit(self.result)
-
-    def shutdown(self) -> None:
-        self.cancel_timer.stop()
-        self._log_timer.stop()
-        if self._process_is_running():
-            self.process.terminate()
-            self.escalate_cancel()
-        self._running = False
-        self._cleanup_request_file()
-        self._close_log_writer()
-        self._pending_logs.clear()
-
-    def _connect_process_signals(self) -> None:
-        self.process.readyReadStandardOutput.connect(self.read_stdout)
-        self.process.readyReadStandardError.connect(self.read_stderr)
-        self.process.finished.connect(self.on_finished)
-        self.process.errorOccurred.connect(self._on_process_error)
-
-    def _reset_protocol(self) -> None:
-        self._finished = False
-        self._last_sequence = 0
-        self._last_progress = 0
-        self._terminal_event = None
-        self._protocol_error = ""
-        self._stdout_partial = ""
-        self._stderr_partial = ""
-        self.result = ReleaseResult(mode=self._mode, stage=ReleaseStage.IDLE)
-
-    def _write_request_file(self, request: BuildRequest) -> Path:
-        private_key_path = str(request.private_key_path or "")
-        if (
-            "-----BEGIN" in private_key_path
-            or "\n" in private_key_path
-            or "\r" in private_key_path
-        ):
-            raise ValueError("private key must be a path or reference")
-        custom_proxy = str(request.custom_proxy or "")
-        parsed_proxy = urlsplit(
-            custom_proxy if "://" in custom_proxy else f"//{custom_proxy}"
-        )
-        if parsed_proxy.username is not None or parsed_proxy.password is not None:
-            raise ValueError("proxy credentials must use an environment reference")
-
-        self.request_directory.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(
-            prefix=".ucrawl-release-",
-            suffix=".json",
-            dir=self.request_directory,
-            text=True,
-        )
-        path = Path(name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(
-                    asdict(request),
-                    stream,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                stream.write("\n")
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-        return path
-
-    def _new_log_path(self, mode: ReleaseMode, version: str) -> Path:
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        safe_mode = _SAFE_FILENAME.sub("_", mode.value)
-        safe_version = _SAFE_FILENAME.sub("_", version)
-        return self.log_directory / f"{timestamp}-{safe_mode}-{safe_version}.log"
-
-    @staticmethod
-    def _decoded(data: bytes | bytearray | str) -> str:
-        if isinstance(data, str):
-            return data
-        return bytes(data).decode("utf-8", errors="replace")
-
-    def _feed_stream(self, partial: str, text: str, *, structured: bool) -> str:
-        combined = partial + text
-        lines = combined.splitlines(keepends=True)
-        trailing = ""
-        if lines and not lines[-1].endswith(("\n", "\r")):
-            trailing = lines.pop()
-        for line in lines:
-            self._accept_line(line.rstrip("\r\n"), structured=structured)
-        return trailing
-
-    def _accept_line(self, line: str, *, structured: bool) -> None:
-        safe_line = redact_release_text(line)
-        if self._log_writer is not None:
-            self._log_writer.submit(safe_line)
-        if structured and line.startswith(EVENT_PREFIX):
-            try:
-                event = parse_event_line(line)
-            except (ValueError, TypeError, json.JSONDecodeError):
-                self._set_protocol_error("malformed release event")
-                return
-            if event is None:
-                self._set_protocol_error("malformed release event")
-                return
-            self._handle_event(event)
-            return
-        self._pending_logs.append(safe_line)
-        if not self._log_timer.isActive():
-            self._log_timer.start()
-
-    def _handle_event(self, event: ReleaseEvent) -> None:
-        if self._terminal_event is not None:
-            label = (
-                "duplicate final result event"
-                if event.kind == "result"
-                else "event received after final result event"
-            )
-            self._set_protocol_error(label)
-            return
-        if event.sequence != self._last_sequence + 1:
-            self._set_protocol_error("release event sequence is out of order")
-            return
-        if event.progress < self._last_progress:
-            self._set_protocol_error("release event progress is out of order")
-            return
-        if event.kind not in {"stage", "error", "result"}:
-            self._set_protocol_error("unknown release event kind")
-            return
-        self._last_sequence = event.sequence
-        self._last_progress = event.progress
-        self.stage_changed.emit(
-            event.stage.value,
-            event.progress,
-            event.message,
-        )
-        if event.kind == "error":
-            self.error_reported.emit(event.message or "Release stage failed")
-        if event.kind == "result":
-            self._terminal_event = event
-
-    def _set_protocol_error(self, message: str) -> None:
-        if not self._protocol_error:
-            self._protocol_error = redact_release_text(message)
-            self.error_reported.emit(self._protocol_error)
-
-    def _flush_partial_streams(self) -> None:
-        if self._stdout_partial:
-            self._accept_line(self._stdout_partial, structured=True)
-            self._stdout_partial = ""
-        if self._stderr_partial:
-            self._accept_line(self._stderr_partial, structured=False)
-            self._stderr_partial = ""
-
-    def _completion_error(
-        self,
-        exit_code: int,
-        exit_status: QProcess.ExitStatus,
-    ) -> str:
-        if self._protocol_error:
-            return self._protocol_error
-        if self._terminal_event is None:
-            return "missing final result event"
-        if exit_status != QProcess.ExitStatus.NormalExit:
-            return "release process exited abnormally"
-        if int(exit_code) != 0:
-            return f"release process returned exit code {int(exit_code)}"
-        if self._terminal_event.stage is not ReleaseStage.SUCCEEDED:
-            return self._terminal_error(self._terminal_event)
-        status = self._terminal_event.data.get("status")
-        if status != "succeeded":
-            return "final result event did not confirm success"
-        return ""
-
-    @staticmethod
-    def _terminal_error(event: ReleaseEvent | None) -> str:
-        if event is None:
-            return "release process failed"
-        data_error = event.data.get("error")
-        if isinstance(data_error, str) and data_error:
-            return redact_release_text(data_error)
-        if event.message:
-            return redact_release_text(event.message)
-        if event.stage is ReleaseStage.CANCELLED:
-            return "release process was cancelled"
-        return f"release process reported {event.stage.value}"
-
-    def _process_is_running(self) -> bool:
-        try:
-            return self.process.state() != QProcess.ProcessState.NotRunning
-        except RuntimeError:
-            return False
-
-    def _cleanup_request_file(self) -> None:
-        if self._request_file is None:
-            return
-        try:
-            self._request_file.unlink(missing_ok=True)
-        except OSError:
-            self.error_reported.emit("release request file could not be deleted")
-        finally:
-            self._request_file = None
-
-    def _close_log_writer(self) -> None:
-        writer, self._log_writer = self._log_writer, None
-        if writer is None:
-            return
-        writer.close()
-        if writer.error:
-            self.error_reported.emit(writer.error)
-
-    @pyqtSlot(QProcess.ProcessError)
-    def _on_process_error(self, error: QProcess.ProcessError) -> None:
-        if error is QProcess.ProcessError.FailedToStart and not self._finished:
-            self._set_protocol_error("release process failed to start")
-            self.on_finished(-1, QProcess.ExitStatus.CrashExit)
 
 
 class _ConfirmationDialog(ChromedDialog):
@@ -881,12 +371,11 @@ class ReleaseBuilderWindow(QWidget):
         except (OSError, RuntimeError, ValueError) as error:
             self._on_process_error(redact_release_text(str(error)))
 
-    def shutdown(self) -> None:
-        if self._shutting_down:
-            return
-        self._shutting_down = True
-        self._accept_remote_results = False
-        self._remote_generation += 1
+    def shutdown(self) -> bool:
+        if not self._shutting_down:
+            self._shutting_down = True
+            self._accept_remote_results = False
+            self._remote_generation += 1
         thread = self._remote_thread
         if thread is not None:
             try:
@@ -894,8 +383,12 @@ class ReleaseBuilderWindow(QWidget):
                 thread.quit()
             except RuntimeError:
                 pass
-        self.process_controller.shutdown()
-        self._window_chrome_controller.uninstall()
+        process_stopped = self.process_controller.shutdown()
+        remote_stopped = not self.remote_lookup_active
+        if process_stopped and remote_stopped:
+            self._window_chrome_controller.uninstall()
+            return True
+        return False
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -903,12 +396,12 @@ class ReleaseBuilderWindow(QWidget):
         self._window_chrome_controller.on_show_event()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        if self.process_controller.running:
-            self._close_pending = True
-            self.process_controller.cancel()
+        self._close_pending = True
+        if not self.shutdown():
+            self.status_label.setText("Waiting for background work to stop")
             event.ignore()
             return
-        self.shutdown()
+        self._close_pending = False
         event.accept()
 
     def nativeEvent(self, event_type, message):  # noqa: N802
@@ -1318,8 +811,10 @@ class ReleaseBuilderWindow(QWidget):
     def _on_remote_thread_finished(self, thread: QThread) -> None:
         _ACTIVE_REMOTE_THREADS.discard(thread)
         if self._remote_thread is thread:
+            self._remote_thread = None
             self._remote_worker = None
             self.refresh_remote_button.setEnabled(not self._shutting_down)
+        self._continue_pending_close()
 
     @pyqtSlot(str, int, str)
     def _on_stage_changed(
@@ -1351,8 +846,14 @@ class ReleaseBuilderWindow(QWidget):
             self.status_label.setText(
                 redact_release_text(result.error or "Release build failed")
             )
-        if self._close_pending:
-            self._close_pending = False
+        self._continue_pending_close()
+
+    def _continue_pending_close(self) -> None:
+        if (
+            self._close_pending
+            and not self.remote_lookup_active
+            and self.process_controller.shutdown_complete
+        ):
             QTimer.singleShot(0, self.close)
 
     def _on_proxy_changed(self) -> None:
@@ -1446,6 +947,9 @@ class ReleaseBuilderWindow(QWidget):
         self.chrome_frame.set_maximized(self.isMaximized())
 
 
+_LAUNCHED_WINDOWS: dict[int, QWidget] = {}
+
+
 def launch_release_builder_panel() -> int:
     """Launch the standalone release-builder application."""
 
@@ -1458,12 +962,21 @@ def launch_release_builder_panel() -> int:
         app.setWindowIcon(icon)
     window = ReleaseBuilderWindow()
     window.show()
-    return int(app.exec())
+    if owns_application:
+        return int(app.exec())
+    window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    window_key = id(window)
+    _LAUNCHED_WINDOWS[window_key] = window
+    destroyed = getattr(window, "destroyed", None)
+    if destroyed is not None:
+        destroyed.connect(
+            lambda _object=None, key=window_key: _LAUNCHED_WINDOWS.pop(key, None)
+        )
+    return 0
 
 
 __all__ = [
     "ReleaseBuilderWindow",
-    "ReleaseProcessController",
     "build_confirmation_summary",
     "launch_release_builder_panel",
 ]

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QObject, QProcess, QRect, pyqtSignal
+from PyQt6.QtCore import QObject, QProcess, QRect, Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from tests.support.paths import PROJECT_ROOT
@@ -24,10 +24,15 @@ from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
 from release_tool.events import EVENT_PREFIX
 from release_tool.models import BuildRequest, ReleaseMode, RemoteReleaseInfo, ReleaseStage
+from release_tool import panel as panel_module
+from release_tool import process_controller as process_controller_module
 from release_tool.panel import (
     ReleaseBuilderWindow,
-    ReleaseProcessController,
     build_confirmation_summary,
+)
+from release_tool.process_controller import (
+    ReleaseProcessController,
+    _BackgroundLogWriter,
 )
 from release_tool.proxy import PROXY_ENVIRONMENT_VARIABLES, ProxySelection
 
@@ -101,6 +106,53 @@ class FakeProcess(QObject):
         self._stderr = value
 
 
+class FakeQtProcess(QProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.program = ""
+        self.arguments: list[str] = []
+        self.environment = None
+        self.working_directory = ""
+        self.terminated = False
+        self.killed = False
+        self._fake_state = QProcess.ProcessState.NotRunning
+        self._pid = 4343
+
+    def setProgram(self, value: str) -> None:
+        self.program = value
+
+    def setArguments(self, value: list[str]) -> None:
+        self.arguments = list(value)
+
+    def setProcessEnvironment(self, value) -> None:
+        self.environment = value
+
+    def setWorkingDirectory(self, value: str) -> None:
+        self.working_directory = value
+
+    def start(self) -> None:
+        self._fake_state = QProcess.ProcessState.Running
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+        self._fake_state = QProcess.ProcessState.NotRunning
+
+    def state(self):
+        return self._fake_state
+
+    def processId(self) -> int:
+        return self._pid
+
+    def readAllStandardOutput(self) -> bytes:
+        return b""
+
+    def readAllStandardError(self) -> bytes:
+        return b""
+
+
 def success_event(sequence: int = 1) -> str:
     payload = {
         "kind": "result",
@@ -122,6 +174,19 @@ def stage_event(sequence: int = 1, progress: int = 35) -> str:
         "stage": "building_portable",
         "progress": progress,
         "message": "Building",
+        "data": {},
+    }
+    return EVENT_PREFIX + json.dumps(payload)
+
+
+def error_event(sequence: int = 1, progress: int = 35) -> str:
+    payload = {
+        "kind": "error",
+        "sequence": sequence,
+        "timestamp": "2026-07-19T00:00:00Z",
+        "stage": "building_portable",
+        "progress": progress,
+        "message": "portable build failed",
         "data": {},
     }
     return EVENT_PREFIX + json.dumps(payload)
@@ -244,6 +309,34 @@ def test_remote_lookup_is_async_and_late_result_is_ignored_after_teardown(qapp):
     assert window.remote_info == RemoteReleaseInfo.unknown()
 
 
+def test_close_waits_for_active_remote_lookup_and_ignores_late_result(qapp):
+    release_loader = threading.Event()
+    loader_started = threading.Event()
+
+    def slow_loader(*_args):
+        loader_started.set()
+        release_loader.wait(2)
+        return RemoteReleaseInfo.available("9.9.9")
+
+    window = ReleaseBuilderWindow(
+        project_version="3.6.20",
+        remote_loader=slow_loader,
+    )
+    window.show()
+    qapp.processEvents()
+    assert loader_started.wait(1)
+
+    assert window.close() is False
+    assert window.isVisible() is True
+    assert window.remote_lookup_active is True
+
+    release_loader.set()
+    pump_until(qapp, lambda: not window.remote_lookup_active)
+    pump_until(qapp, lambda: not window.isVisible())
+
+    assert window.remote_info == RemoteReleaseInfo.unknown()
+
+
 def test_qprocess_uses_exact_program_argv_proxy_environment_and_secret_safe_request(
     qapp, tmp_path, monkeypatch
 ):
@@ -302,6 +395,53 @@ def test_partial_lines_are_buffered_flood_is_bounded_and_stage_is_immediate(qapp
     controller.flush_log_batch()
     assert sum(len(batch) for batch in batches) == 12
     assert all(len(batch) <= 200 for batch in batches)
+
+
+def test_structured_error_event_fails_closed_even_if_success_result_follows(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+
+    controller.feed_stdout(error_event() + "\n")
+    controller.feed_stdout(success_event(sequence=2) + "\n")
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.succeeded is False
+    assert "portable build failed" in controller.result.error
+
+
+def test_finished_drains_unread_qprocess_output_before_terminal_judgement(qapp):
+    fake = FakeProcess()
+    fake.set_stdout((success_event() + "\n").encode("utf-8"))
+    fake.set_stderr(b"last stderr line")
+    controller = ReleaseProcessController(process=fake)
+    batches: list[str] = []
+    controller.log_lines_ready.connect(
+        lambda lines: batches.extend(str(line) for line in lines)
+    )
+
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.succeeded is True
+    assert "last stderr line" in batches
+
+
+def test_real_qprocess_finished_drains_output_without_ready_read_slots(qapp):
+    process = QProcess()
+    controller = ReleaseProcessController(process=process)
+    process.readyReadStandardOutput.disconnect()
+    process.readyReadStandardError.disconnect()
+    payload = (success_event() + "\n").encode("utf-8")
+    process.setProgram(sys.executable)
+    process.setArguments(
+        [
+            "-c",
+            f"import sys; sys.stdout.buffer.write({payload!r}); sys.stdout.flush()",
+        ]
+    )
+
+    process.start()
+    pump_until(qapp, lambda: controller.result.succeeded, timeout=3.0)
+
+    assert controller.result.succeeded is True
 
 
 @pytest.mark.parametrize(
@@ -366,21 +506,208 @@ def test_cancel_terminates_then_escalates_and_cleanup_is_deterministic(
     assert controller.log_writer_active is False
 
 
-def test_window_close_while_running_routes_through_cancel(qapp):
+def test_shutdown_retains_process_state_until_target_reports_stopped(qapp, tmp_path):
     fake = FakeProcess()
-    controller = ReleaseProcessController(process=fake)
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    controller.start(make_request(), ProxySelection.system())
+    request_file = controller.request_file
+
+    assert controller.shutdown() is False
+
+    assert fake.terminated is True
+    assert fake.killed is False
+    assert controller.running is True
+    assert controller.cancel_timer.isActive() is True
+    assert request_file.exists()
+
+    controller.escalate_cancel()
+    assert fake.killed is True
+    assert controller.running is True
+    assert request_file.exists()
+
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+    assert controller.running is False
+    assert not request_file.exists()
+
+
+def test_windows_escalation_tracks_taskkill_until_confirmation(
+    qapp, tmp_path, monkeypatch
+):
+    target = FakeQtProcess()
+    taskkill = FakeProcess()
+    monkeypatch.setattr(process_controller_module.sys, "platform", "win32")
+    controller = ReleaseProcessController(
+        process=target,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        taskkill_process_factory=lambda _parent: taskkill,
+    )
+    controller.start(make_request(), ProxySelection.system())
+    request_file = controller.request_file
+
+    controller.cancel()
+    controller.escalate_cancel()
+
+    assert controller._taskkill_process is taskkill
+    assert taskkill.program == "taskkill"
+    assert taskkill.arguments == ["/PID", "4343", "/T", "/F"]
+    assert controller.running is True
+    assert request_file.exists()
+
+    taskkill._state = QProcess.ProcessState.NotRunning
+    taskkill.finished.emit(0, QProcess.ExitStatus.NormalExit)
+    assert controller._taskkill_process is None
+    assert controller._taskkill_confirmation_timer.isActive() is True
+
+    controller._confirm_target_after_taskkill()
+    assert target.killed is True
+    assert controller.running is True
+    assert request_file.exists()
+
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+    assert controller.running is False
+    assert not request_file.exists()
+
+
+def test_window_close_while_running_retains_controller_until_stopped(qapp, tmp_path):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
     window = make_panel(qapp, process_controller=controller)
     try:
         controller.start(make_request(), ProxySelection.system())
+        request_file = controller.request_file
+        window.show()
+        qapp.processEvents()
 
         assert window.close() is False
         assert fake.terminated is True
+        assert controller.running is True
+        assert request_file.exists()
+        assert window.isVisible() is True
 
         controller.on_finished(1, QProcess.ExitStatus.CrashExit)
-        qapp.processEvents()
-        assert window.isVisible() is False
+        pump_until(qapp, lambda: not window.isVisible())
+        assert not request_file.exists()
     finally:
         window.shutdown()
+
+
+class _BlockingStream:
+    def __init__(self) -> None:
+        self.write_started = threading.Event()
+        self.release_write = threading.Event()
+        self.writes: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def write(self, value: str) -> int:
+        self.write_started.set()
+        self.release_write.wait(2)
+        self.writes.append(value)
+        return len(value)
+
+    def flush(self) -> None:
+        return None
+
+
+class _DeferredCloseWriter:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.can_close = False
+        self.active = True
+        self.error = ""
+
+    def submit(self, _line: str) -> None:
+        return None
+
+    def close(self, *, timeout_seconds: float) -> bool:
+        if not self.can_close:
+            self.error = "timed out while closing release log"
+            return False
+        self.active = False
+        return True
+
+
+def test_background_writer_close_is_bounded_and_drop_notice_is_reliable(tmp_path):
+    stream = _BlockingStream()
+    writer = _BackgroundLogWriter(
+        tmp_path / "audit.log",
+        capacity=1,
+        stream_factory=lambda *_args, **_kwargs: stream,
+    )
+    writer.submit("first")
+    assert stream.write_started.wait(1)
+    writer.submit("queued")
+    for index in range(20):
+        writer.submit(f"dropped-{index}")
+
+    started = time.monotonic()
+    assert writer.close(timeout_seconds=0.02) is False
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert "timed out" in writer.error
+
+    stream.release_write.set()
+    assert writer.close(timeout_seconds=1.0) is True
+    assert "dropped" in "".join(stream.writes)
+
+
+def test_start_failure_retains_writer_until_bounded_close_completes(tmp_path):
+    writers: list[_DeferredCloseWriter] = []
+
+    def create_writer(path: Path) -> _DeferredCloseWriter:
+        writer = _DeferredCloseWriter(path)
+        writers.append(writer)
+        return writer
+
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        writer_factory=create_writer,
+        writer_close_timeout_seconds=0.0,
+    )
+
+    with pytest.raises(ValueError, match="invalid proxy selection"):
+        controller.start(
+            make_request(proxy_label="invalid"),
+            ProxySelection(label="invalid"),
+        )
+
+    assert controller.shutdown_complete is False
+    assert controller.log_writer_active is True
+
+    writers[0].can_close = True
+    controller._poll_writer_close()
+
+    assert controller.shutdown_complete is True
+    assert controller.log_writer_active is False
+
+
+def test_audit_log_paths_are_unique_within_one_second(tmp_path):
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        log_directory=tmp_path,
+    )
+
+    first = controller._new_log_path(ReleaseMode.NEW_RELEASE, "3.6.20")
+    second = controller._new_log_path(ReleaseMode.NEW_RELEASE, "3.6.20")
+
+    assert first != second
+    assert first.parent == second.parent == tmp_path
 
 
 def test_confirmation_summary_uses_safe_fields_and_chromed_dialog(qapp):
@@ -427,3 +754,52 @@ def test_confirmation_summary_uses_safe_fields_and_chromed_dialog(qapp):
 )
 def test_initial_geometry_is_centered_and_constrained(available, expected):
     assert ReleaseBuilderWindow.constrained_geometry(available) == expected
+
+
+def test_launch_does_not_reenter_an_existing_qapplication(qapp, monkeypatch):
+    class ExistingApplication:
+        def exec(self):
+            raise AssertionError("existing QApplication event loop must not be re-entered")
+
+    class ApplicationFacade:
+        @staticmethod
+        def instance():
+            return existing
+
+    class FakeSignal:
+        def connect(self, callback) -> None:
+            self.callback = callback
+
+        def emit(self) -> None:
+            self.callback()
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.destroyed = FakeSignal()
+            self.delete_on_close = False
+
+        def show(self) -> None:
+            self.shown = True
+
+        def setAttribute(self, attribute, enabled) -> None:
+            if attribute == Qt.WidgetAttribute.WA_DeleteOnClose:
+                self.delete_on_close = bool(enabled)
+
+    existing = ExistingApplication()
+    fake_window = FakeWindow()
+    monkeypatch.setattr(panel_module, "QApplication", ApplicationFacade)
+    monkeypatch.setattr(panel_module, "ReleaseBuilderWindow", lambda: fake_window)
+
+    assert panel_module.launch_release_builder_panel() == 0
+    assert fake_window.shown is True
+    assert fake_window.delete_on_close is True
+    assert panel_module._LAUNCHED_WINDOWS[id(fake_window)] is fake_window
+
+    fake_window.destroyed.emit()
+
+    assert id(fake_window) not in panel_module._LAUNCHED_WINDOWS
+    panel_module._LAUNCHED_WINDOWS.clear()
+
+
+def test_process_controller_is_defined_in_dedicated_module():
+    assert ReleaseProcessController.__module__ == "release_tool.process_controller"
