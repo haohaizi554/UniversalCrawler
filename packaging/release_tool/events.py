@@ -37,14 +37,26 @@ _SENSITIVE_HEADER = re.compile(
 _BEARER_TOKEN = re.compile(
     r'''(?i)\bbearer\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[a-z0-9._~+/=-]+)'''
 )
+_GITHUB_TOKEN = re.compile(
+    r"(?i)(?<![a-z0-9_])(?:gh[pours]_[a-z0-9_]+|github_pat_[a-z0-9_]+)(?![a-z0-9_])"
+)
 _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _SENSITIVE_QUERY_VALUE = re.compile(
     r"(?i)([?&;][^=&\s]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^=&\s]*\s*=)[^&#\s]*"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b[^\s=,;]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^\s=,;]*\s*=\s*[^\s,;#&]+"
+    r'''(?ix)
+    \b
+    [^\s=,;]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^\s=,;]*
+    \s*=\s*
+    (?:
+        "(?:\\.|[^"\\\r\n])*"
+        | '(?:\\.|[^'\\\r\n])*'
+        | [^\s,;#&]+
+    )
+    '''
 )
-_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_KEY_CASE_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _SENSITIVE_KEY_SEGMENTS = frozenset(
     {
@@ -71,13 +83,14 @@ def redact_release_text(text: str) -> str:
     redacted = _TRUNCATED_PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     redacted = _SENSITIVE_HEADER.sub(lambda match: f"{match.group(0).split(':', 1)[0]}: {REDACTED}", redacted)
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
+    redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
     redacted = _SENSITIVE_QUERY_VALUE.sub(lambda match: f"{match.group(1)}{REDACTED}", redacted)
     return _SENSITIVE_ASSIGNMENT.sub(REDACTED, redacted)
 
 
 def _is_sensitive_data_key(key: str) -> bool:
-    normalized = _CAMEL_CASE_BOUNDARY.sub("_", key).casefold()
+    normalized = _KEY_CASE_BOUNDARY.sub("_", key).casefold()
     segments = frozenset(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
     if not segments:
         return False

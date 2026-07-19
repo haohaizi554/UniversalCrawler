@@ -30,6 +30,93 @@ from release_tool.models import ReleaseStage
 
 
 FIXED_UTC = datetime(2026, 7, 19, 4, 5, 6, tzinfo=UTC)
+GITHUB_TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
+GITHUB_TOKEN_CASES = tuple(
+    f"{prefix}abcdefghijklmnopqrstuvwxyz123456" for prefix in GITHUB_TOKEN_PREFIXES
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "secrets", "expected"),
+    [
+        (
+            "Authorization: Bearer ghp_header_token",
+            ("ghp_header_token",),
+            "Authorization: [REDACTED]",
+        ),
+        (
+            'password="correct horse \\"battery\\" staple", keep=visible',
+            ('correct horse \\"battery\\" staple',),
+            "[REDACTED], keep=visible",
+        ),
+        ("token='a b c'; keep=visible", ("a b c",), "[REDACTED]; keep=visible"),
+        (
+            "proxy=https://alice:password@127.0.0.1:7890",
+            ("alice", "password"),
+            "proxy=https://[REDACTED]@127.0.0.1:7890",
+        ),
+        (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----",
+            ("private",),
+            "[REDACTED]",
+        ),
+        *[
+            (f"release token {token} complete", (token,), "release token [REDACTED] complete")
+            for token in GITHUB_TOKEN_CASES
+        ],
+        ("monkey keyframe tokenize build complete", (), "monkey keyframe tokenize build complete"),
+    ],
+)
+def test_credential_text_corpus_redacts_secrets_and_preserves_benign_text(text, secrets, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    assert all(secret not in redacted for secret in secrets)
+
+
+@pytest.mark.parametrize(
+    ("key", "redacted"),
+    [
+        ("APIKey", True),
+        ("ApiKey", True),
+        ("apiKey", True),
+        ("api_key", True),
+        ("proxyAPIKey", True),
+        ("accessToken", True),
+        ("privateKey", True),
+        ("monkey", False),
+        ("keyframe", False),
+        ("tokenize", False),
+    ],
+)
+def test_credential_mapping_key_corpus_uses_acronym_aware_semantic_segments(key, redacted):
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: "nested-secret"}},
+    )
+
+    expected = "[REDACTED]" if redacted else "nested-secret"
+    assert event.data["nested"][key] == expected
+
+
+def test_credential_corpus_redacts_github_tokens_from_message_log_and_non_sensitive_data(tmp_path: Path):
+    token = GITHUB_TOKEN_CASES[0]
+    stream = io.StringIO()
+    event = ReleaseEventEmitter(stream=stream, clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        message=f"message {token}",
+        data={"nested": {"note": f"data {token}"}},
+    )
+    log_path = tmp_path / "release.log"
+    ReleaseLogWriter(log_path).write_line(f"log {token}")
+
+    assert token not in stream.getvalue()
+    assert token not in json.dumps(event.to_payload())
+    assert token not in log_path.read_text(encoding="utf-8")
 
 
 def test_event_round_trip_uses_fixed_prefix_and_monotonic_sequence(capsys):
