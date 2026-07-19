@@ -1359,14 +1359,10 @@ def _run_request_file(request_file: Path) -> int:
         except OSError:
             load_error = ValueError("release request file could not be deleted")
     if load_error is not None:
-        return _run_release_request(
-            _build_dry_run_request(version="0.0.0", build_only=False),
-            preflight_error=load_error,
-        )
+        return _run_controlled_preflight_failure(load_error)
     if request is None:
-        return _run_release_request(
-            _build_dry_run_request(version="0.0.0", build_only=False),
-            preflight_error=ValueError("release request file could not be loaded"),
+        return _run_controlled_preflight_failure(
+            ValueError("release request file could not be loaded")
         )
     return _run_release_request(request)
 
@@ -1395,8 +1391,18 @@ def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
     )
 
 
+def _run_controlled_preflight_failure(error: BaseException) -> int:
+    return _run_release_request(
+        _build_dry_run_request(version="0.0.0", build_only=False),
+        preflight_error=error,
+    )
+
+
 def _run_dry_run_request(*, version: str, build_only: bool) -> int:
-    request = _build_dry_run_request(version=version, build_only=build_only)
+    try:
+        request = _build_dry_run_request(version=version, build_only=build_only)
+    except ValueError as error:
+        return _run_controlled_preflight_failure(error)
     return _run_release_request(request)
 
 

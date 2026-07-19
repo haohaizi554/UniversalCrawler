@@ -57,3 +57,23 @@ or recorded here.
   - Passed.
 - `git diff --check`
   - Passed.
+
+## Final Important Review Fix
+
+Explicit invalid dry-run versions are now converted into a controlled
+runner-owned preflight failure. Direct helper and script entry calls return
+nonzero, emit exactly one redacted failed terminal result, produce no traceback,
+and do not invoke locks, subprocesses, Git, builds, signing, or remote publisher
+setup. Valid dry-run plans retain their existing behavior.
+
+### Final Review Verification
+
+- RED: both invalid-version regressions failed with uncaught `ValueError`.
+- GREEN: invalid direct/script regressions plus both valid dry-run variants
+  passed (`4 passed`).
+- `python -m pytest tests/release/packaging/test_release_pipeline.py -q`
+  - `81 passed in 16.55s`.
+- `python -m ruff check packaging/build_release.py tests/release/packaging/test_release_pipeline.py`
+  - Passed.
+- `git diff --check`
+  - Passed.

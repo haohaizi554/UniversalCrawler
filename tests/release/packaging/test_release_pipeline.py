@@ -365,6 +365,71 @@ def test_actual_dry_run_is_a_successful_read_only_plan(capsys, build_only):
     assert result_events[0].data["status"] == "succeeded"
 
 
+def test_invalid_direct_dry_run_is_a_redacted_read_only_terminal_failure(capsys):
+    tool = _load_tool()
+    forbidden = Mock(side_effect=AssertionError("invalid dry run attempted a side effect"))
+    invalid_version = "github_pat_topsecretvalue"
+
+    with (
+        patch.object(tool, "_release_build_lock", forbidden),
+        patch.object(tool, "_run_git", forbidden),
+        patch.object(tool.subprocess, "run", forbidden),
+        patch.object(tool, "apply_version_update", forbidden),
+        patch.object(tool, "_build_binaries", forbidden),
+        patch.object(tool, "_prepare_release_assets", forbidden),
+        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "GitHubReleasePublisher", forbidden),
+    ):
+        exit_code = tool._run_dry_run_request(
+            version=invalid_version,
+            build_only=True,
+        )
+
+    assert exit_code != 0
+    forbidden.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err
+    assert invalid_version not in captured.out + captured.err
+    assert "topsecretvalue" not in captured.out + captured.err
+    events = _release_events(captured.out)
+    result_events = [event for event in events if event.kind == "result"]
+    assert len(result_events) == 1
+    assert result_events[0].stage is tool.ReleaseStage.FAILED
+    assert result_events[0].data["status"] == "failed"
+    assert len([event for event in events if event.kind == "error"]) == 1
+
+
+def test_script_invalid_dry_run_version_returns_one_terminal_failure(capsys):
+    tool = _load_tool()
+    forbidden = Mock(side_effect=AssertionError("invalid dry run attempted a side effect"))
+
+    with (
+        patch.object(tool, "_release_build_lock", forbidden),
+        patch.object(tool, "_run_git", forbidden),
+        patch.object(tool.subprocess, "run", forbidden),
+        patch.object(tool, "apply_version_update", forbidden),
+        patch.object(tool, "_build_binaries", forbidden),
+        patch.object(tool, "_prepare_release_assets", forbidden),
+        patch.object(tool, "generate_manifest_key", forbidden),
+        patch.object(tool, "GitHubReleasePublisher", forbidden),
+    ):
+        exit_code = tool.script_main(
+            ["--headless", "--dry-run", "--version", "not-a-version"]
+        )
+
+    assert exit_code != 0
+    forbidden.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err
+    assert "not-a-version" not in captured.out + captured.err
+    events = _release_events(captured.out)
+    result_events = [event for event in events if event.kind == "result"]
+    assert len(result_events) == 1
+    assert result_events[0].stage is tool.ReleaseStage.FAILED
+    assert result_events[0].data["status"] == "failed"
+    assert len([event for event in events if event.kind == "error"]) == 1
+
+
 def test_release_mode_fails_before_build_when_manifest_key_is_missing(tmp_path):
     tool = _load_tool()
     run_build = Mock()
