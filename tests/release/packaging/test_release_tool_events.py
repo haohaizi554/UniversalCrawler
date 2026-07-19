@@ -47,9 +47,9 @@ GITHUB_TOKEN_CASES = tuple(
         (
             'password="correct horse \\"battery\\" staple", keep=visible',
             ('correct horse \\"battery\\" staple',),
-            "[REDACTED], keep=visible",
+            "password=[REDACTED], keep=visible",
         ),
-        ("token='a b c'; keep=visible", ("a b c",), "[REDACTED]; keep=visible"),
+        ("token='a b c'; keep=visible", ("a b c",), "token=[REDACTED]; keep=visible"),
         (
             "proxy=https://alice:password@127.0.0.1:7890",
             ("alice", "password"),
@@ -117,6 +117,63 @@ def test_credential_corpus_redacts_github_tokens_from_message_log_and_non_sensit
     assert token not in stream.getvalue()
     assert token not in json.dumps(event.to_payload())
     assert token not in log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "apikey",
+        "APIKey",
+        "api_key",
+        "accessToken",
+        "ACCESS_TOKEN",
+        "refreshtoken",
+        "refresh-token",
+        "clientSecret",
+        "CLIENT_PASSWORD",
+        "privatekey",
+        "signingKey",
+        "proxyusername",
+        "proxy-password",
+        "proxyToken",
+        "proxyAPIKey",
+        "authorization",
+        "cookie",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "key",
+        "credentials",
+    ),
+)
+def test_canonical_credential_keys_redact_mapping_assignment_and_query_values(key):
+    secret = "correct horse battery staple"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: secret}},
+    )
+    text = f'{key}="{secret}"; ?{key}={secret}'
+
+    assert event.data["nested"][key] == "[REDACTED]"
+    assert redact_release_text(text) == f"{key}=[REDACTED]; ?{key}=[REDACTED]"
+
+
+@pytest.mark.parametrize("key", ("monkey", "keyframe", "tokenize"))
+def test_benign_keys_survive_mapping_assignment_and_query_values(key):
+    value = "plain words"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: value}},
+    )
+    text = f'{key}="{value}"; ?{key}=words'
+
+    assert event.data["nested"][key] == value
+    assert redact_release_text(text) == text
 
 
 def test_event_round_trip_uses_fixed_prefix_and_monotonic_sequence(capsys):

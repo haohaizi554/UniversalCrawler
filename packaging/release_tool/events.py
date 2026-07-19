@@ -41,38 +41,77 @@ _GITHUB_TOKEN = re.compile(
     r"(?i)(?<![a-z0-9_])(?:gh[pours]_[a-z0-9_]+|github_pat_[a-z0-9_]+)(?![a-z0-9_])"
 )
 _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
-_SENSITIVE_QUERY_VALUE = re.compile(
-    r"(?i)([?&;][^=&\s]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^=&\s]*\s*=)[^&#\s]*"
-)
-_SENSITIVE_ASSIGNMENT = re.compile(
-    r'''(?ix)
-    \b
-    [^\s=,;]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^\s=,;]*
-    \s*=\s*
-    (?:
+_KEY_VALUE_PAIR = re.compile(
+    r'''(?x)
+    (?P<prefix>[?&;]|(?<![A-Za-z0-9_]))
+    (?P<key>[A-Za-z][A-Za-z0-9_-]*)
+    (?P<separator>\s*=\s*)
+    (?P<value>
         "(?:\\.|[^"\\\r\n])*"
         | '(?:\\.|[^'\\\r\n])*'
-        | [^\s,;#&]+
+        | [^\r\n,;#&]+
     )
     '''
 )
 _KEY_CASE_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
-_SENSITIVE_KEY_SEGMENTS = frozenset(
+_SENSITIVE_KEY_NAMES = frozenset(
     {
+        "access_token",
+        "accesstoken",
+        "accesstokens",
+        "api_key",
+        "apikey",
+        "apikeys",
         "auth",
         "authorization",
+        "authorizations",
+        "client_password",
+        "client_secret",
+        "clientpassword",
+        "clientpasswords",
+        "clientsecret",
+        "clientsecrets",
         "cookie",
+        "cookies",
         "credential",
         "credentials",
         "key",
+        "keys",
         "password",
+        "passwords",
         "passwd",
+        "passwds",
+        "private_key",
+        "privatekey",
+        "privatekeys",
+        "proxy_api_key",
+        "proxy_password",
+        "proxy_token",
+        "proxy_username",
+        "proxyapikey",
+        "proxyauth",
+        "proxyauthorization",
+        "proxycredential",
+        "proxycredentials",
+        "proxypasswd",
+        "proxypassword",
+        "proxytoken",
+        "proxyuser",
+        "proxyusername",
+        "proxyusernames",
+        "refresh_token",
+        "refreshtoken",
+        "refreshtokens",
         "secret",
+        "secrets",
+        "signing_key",
+        "signingkey",
+        "signingkeys",
         "token",
+        "tokens",
     }
 )
-_PROXY_CREDENTIAL_SEGMENTS = _SENSITIVE_KEY_SEGMENTS | frozenset({"user", "username"})
 
 
 def redact_release_text(text: str) -> str:
@@ -85,22 +124,26 @@ def redact_release_text(text: str) -> str:
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
-    redacted = _SENSITIVE_QUERY_VALUE.sub(lambda match: f"{match.group(1)}{REDACTED}", redacted)
-    return _SENSITIVE_ASSIGNMENT.sub(REDACTED, redacted)
+    return _KEY_VALUE_PAIR.sub(_redact_sensitive_key_value_pair, redacted)
 
 
-def _is_sensitive_data_key(key: str) -> bool:
+def _canonical_key_name(key: str) -> str:
     normalized = _KEY_CASE_BOUNDARY.sub("_", key).casefold()
-    segments = frozenset(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
-    if not segments:
-        return False
-    if segments & _SENSITIVE_KEY_SEGMENTS:
-        return True
-    return "proxy" in segments and bool(segments & _PROXY_CREDENTIAL_SEGMENTS)
+    return "".join(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    return _canonical_key_name(key) in _SENSITIVE_KEY_NAMES
+
+
+def _redact_sensitive_key_value_pair(match: re.Match[str]) -> str:
+    if not _is_sensitive_key(match.group("key")):
+        return match.group(0)
+    return f"{match.group('prefix')}{match.group('key')}{match.group('separator')}{REDACTED}"
 
 
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
-    if key and _is_sensitive_data_key(key):
+    if key and _is_sensitive_key(key):
         return REDACTED
     if isinstance(value, str):
         return redact_release_text(value)
