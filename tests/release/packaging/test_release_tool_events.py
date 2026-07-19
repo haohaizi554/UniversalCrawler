@@ -128,6 +128,65 @@ def test_release_text_redacts_sensitive_json_fragments_in_mixed_prose(value):
     assert "raw-secret" not in redacted
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "secrets"),
+    [
+        (
+            "api_secret",
+            '{"nested":["object-secret",{"value":"still-secret"}]}',
+            ("object-secret", "still-secret"),
+        ),
+        (
+            "token",
+            '[{"value":"array-secret"},["deeper-secret"]]',
+            ("array-secret", "deeper-secret"),
+        ),
+        ("privateKey", '{"material":"private-secret"}', ("private-secret",)),
+    ],
+)
+def test_release_text_redacts_sensitive_composite_json_fragments(key, value, secrets):
+    text = f'prefix {{"{key}":{value},"monkey":"banana"}} suffix'
+
+    redacted = redact_release_text(text)
+
+    assert redacted == f'prefix {{"{key}":"[REDACTED]","monkey":"banana"}} suffix'
+    assert all(secret not in redacted for secret in secrets)
+
+
+def test_release_text_scans_composites_with_escaped_json_delimiters_and_adjacent_suffixes():
+    text = 'prefix {"token":{"note":"escaped \\"} and [\\""}} suffix'
+
+    redacted = redact_release_text(text)
+
+    assert redacted == 'prefix {"token":"[REDACTED]"} suffix'
+    assert "escaped" not in redacted
+
+
+def test_release_text_redacts_multiple_sensitive_composite_json_fragments():
+    text = 'first {"token":["first-secret"]} middle {"cookie":{"value":"second-secret"}} tail'
+
+    redacted = redact_release_text(text)
+
+    assert redacted == 'first {"token":"[REDACTED]"} middle {"cookie":"[REDACTED]"} tail'
+    assert "first-secret" not in redacted
+    assert "second-secret" not in redacted
+
+
+def test_release_text_fails_closed_for_unterminated_sensitive_composite_json_fragments():
+    text = 'prefix {"api_secret":{"nested":"raw-secret" trailing'
+
+    redacted = redact_release_text(text)
+
+    assert redacted == 'prefix {"api_secret":"[REDACTED]"'
+    assert "raw-secret" not in redacted
+
+
+def test_release_text_preserves_benign_composite_json_fragments():
+    text = 'prefix {"monkey":{"status":"ok"},"cache_key":["diagnostic"]} suffix'
+
+    assert redact_release_text(text) == text
+
+
 def test_release_text_preserves_benign_and_malformed_json_while_redacting_sensitive_fragments():
     benign = '{"monkey":"banana","cache_key":"diagnostic","keyframe":"value"}'
     malformed = 'prefix {"api_secret":"raw-secret", "note":"unterminated" suffix'

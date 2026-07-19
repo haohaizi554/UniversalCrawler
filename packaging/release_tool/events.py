@@ -53,17 +53,19 @@ _KEY_VALUE_PAIR = re.compile(
     )
     '''
 )
-_JSON_KEY_VALUE_PAIR = re.compile(
+_JSON_KEY_PREFIX = re.compile(
     r'''(?x)
     (?P<key>"(?:\\.|[^"\\\r\n])*")
     (?P<separator>\s*:\s*)
-    (?P<value>
-        "(?:\\.|[^"\\\r\n])*"
-        | -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?
-        | true
-        | false
-        | null
-    )
+    '''
+)
+_JSON_PRIMITIVE_VALUE = re.compile(
+    r'''(?x)
+    "(?:\\.|[^"\\\r\n])*"
+    | -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?
+    | true
+    | false
+    | null
     '''
 )
 _KEY_CASE_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
@@ -164,7 +166,7 @@ def redact_release_text(text: str) -> str:
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
-    redacted = _JSON_KEY_VALUE_PAIR.sub(_redact_sensitive_json_key_value_pair, redacted)
+    redacted = _redact_sensitive_json_fragments(redacted)
     return _KEY_VALUE_PAIR.sub(_redact_sensitive_key_value_pair, redacted)
 
 
@@ -206,14 +208,68 @@ def _redact_sensitive_header_field(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('separator')}{REDACTED}"
 
 
-def _redact_sensitive_json_key_value_pair(match: re.Match[str]) -> str:
-    try:
-        key = _strict_json_loads(match.group("key"))
-    except (json.JSONDecodeError, ValueError):
-        return match.group(0)
-    if not isinstance(key, str) or not _is_sensitive_key(key):
-        return match.group(0)
-    return f"{match.group('key')}{match.group('separator')}{json.dumps(REDACTED)}"
+def _redact_sensitive_json_fragments(text: str) -> str:
+    parts: list[str] = []
+    position = 0
+    for match in _JSON_KEY_PREFIX.finditer(text):
+        if match.start() < position:
+            continue
+        try:
+            key = _strict_json_loads(match.group("key"))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(key, str) or not _is_sensitive_key(key):
+            continue
+        value_end = _json_fragment_value_end(text, match.end())
+        if value_end is None:
+            continue
+        parts.append(text[position : match.end()])
+        parts.append(json.dumps(REDACTED))
+        position = value_end
+    if not parts:
+        return text
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _json_fragment_value_end(text: str, start: int) -> int | None:
+    while start < len(text) and text[start].isspace():
+        start += 1
+    if start >= len(text):
+        return None
+    if text[start] in "{[":
+        return _scan_json_composite_end(text, start)
+    primitive = _JSON_PRIMITIVE_VALUE.match(text, start)
+    return None if primitive is None else primitive.end()
+
+
+def _scan_json_composite_end(text: str, start: int) -> int:
+    closing_delimiters = {"{": "}", "[": "]"}
+    stack = [closing_delimiters[text[start]]]
+    in_string = False
+    escaped = False
+
+    for index in range(start + 1, len(text)):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in closing_delimiters:
+            stack.append(closing_delimiters[character])
+        elif character in "}]":
+            if character != stack[-1]:
+                return len(text)
+            stack.pop()
+            if not stack:
+                return index + 1
+    return len(text)
 
 
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
