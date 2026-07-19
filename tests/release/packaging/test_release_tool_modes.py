@@ -213,6 +213,34 @@ def test_new_release_tag_for_an_applied_version_commit_requires_pushing_main():
     )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            {"apply_version": False, "commit_version_changes": True},
+            "new release tag requires applying version changes",
+        ),
+        (
+            {"apply_version": True, "commit_version_changes": False},
+            "new release tag requires committing version changes",
+        ),
+    ],
+)
+def test_new_release_tag_requires_an_applied_and_committed_version(overrides, message):
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        push_main=True,
+        create_or_reuse_tag=True,
+        **overrides,
+    )
+
+    assert message in validate_build_request(request)
+
+
 def test_new_release_publication_requires_the_complete_formal_chain():
     request = BuildRequest(
         target_version="3.6.22",

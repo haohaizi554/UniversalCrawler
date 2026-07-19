@@ -123,6 +123,12 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     if request.run_smoke_tests and not request.build_portable:
         errors.append("smoke tests require building portable artifacts")
 
+    if mode is ReleaseMode.NEW_RELEASE and request.create_or_reuse_tag:
+        if not request.apply_version:
+            errors.append("new release tag requires applying version changes")
+        if not request.commit_version_changes:
+            errors.append("new release tag requires committing version changes")
+
     if mode is ReleaseMode.NEW_RELEASE and (
         request.sign_manifest or request.upload_release_assets
     ):

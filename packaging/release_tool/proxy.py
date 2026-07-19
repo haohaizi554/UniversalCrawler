@@ -32,6 +32,8 @@ class ProxySelection:
 
     label: str = "系统代理"
     endpoint: str = ""
+    label_from_environment: bool = False
+    endpoint_from_environment: bool = False
 
     @classmethod
     def system(cls) -> "ProxySelection":
@@ -64,11 +66,20 @@ def build_proxy_environment(
         return environment
 
     if label == _CUSTOM_PROXY_LABEL:
-        proxy_url = _normalize_explicit_proxy_endpoint(selection.endpoint)
+        proxy_url = _normalize_explicit_proxy_endpoint(
+            selection.endpoint,
+            allow_credentials=selection.endpoint_from_environment,
+        )
     else:
-        if label not in _project_proxy_values():
+        if label in _project_proxy_values():
+            proxy_url = normalize_proxy_url(label)
+        elif selection.label_from_environment:
+            proxy_url = _normalize_explicit_proxy_endpoint(
+                label,
+                allow_credentials=True,
+            )
+        else:
             raise ValueError("invalid proxy selection")
-        proxy_url = normalize_proxy_url(label)
         if not proxy_url:
             raise ValueError("invalid proxy selection")
     for variable in PROXY_ENVIRONMENT_VARIABLES:
@@ -103,9 +114,16 @@ def _project_proxy_values() -> frozenset[str]:
     )
 
 
-def _normalize_explicit_proxy_endpoint(endpoint: str) -> str:
+def _normalize_explicit_proxy_endpoint(
+    endpoint: str,
+    *,
+    allow_credentials: bool = False,
+) -> str:
     text = str(endpoint or "").strip().strip("\"'")
-    if not _is_valid_explicit_proxy_endpoint(text):
+    if not _is_valid_explicit_proxy_endpoint(
+        text,
+        allow_credentials=allow_credentials,
+    ):
         raise ValueError("invalid custom proxy endpoint")
     proxy_url = normalize_proxy_url(text)
     if not proxy_url:
@@ -113,7 +131,11 @@ def _normalize_explicit_proxy_endpoint(endpoint: str) -> str:
     return proxy_url
 
 
-def _is_valid_explicit_proxy_endpoint(value: str) -> bool:
+def _is_valid_explicit_proxy_endpoint(
+    value: str,
+    *,
+    allow_credentials: bool,
+) -> bool:
     if not value:
         return False
     lowered = value.lower()
@@ -125,8 +147,14 @@ def _is_valid_explicit_proxy_endpoint(value: str) -> bool:
         return bool(
             parsed.hostname
             and parsed.port
-            and parsed.username is None
-            and parsed.password is None
+            and not parsed.path
+            and not parsed.params
+            and not parsed.query
+            and not parsed.fragment
+            and (
+                allow_credentials
+                or (parsed.username is None and parsed.password is None)
+            )
         )
     except ValueError:
         return False

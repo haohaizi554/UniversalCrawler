@@ -52,6 +52,7 @@ class RecordingHooks:
         build_installer_error: BaseException | None = None,
         smoke_error: BaseException | None = None,
         dependency_error: BaseException | None = None,
+        version_commit: str = "a" * 40,
         cleanup=None,
     ) -> None:
         self.calls: list[str] = []
@@ -59,6 +60,7 @@ class RecordingHooks:
         self.build_installer_error = build_installer_error
         self.smoke_error = smoke_error
         self.dependency_error = dependency_error
+        self.version_commit = version_commit
         self.on_cleanup = cleanup
         self.version_after_failure = ""
         self._version = "3.6.21"
@@ -106,7 +108,7 @@ class RecordingHooks:
 
     def commit_version_changes(self, request: BuildRequest) -> str:
         self.calls.append("commit_version_changes")
-        return "a" * 40
+        return self.version_commit
 
     def push_main(self, request: BuildRequest, commit: str) -> None:
         self.calls.append("push_main")
@@ -222,6 +224,36 @@ def test_dependency_preflight_blocks_preparation_and_all_side_effects():
 
     assert result.failed_stage is ReleaseStage.PREFLIGHT
     assert hooks.calls == ["validate_dependencies"]
+
+
+def test_new_release_tag_rejects_an_empty_verified_version_commit_before_push():
+    hooks = RecordingHooks(version_commit="")
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.SOURCE_IDENTITY
+    assert "verified version commit" in result.error
+    assert hooks.calls == [
+        "validate_dependencies",
+        "prepare",
+        "apply_version",
+        "commit_version_changes",
+    ]
 
 
 def test_system_exit_from_stage_is_redacted_and_emits_one_terminal_result():

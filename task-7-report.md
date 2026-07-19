@@ -107,11 +107,34 @@ Implemented the cancellable release orchestration state machine.
   valid environment reference. Arbitrary URLs and credential-bearing values are
   rejected generically; `custom_proxy` remains the sole explicit endpoint field.
 
+## Sixth Review Fixes
+
+- Every `NEW_RELEASE` tag request now requires both version application and a
+  committed version projection. Runner source identity rejects an empty commit
+  before push, and the real tag hook requires a full verified commit SHA instead
+  of falling back to ambient `HEAD`. Same-release repair retains its existing tag
+  reuse behavior.
+- Proxy resolution now preserves whether the selected label or custom endpoint
+  came from an `env:` reference. Authenticated HTTP/SOCKS endpoints are accepted
+  only from those secure references; directly supplied credentials remain
+  rejected with generic errors. Event output continues to redact proxy userinfo.
+- Added validator, runner, real-hook, and proxy integration probes covering
+  missing apply/commit flags, an empty verified commit, both supported
+  environment-reference forms, direct credential rejection, and redacted logs.
+
 Verification:
 
 `python -m pytest tests/release/packaging/test_release_tool_runner.py tests/release/packaging/test_release_pipeline.py tests/release/packaging/test_release_tool_modes.py tests/release/packaging/test_release_tool_events.py tests/release/packaging/test_release_tool_publisher.py -q`
 
-Result: 336 passed.
+Result: 343 passed.
+
+`python -m pytest tests/release/packaging/test_release_tool_proxy.py -q`
+
+Result: 10 passed.
+
+`python -m ruff check packaging/build_release.py packaging/release_tool tests/release/packaging`
+
+Result: all checks passed.
 
 `git diff --check`
 

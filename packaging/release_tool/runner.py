@@ -199,6 +199,14 @@ def run_release_request(
                     nonlocal commit
                     if request.commit_version_changes:
                         commit = hooks.commit_version_changes(request)
+                    if (
+                        mode is ReleaseMode.NEW_RELEASE
+                        and request.create_or_reuse_tag
+                        and not str(commit or "").strip()
+                    ):
+                        raise ValueError(
+                            "new release tag requires a verified version commit"
+                        )
                     if request.push_main:
                         hooks.push_main(request, commit)
                     if request.create_or_reuse_tag:

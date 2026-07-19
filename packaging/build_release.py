@@ -52,6 +52,7 @@ from release_lock import (  # noqa: E402
     release_lock_path,
 )
 from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
+from release_tool.modes import resolve_release_mode  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
 from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
 from release_tool.runner import ReleasePipelineHooks  # noqa: E402
@@ -983,17 +984,24 @@ def _build_pipeline_hooks(
             return child_environment, publisher
 
         proxy_label = request.proxy_label.strip()
-        if proxy_label.startswith("env:"):
+        proxy_label_from_environment = proxy_label.startswith("env:")
+        if proxy_label_from_environment:
             proxy_label = str(environment.get(proxy_label[4:]) or "").strip()
             if not proxy_label:
                 raise ValueError("proxy selection reference is unavailable")
         custom_proxy = request.custom_proxy.strip()
-        if custom_proxy.startswith("env:"):
+        custom_proxy_from_environment = custom_proxy.startswith("env:")
+        if custom_proxy_from_environment:
             custom_proxy = str(environment.get(custom_proxy[4:]) or "").strip()
             if not custom_proxy:
                 raise ValueError("custom proxy reference is unavailable")
         child_environment = build_proxy_environment(
-            ProxySelection(label=proxy_label, endpoint=custom_proxy),
+            ProxySelection(
+                label=proxy_label,
+                endpoint=custom_proxy,
+                label_from_environment=proxy_label_from_environment,
+                endpoint_from_environment=custom_proxy_from_environment,
+            ),
             environment,
         )
         publisher = GitHubReleasePublisher(
@@ -1162,10 +1170,23 @@ def _build_pipeline_hooks(
             raise SystemExit("remote main does not match the verified release commit")
 
     def ensure_tag(_request: BuildRequest, commit: str) -> None:
+        mode = resolve_release_mode(
+            _request.target_version,
+            _request.remote,
+            same_release_repair=_request.same_release_repair,
+            offline_debug=_request.offline_debug,
+        )
+        if mode is ReleaseMode.NEW_RELEASE:
+            source_commit = str(commit or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+                raise SystemExit(
+                    "new release tag requires a verified version commit"
+                )
+        else:
+            source_commit = str(commit or _run_git(["rev-parse", "HEAD"])).strip()
         _child_environment, publisher = resolve_release_context()
         if formal_build:
             _validate_release_baseline_clean()
-        source_commit = commit or _run_git(["rev-parse", "HEAD"])
         try:
             existing = _run_git(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
         except subprocess.CalledProcessError:

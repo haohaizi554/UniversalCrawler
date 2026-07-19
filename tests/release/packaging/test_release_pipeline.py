@@ -22,6 +22,7 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
 
 from release_tool.models import BuildRequest, RemoteReleaseInfo
 from release_tool.events import ReleaseEventEmitter, parse_event_line
+from release_tool.proxy import PROXY_ENVIRONMENT_VARIABLES
 from release_tool.runner import CancellationToken, run_release_request
 from release_tool.versioning import VersionUpdatePlan, VersionUpdateResult
 
@@ -658,6 +659,103 @@ def test_source_identity_refuses_to_push_when_head_moves_after_verified_commit(t
 
     assert result.failed_stage is tool.ReleaseStage.SOURCE_IDENTITY
     assert not any(call[0] == "push" for call in git_calls)
+
+
+def test_new_release_tag_hook_rejects_an_empty_verified_commit_without_reading_head():
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+    publisher = Mock()
+
+    with (
+        patch.object(tool, "GitHubReleasePublisher", return_value=publisher),
+        patch.object(tool, "_run_git", return_value="a" * 40) as run_git,
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        with pytest.raises(SystemExit, match="verified version commit"):
+            hooks.ensure_tag(request, "")
+
+    run_git.assert_not_called()
+    publisher.ensure_tag.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "proxy_fields",
+    [
+        {"proxy_label": "env:RELEASE_PROXY_URL"},
+        {
+            "proxy_label": "\u81ea\u5b9a\u4e49",
+            "custom_proxy": "env:RELEASE_PROXY_URL",
+        },
+    ],
+)
+def test_authenticated_proxy_environment_reference_preserves_secure_provenance(
+    proxy_fields,
+):
+    tool = _load_tool()
+    credentialed_proxy = "socks5://alice:proxy-secret@127.0.0.1:1080"
+    captured_environment: dict[str, str] = {}
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream)
+
+    class FakePublisher:
+        def __init__(self, _repository, environment, emit_log, **_kwargs):
+            captured_environment.update(environment)
+            emit_log(f"proxy={environment['HTTPS_PROXY']}")
+
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        **proxy_fields,
+    )
+
+    with patch.object(tool, "GitHubReleasePublisher", FakePublisher):
+        hooks = tool._build_pipeline_hooks(
+            request,
+            {"RELEASE_PROXY_URL": credentialed_proxy},
+            emitter,
+        )
+        hooks.validate_dependencies(request)
+
+    for name in PROXY_ENVIRONMENT_VARIABLES:
+        assert captured_environment[name] == credentialed_proxy
+    assert "alice" not in stream.getvalue()
+    assert "proxy-secret" not in stream.getvalue()
+    assert "[REDACTED]@127.0.0.1:1080" in stream.getvalue()
+
+
+def test_direct_authenticated_custom_proxy_remains_rejected_without_echoing_credentials():
+    tool = _load_tool()
+    credentialed_proxy = "http://alice:direct-secret@127.0.0.1:7890"
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        proxy_label="\u81ea\u5b9a\u4e49",
+        custom_proxy=credentialed_proxy,
+    )
+
+    hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+    with pytest.raises(ValueError, match="invalid custom proxy endpoint") as caught:
+        hooks.validate_dependencies(request)
+
+    assert "alice" not in str(caught.value)
+    assert "direct-secret" not in str(caught.value)
 
 
 @pytest.mark.parametrize("public_key", [None, "not a public key"])
