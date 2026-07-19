@@ -95,6 +95,17 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
         if not request.build_installer:
             errors.append("upload release assets requires building the installer")
 
+    if request.run_smoke_tests and not request.build_portable:
+        errors.append("smoke tests require building portable artifacts")
+
+    if mode is ReleaseMode.NEW_RELEASE and (
+        request.sign_manifest or request.upload_release_assets
+    ):
+        if request.apply_version and not request.commit_version_changes:
+            errors.append("new release signing requires committing applied version changes")
+        if not request.create_or_reuse_tag:
+            errors.append("new release signing requires creating or reusing the release tag")
+
     if mode in {
         ReleaseMode.LOCAL_DEBUG,
         ReleaseMode.LOCAL_REBUILD,

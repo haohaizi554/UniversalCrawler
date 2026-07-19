@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
@@ -28,6 +29,7 @@ WINDOWS_RELEASE_TOOLS = ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe")
 MIN_WINDOWS_TOOL_BYTES = 1024 * 1024
 RELEASE_TEMP_ROOT_ENV = "UCRAWL_RELEASE_TEMP_ROOT"
 USER_DATA_ROOT_ENV = "UCRAWL_USER_DATA_ROOT"
+RELEASE_SMOKE_TIMEOUT_SECONDS = 60
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -45,8 +47,7 @@ from release_lock import (  # noqa: E402
     release_build_lock,
     release_lock_path,
 )
-from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
-from release_tool.modes import resolve_release_mode  # noqa: E402
+from release_tool.models import BuildRequest, ReleaseStage  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
 from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
 from release_tool.runner import ReleasePipelineHooks  # noqa: E402
@@ -814,7 +815,7 @@ def _build_binaries(
     source_fingerprints = (
         _snapshot_source_fingerprints(root) if enforce_source_immutability else {}
     )
-    signed_build = os.environ.get("UCRAWL_SIGN_WINDOWS") == "1"
+    signed_build = build_installer and os.environ.get("UCRAWL_SIGN_WINDOWS") == "1"
     trust: dict[str, object] | None = None
     if signed_build:
         trust = _validate_production_trust(
@@ -849,12 +850,6 @@ def _build_pipeline_hooks(
 ) -> ReleasePipelineHooks:
     """Adapt the existing release primitives to one request-scoped runner."""
 
-    mode = resolve_release_mode(
-        request.target_version,
-        request.remote,
-        same_release_repair=request.same_release_repair,
-        offline_debug=request.offline_debug,
-    )
     custom_proxy = request.custom_proxy
     if custom_proxy.startswith("env:"):
         custom_proxy = str(environment.get(custom_proxy[4:]) or "")
@@ -865,22 +860,36 @@ def _build_pipeline_hooks(
         environment,
     )
     resources = ExitStack()
+    active_stage_lock = threading.Lock()
     state: dict[str, object] = {
+        "active_progress": 0,
+        "active_stage": ReleaseStage.IDLE,
         "assets": (),
+        "build_root": None,
         "installer": None,
+        "lock_token": "",
         "snapshot_root": None,
         "source_commit": "",
         "version_plan": None,
         "version_result": None,
     }
     tag = f"v{request.target_version}"
+    formal_build = request.sign_manifest or request.upload_release_assets
+
+    def activate_stage(stage: ReleaseStage, progress: int) -> None:
+        with active_stage_lock:
+            state["active_stage"] = stage
+            state["active_progress"] = progress
 
     def emit_log(message: str) -> None:
         if emitter is None:
             return
         emit = getattr(emitter, "emit", None)
         if callable(emit):
-            emit("log", stage=ReleaseStage.GIT, progress=75, message=message)
+            with active_stage_lock:
+                stage = state["active_stage"]
+                progress = state["active_progress"]
+            emit("log", stage=stage, progress=progress, message=message)
 
     publisher = GitHubReleasePublisher(
         request.repository,
@@ -900,13 +909,21 @@ def _build_pipeline_hooks(
         state["version_result"] = result
         return result
 
+    def ensure_lock() -> str:
+        lock_token = state["lock_token"]
+        if isinstance(lock_token, str) and lock_token:
+            return lock_token
+        lock_token = resources.enter_context(_release_build_lock(PROJECT_ROOT))
+        state["lock_token"] = lock_token
+        return lock_token
+
     def ensure_snapshot() -> tuple[Path, str]:
         snapshot_root = state["snapshot_root"]
         source_commit = state["source_commit"]
         if isinstance(snapshot_root, Path) and isinstance(source_commit, str) and source_commit:
             return snapshot_root, source_commit
         source_commit = _validate_git_release_state(tag)
-        lock_token = resources.enter_context(_release_build_lock(PROJECT_ROOT))
+        lock_token = ensure_lock()
         if _validate_git_release_state(tag) != source_commit:
             raise SystemExit("HEAD or release tag changed while waiting for the release build lock")
         snapshot_root = resources.enter_context(
@@ -920,26 +937,24 @@ def _build_pipeline_hooks(
             tag=tag,
         )
         state["snapshot_root"] = snapshot_root
+        state["build_root"] = snapshot_root
         state["source_commit"] = source_commit
         state["installer"] = installer
         state["lock_token"] = lock_token
         return snapshot_root, source_commit
 
     def build_selected(*, portable: bool, installer: bool) -> None:
-        if mode in {
-            ReleaseMode.LOCAL_DEBUG,
-            ReleaseMode.LOCAL_REBUILD,
-            ReleaseMode.OFFLINE_DEBUG,
-        }:
-            with _release_build_lock(PROJECT_ROOT) as lock_token:
-                _build_binaries(
-                    PROJECT_ROOT,
-                    lock_token=lock_token,
-                    lock_root=PROJECT_ROOT,
-                    enforce_source_immutability=False,
-                    build_portable=portable,
-                    build_installer=installer,
-                )
+        if not formal_build:
+            lock_token = ensure_lock()
+            state["build_root"] = PROJECT_ROOT
+            _build_binaries(
+                PROJECT_ROOT,
+                lock_token=lock_token,
+                lock_root=PROJECT_ROOT,
+                enforce_source_immutability=False,
+                build_portable=portable,
+                build_installer=installer,
+            )
             return
         snapshot_root, _source_commit = ensure_snapshot()
         lock_token = str(state["lock_token"])
@@ -985,7 +1000,15 @@ def _build_pipeline_hooks(
         _run_git(["push", "origin", "HEAD:main"])
 
     def ensure_tag(_request: BuildRequest, commit: str) -> None:
-        publisher.ensure_tag(tag, commit or _run_git(["rev-parse", "HEAD"]))
+        source_commit = commit or _run_git(["rev-parse", "HEAD"])
+        try:
+            existing = _run_git(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
+        except subprocess.CalledProcessError:
+            _run_git(["tag", tag, source_commit])
+        else:
+            if existing.lower() != source_commit.lower():
+                raise SystemExit("release tag points to a different source commit")
+        publisher.ensure_tag(tag, source_commit)
 
     def ensure_release(_request: BuildRequest) -> None:
         if not request.release_notes_path:
@@ -1009,6 +1032,36 @@ def _build_pipeline_hooks(
     def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
         publisher.verify_assets(tag, assets or state["assets"])
 
+    def run_smoke_tests() -> None:
+        build_root = state["build_root"]
+        if not isinstance(build_root, Path):
+            raise RuntimeError("portable build context is unavailable for smoke testing")
+        portable_root = build_root / "dist" / "UniversalCrawlerPro"
+        cli = portable_root / "UCrawlCLI.exe"
+        build_info = portable_root / "BUILD_INFO.txt"
+        if not cli.is_file() or not build_info.is_file():
+            raise RuntimeError("portable smoke test artifacts are incomplete")
+        if request.build_installer:
+            _version, installer = _project_release_metadata(build_root)
+            if not installer.is_file():
+                raise RuntimeError("installer artifact is unavailable for smoke testing")
+        try:
+            completed = subprocess.run(
+                [str(cli.resolve()), "--mode", "cli", "--help"],
+                cwd=portable_root.resolve(),
+                env=dict(child_environment),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                shell=False,
+                timeout=RELEASE_SMOKE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("portable CLI smoke test could not complete") from error
+        if completed.returncode:
+            raise RuntimeError("portable CLI smoke test failed")
+
     return ReleasePipelineHooks(
         plan_version=plan_version,
         apply_version=apply_version,
@@ -1019,7 +1072,7 @@ def _build_pipeline_hooks(
         ),
         build_portable=lambda: build_selected(portable=True, installer=False),
         build_installer=lambda: build_selected(portable=False, installer=True),
-        run_smoke_tests=lambda: None,
+        run_smoke_tests=run_smoke_tests,
         sign_manifest=sign_manifest,
         commit_version_changes=commit_version_changes,
         push_main=push_main,
@@ -1028,6 +1081,7 @@ def _build_pipeline_hooks(
         upload_assets=upload_assets,
         verify_remote_assets=verify_remote_assets,
         cleanup=resources.close,
+        activate_stage=activate_stage,
     )
 
 

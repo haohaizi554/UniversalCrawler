@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import re
 import threading
-from urllib.parse import urlparse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Protocol, TypeVar
+from urllib.parse import urlparse
 
 from .events import redact_release_text
 from .models import BuildRequest, ReleaseMode, ReleaseResult, ReleaseStage, RemoteReleaseInfo
@@ -45,6 +45,7 @@ class ReleasePipelineHooks:
     upload_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
     verify_remote_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
     cleanup: Callable[[], None] = lambda: None
+    activate_stage: Callable[[ReleaseStage, int], None] = lambda _stage, _progress: None
 
 
 class PipelineCancelled(RuntimeError):
@@ -54,23 +55,34 @@ class PipelineCancelled(RuntimeError):
 class CancellationToken:
     def __init__(self) -> None:
         self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._completed = False
 
     def cancel(self) -> None:
-        self._cancelled.set()
+        with self._lock:
+            if not self._completed:
+                self._cancelled.set()
 
     def raise_if_cancelled(self) -> None:
-        if self._cancelled.is_set():
-            raise PipelineCancelled("release request cancelled")
+        with self._lock:
+            if self._cancelled.is_set():
+                raise PipelineCancelled("release request cancelled")
+
+    def mark_completed(self) -> None:
+        with self._lock:
+            if self._cancelled.is_set():
+                raise PipelineCancelled("release request cancelled")
+            self._completed = True
 
 
 _T = TypeVar("_T")
 _PROGRESS = {
     ReleaseStage.PREFLIGHT: 0,
     ReleaseStage.VERSION_SYNC: 10,
+    ReleaseStage.GIT: 20,
     ReleaseStage.BUILDING_PORTABLE: 30,
     ReleaseStage.BUILDING_INSTALLER: 50,
     ReleaseStage.SIGNING: 65,
-    ReleaseStage.GIT: 75,
     ReleaseStage.UPLOADING: 85,
     ReleaseStage.VERIFYING: 95,
     ReleaseStage.SUCCEEDED: 100,
@@ -119,8 +131,10 @@ def run_release_request(
     mode = _fallback_mode(request)
     current_stage = ReleaseStage.PREFLIGHT
     artifacts: tuple[Path, ...] = ()
+    cleaned_up = False
 
     def emit(kind: str, stage: ReleaseStage, *, message: str = "", data: Mapping[str, object] | None = None) -> None:
+        hooks.activate_stage(stage, _PROGRESS[stage])
         emitter.emit(kind, stage=stage, progress=_PROGRESS[stage], message=message, data=data)
 
     def run_stage(stage: ReleaseStage, action: Callable[[], _T]) -> _T:
@@ -139,15 +153,22 @@ def run_release_request(
         emit("stage", stage, data={"status": "skipped"})
         cancel_token.raise_if_cancelled()
 
+    def cleanup_once() -> None:
+        nonlocal cleaned_up
+        if cleaned_up:
+            return
+        cleaned_up = True
+        hooks.cleanup()
+
     try:
         mode = run_stage(ReleaseStage.PREFLIGHT, lambda: _preflight(request))
         if request.dry_run:
             run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.plan_version(request.target_version))
             for stage in (
+                ReleaseStage.GIT,
                 ReleaseStage.BUILDING_PORTABLE,
                 ReleaseStage.BUILDING_INSTALLER,
                 ReleaseStage.SIGNING,
-                ReleaseStage.GIT,
                 ReleaseStage.UPLOADING,
                 ReleaseStage.VERIFYING,
             ):
@@ -155,17 +176,6 @@ def run_release_request(
         else:
             if request.apply_version:
                 run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.apply_version(request.target_version))
-            if request.build_portable:
-                run_stage(ReleaseStage.BUILDING_PORTABLE, hooks.build_portable)
-            if request.build_installer:
-                run_stage(ReleaseStage.BUILDING_INSTALLER, hooks.build_installer)
-            if request.generate_manifest_key or request.sign_manifest:
-                def sign() -> tuple[Path, ...]:
-                    if request.generate_manifest_key:
-                        hooks.generate_key(True, request.rotate_trust_anchor)
-                    return hooks.sign_manifest(request) if request.sign_manifest else ()
-
-                artifacts = run_stage(ReleaseStage.SIGNING, sign)
             if _needs_git_stage(request):
                 commit = ""
 
@@ -181,6 +191,17 @@ def run_release_request(
                         hooks.ensure_release(request)
 
                 run_stage(ReleaseStage.GIT, publish_git)
+            if request.build_portable:
+                run_stage(ReleaseStage.BUILDING_PORTABLE, hooks.build_portable)
+            if request.build_installer:
+                run_stage(ReleaseStage.BUILDING_INSTALLER, hooks.build_installer)
+            if request.generate_manifest_key or request.sign_manifest:
+                def sign() -> tuple[Path, ...]:
+                    if request.generate_manifest_key:
+                        hooks.generate_key(True, request.rotate_trust_anchor)
+                    return hooks.sign_manifest(request) if request.sign_manifest else ()
+
+                artifacts = run_stage(ReleaseStage.SIGNING, sign)
             if request.upload_release_assets or request.upload_public_key:
                 run_stage(ReleaseStage.UPLOADING, lambda: hooks.upload_assets(request, artifacts))
             if request.run_smoke_tests or request.verify_remote_assets:
@@ -191,14 +212,18 @@ def run_release_request(
                         hooks.verify_remote_assets(request, artifacts)
 
                 run_stage(ReleaseStage.VERIFYING, verify)
+        cancel_token.raise_if_cancelled()
+        cleanup_once()
+        cancel_token.raise_if_cancelled()
+        cancel_token.mark_completed()
     except PipelineCancelled:
-        _cleanup(hooks)
+        _cleanup_once_safely(cleanup_once)
         emit("stage", ReleaseStage.CANCELLED)
         emit("result", ReleaseStage.CANCELLED, data={"status": "cancelled"})
         return ReleaseResult(mode=mode, stage=ReleaseStage.CANCELLED, failed_stage=current_stage)
-    except Exception as error:
-        _cleanup(hooks)
-        message = redact_release_text(str(error)) or "release pipeline failed"
+    except (Exception, SystemExit) as error:
+        _cleanup_once_safely(cleanup_once)
+        message = _failure_message(error)
         emit("error", current_stage, message=message)
         emit("stage", ReleaseStage.FAILED)
         emit("result", ReleaseStage.FAILED, data={"status": "failed", "error": message})
@@ -211,21 +236,6 @@ def run_release_request(
             error=message,
         )
 
-    try:
-        hooks.cleanup()
-    except Exception as error:
-        message = redact_release_text(str(error)) or "release pipeline cleanup failed"
-        emit("error", current_stage, message=message)
-        emit("stage", ReleaseStage.FAILED)
-        emit("result", ReleaseStage.FAILED, data={"status": "failed", "error": message})
-        return ReleaseResult(
-            mode=mode,
-            stage=ReleaseStage.FAILED,
-            artifacts=tuple(str(path) for path in artifacts),
-            errors=(message,),
-            failed_stage=current_stage,
-            error=message,
-        )
     emit("stage", ReleaseStage.SUCCEEDED)
     emit("result", ReleaseStage.SUCCEEDED, data={"status": "succeeded"})
     return ReleaseResult(
@@ -248,7 +258,7 @@ def load_request_file(path: Path) -> BuildRequest:
     allowed = {field.name for field in fields(BuildRequest)}
     unknown = sorted(set(payload) - allowed)
     if unknown:
-        raise ValueError(f"release request contains unknown fields: {', '.join(unknown)}")
+        raise ValueError("release request contains unknown fields")
     values: dict[str, object] = {}
     for key, value in payload.items():
         if key in _BOOLEAN_FIELDS:
@@ -276,7 +286,7 @@ def _load_remote(value: object) -> RemoteReleaseInfo:
         raise ValueError("release request field remote must be an object")
     unknown = sorted(set(value) - {"version", "error"})
     if unknown:
-        raise ValueError(f"release request remote contains unknown fields: {', '.join(unknown)}")
+        raise ValueError("release request remote contains unknown fields")
     version = value.get("version", "")
     error = value.get("error", "")
     if not isinstance(version, str) or not isinstance(error, str):
@@ -311,16 +321,24 @@ def _validate_proxy_reference(value: str) -> None:
     parsed = urlparse(text if "://" in text else f"//{text}")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("custom_proxy credentials must use an environment reference")
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if (
+        parsed.scheme.casefold() not in {"", "http", "https", "socks4", "socks5"}
+        or not parsed.hostname
+        or not port
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("custom proxy endpoint is invalid")
 
 
 def _preflight(request: BuildRequest) -> ReleaseMode:
-    validation_request = request
-    if request.dry_run:
-        validation_request = replace(
-            request,
-            dry_run=False,
-            **{field: False for field in _SIDE_EFFECT_FIELDS},
-        )
+    validation_request = replace(request, dry_run=False) if request.dry_run else request
     errors = validate_build_request(validation_request)
     if errors:
         raise ValueError("; ".join(errors))
@@ -356,11 +374,25 @@ def _needs_git_stage(request: BuildRequest) -> bool:
     )
 
 
-def _cleanup(hooks: ReleasePipelineHooks) -> None:
+def _cleanup_once_safely(cleanup: Callable[[], None]) -> None:
     try:
-        hooks.cleanup()
-    except Exception:
+        cleanup()
+    except (Exception, SystemExit):
         pass
+
+
+def _failure_message(error: BaseException) -> str:
+    if isinstance(error, SystemExit):
+        value = error.code
+        if value is None:
+            text = "release pipeline exited"
+        elif isinstance(value, int):
+            text = f"release pipeline exited with status {value}"
+        else:
+            text = str(value)
+    else:
+        text = str(error)
+    return redact_release_text(text) or "release pipeline failed"
 
 
 __all__ = [

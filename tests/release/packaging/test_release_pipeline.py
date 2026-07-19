@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -20,6 +21,9 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
 
 
 from release_tool.models import BuildRequest, RemoteReleaseInfo
+from release_tool.events import ReleaseEventEmitter, parse_event_line
+from release_tool.runner import CancellationToken, run_release_request
+from release_tool.versioning import VersionUpdatePlan, VersionUpdateResult
 
 
 BUILD_RELEASE_TOOL = PROJECT_ROOT / "packaging" / "build_release.py"
@@ -197,6 +201,336 @@ def test_pipeline_hooks_use_the_existing_local_build_primitive_without_source_im
         build_portable=True,
         build_installer=False,
     )
+
+
+def test_local_pipeline_build_stages_share_one_request_lock():
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        run_smoke_tests=False,
+    )
+    lock_events: list[str] = []
+
+    @contextmanager
+    def fake_lock(_project_root):
+        lock_events.append("enter")
+        try:
+            yield "release-token"
+        finally:
+            lock_events.append("exit")
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_build_binaries") as build_binaries,
+        patch.object(tool, "_validate_git_release_state") as validate_release_state,
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.succeeded
+    assert lock_events == ["enter", "exit"]
+    assert [call.kwargs for call in build_binaries.call_args_list] == [
+        {
+            "lock_token": "release-token",
+            "lock_root": tool.PROJECT_ROOT,
+            "enforce_source_immutability": False,
+            "build_portable": True,
+            "build_installer": False,
+        },
+        {
+            "lock_token": "release-token",
+            "lock_root": tool.PROJECT_ROOT,
+            "enforce_source_immutability": False,
+            "build_portable": False,
+            "build_installer": True,
+        },
+    ]
+    validate_release_state.assert_not_called()
+
+
+def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_path):
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        run_smoke_tests=False,
+        sign_manifest=True,
+        private_key_path=str(tmp_path / "private.pem"),
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+    source_commit = "b" * 40
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_root.mkdir()
+    installer = snapshot_root / "dist" / "installer" / "setup.exe"
+    installer.parent.mkdir(parents=True)
+    installer.write_bytes(b"installer")
+    release_dir = tmp_path / "release-assets" / "v3.6.22"
+    release_dir.mkdir(parents=True)
+    for name in ("setup.exe", "latest.json", "latest.json.sig"):
+        (release_dir / name).write_bytes(b"asset")
+    calls: list[str] = []
+    identity_ready = False
+    tag_ready = False
+
+    class FakePublisher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_tag(self, tag, commit):
+            assert tag == "v3.6.22"
+            assert commit == source_commit
+            calls.append("remote_tag")
+
+    def fake_git(argv):
+        nonlocal identity_ready, tag_ready
+        command = argv[0]
+        calls.append(f"git:{command}")
+        if command == "commit":
+            identity_ready = True
+        if command == "tag":
+            tag_ready = True
+        if command == "rev-parse":
+            if "--verify" in argv and not tag_ready:
+                raise subprocess.CalledProcessError(1, ["git", *argv])
+            return source_commit
+        return ""
+
+    def validate_identity(tag):
+        assert identity_ready
+        assert "git:tag" in calls
+        calls.append("validate_identity")
+        return source_commit
+
+    @contextmanager
+    def fake_lock(_project_root):
+        calls.append("lock")
+        yield "release-token"
+
+    @contextmanager
+    def fake_snapshot(commit, *, repository_root):
+        assert commit == source_commit
+        assert repository_root == tool.PROJECT_ROOT
+        calls.append("snapshot")
+        yield snapshot_root
+
+    def fake_build(*_args, **kwargs):
+        calls.append("installer" if kwargs["build_installer"] else "portable")
+
+    def fake_prepare(**kwargs):
+        assert kwargs["source_commit"] == source_commit
+        assert kwargs["project_root"] == snapshot_root
+        calls.append("manifest")
+        return release_dir
+
+    version_plan = VersionUpdatePlan(tool.PROJECT_ROOT, "3.6.21", "3.6.22", ())
+    version_result = VersionUpdateResult("3.6.21", "3.6.22", (tool.PROJECT_ROOT / "shared/version.py",))
+    with (
+        patch.object(tool, "GitHubReleasePublisher", FakePublisher),
+        patch.object(tool, "plan_version_update", return_value=version_plan),
+        patch.object(tool, "apply_version_update", return_value=version_result),
+        patch.object(tool, "_run_git", side_effect=fake_git),
+        patch.object(tool, "_validate_git_release_state", side_effect=validate_identity),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_source_snapshot", side_effect=fake_snapshot),
+        patch.object(tool, "_validate_windows_release_tools"),
+        patch.object(tool, "_project_release_metadata", return_value=("3.6.22", installer)),
+        patch.object(tool, "_build_binaries", side_effect=fake_build),
+        patch.object(tool, "_private_key_path", return_value=tmp_path / "private.pem"),
+        patch.object(tool, "_prepare_release_assets", side_effect=fake_prepare),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.succeeded
+    assert calls.index("git:commit") < calls.index("git:tag")
+    assert calls.index("git:tag") < calls.index("validate_identity")
+    assert calls.index("validate_identity") < calls.index("snapshot")
+    assert calls.index("snapshot") < calls.index("manifest")
+
+
+def test_portable_only_signed_build_does_not_validate_an_unbuilt_installer(tmp_path):
+    tool = _load_tool()
+
+    with (
+        patch.dict("os.environ", {"UCRAWL_SIGN_WINDOWS": "1"}, clear=True),
+        patch.object(tool, "_run_build") as run_build,
+        patch.object(tool, "_validate_production_trust") as validate_trust,
+        patch.object(tool, "_project_release_metadata") as project_metadata,
+        patch.object(tool, "_extract_windows_trust") as extract_trust,
+    ):
+        tool._build_binaries(
+            tmp_path,
+            lock_token="release-token",
+            lock_root=PROJECT_ROOT,
+            enforce_source_immutability=False,
+            build_portable=True,
+            build_installer=False,
+        )
+
+    run_build.assert_called_once()
+    validate_trust.assert_not_called()
+    project_metadata.assert_not_called()
+    extract_trust.assert_not_called()
+
+
+def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
+    tool = _load_tool()
+    public_key = tmp_path / "manifest-public.pem"
+    public_key.write_text("public", encoding="utf-8")
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream)
+
+    class FakePublisher:
+        def __init__(self, _repository, _environment, output, **_kwargs):
+            self.output = output
+
+        def upload_assets(self, *_args, **_kwargs):
+            self.output("upload output")
+
+        def verify_assets(self, *_args, **_kwargs):
+            self.output("verify output")
+
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        upload_public_key=True,
+        verify_remote_assets=True,
+    )
+    with (
+        patch.object(tool, "GitHubReleasePublisher", FakePublisher),
+        patch.object(tool, "default_manifest_public_key_path", return_value=public_key),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter)
+        result = run_release_request(request, hooks, emitter, CancellationToken())
+
+    assert result.succeeded
+    logs = [
+        event
+        for line in stream.getvalue().splitlines()
+        if (event := parse_event_line(line)) is not None and event.kind == "log"
+    ]
+    assert [(event.stage, event.progress) for event in logs] == [
+        (tool.ReleaseStage.UPLOADING, 85),
+        (tool.ReleaseStage.VERIFYING, 95),
+    ]
+
+
+def test_real_pipeline_hook_system_exit_is_redacted_and_terminal(tmp_path):
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_installer=False,
+        run_smoke_tests=False,
+    )
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream)
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(
+            tool,
+            "_build_binaries",
+            side_effect=SystemExit("Authorization: Bearer ghp_real_hook_secret"),
+        ),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter)
+        result = run_release_request(request, hooks, emitter, CancellationToken())
+
+    events = [
+        event
+        for line in stream.getvalue().splitlines()
+        if (event := parse_event_line(line)) is not None
+    ]
+    assert result.failed_stage is tool.ReleaseStage.BUILDING_PORTABLE
+    assert "ghp_real_hook_secret" not in result.error
+    assert sum(event.kind == "error" for event in events) == 1
+    assert sum(event.kind == "result" for event in events) == 1
+
+
+def test_pipeline_smoke_runs_cli_help_with_timeout_and_no_stdin(tmp_path):
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_installer=False,
+    )
+    cli = tmp_path / "dist" / "UniversalCrawlerPro" / "UCrawlCLI.exe"
+    build_info = cli.parent / "BUILD_INFO.txt"
+
+    def fake_build(*_args, **_kwargs):
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        cli.write_bytes(b"MZ")
+        build_info.write_text("build", encoding="utf-8")
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    completed = subprocess.CompletedProcess([], 0, stdout="usage", stderr="")
+    with (
+        patch.object(tool, "PROJECT_ROOT", tmp_path),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_build_binaries", side_effect=fake_build),
+        patch.object(tool.subprocess, "run", return_value=completed) as run,
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.succeeded
+    smoke = run.call_args
+    assert smoke.args[0] == [str(cli.resolve()), "--mode", "cli", "--help"]
+    assert smoke.kwargs["cwd"] == cli.parent.resolve()
+    assert smoke.kwargs["stdin"] is subprocess.DEVNULL
+    assert smoke.kwargs["shell"] is False
+    assert 0 < smoke.kwargs["timeout"] <= 60
+
+
+def test_pipeline_smoke_failure_blocks_success(tmp_path):
+    tool = _load_tool()
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_installer=False,
+    )
+    cli = tmp_path / "dist" / "UniversalCrawlerPro" / "UCrawlCLI.exe"
+
+    def fake_build(*_args, **_kwargs):
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        cli.write_bytes(b"MZ")
+        (cli.parent / "BUILD_INFO.txt").write_text("build", encoding="utf-8")
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    completed = subprocess.CompletedProcess([], 7, stdout="", stderr="failed")
+    with (
+        patch.object(tool, "PROJECT_ROOT", tmp_path),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_build_binaries", side_effect=fake_build),
+        patch.object(tool.subprocess, "run", return_value=completed),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert not result.succeeded
+    assert result.failed_stage is tool.ReleaseStage.VERIFYING
 
 
 def test_run_build_passes_the_snapshot_project_root_to_each_build_script(tmp_path):

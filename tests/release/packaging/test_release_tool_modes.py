@@ -163,6 +163,8 @@ def test_upload_release_assets_requires_the_complete_upload_bundle():
         "upload release assets requires creating or updating the release",
         "upload release assets requires remote asset verification",
         "upload release assets requires building the installer",
+        "new release signing requires committing applied version changes",
+        "new release signing requires creating or reusing the release tag",
     )
 
 
@@ -174,6 +176,8 @@ def test_upload_release_assets_accepts_the_complete_upload_bundle():
         build_installer=True,
         sign_manifest=True,
         private_key_path="private.pem",
+        commit_version_changes=True,
+        create_or_reuse_tag=True,
         create_or_update_release=True,
         verify_remote_assets=True,
     )
@@ -262,3 +266,30 @@ def test_validation_errors_have_deterministic_cross_rule_precedence():
         "dry run cannot sign manifests",
         "dry run cannot upload release assets",
     )
+
+
+def test_smoke_tests_require_a_portable_build_in_the_same_request():
+    request = BuildRequest(
+        target_version="3.6.20",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=True,
+    )
+
+    assert "smoke tests require building portable artifacts" in validate_build_request(request)
+
+
+def test_new_release_signing_requires_a_persistent_version_commit_and_tag():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        run_smoke_tests=False,
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+    )
+
+    errors = validate_build_request(request)
+
+    assert "new release signing requires committing applied version changes" in errors
+    assert "new release signing requires creating or reusing the release tag" in errors

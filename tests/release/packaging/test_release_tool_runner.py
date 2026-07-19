@@ -49,11 +49,13 @@ class RecordingHooks:
         self,
         *,
         on_build_portable=None,
-        build_installer_error: Exception | None = None,
+        build_installer_error: BaseException | None = None,
+        cleanup=None,
     ) -> None:
         self.calls: list[str] = []
         self.on_build_portable = on_build_portable
         self.build_installer_error = build_installer_error
+        self.on_cleanup = cleanup
         self.version_after_failure = ""
         self._version = "3.6.21"
 
@@ -107,6 +109,11 @@ class RecordingHooks:
     def verify_remote_assets(self, request: BuildRequest, assets: tuple[Path, ...]) -> None:
         self.calls.append("verify_remote_assets")
 
+    def cleanup(self) -> None:
+        if self.on_cleanup:
+            self.calls.append("cleanup")
+            self.on_cleanup()
+
     def as_pipeline_hooks(self) -> ReleasePipelineHooks:
         return ReleasePipelineHooks(
             plan_version=self.plan_version,
@@ -122,6 +129,7 @@ class RecordingHooks:
             ensure_release=self.ensure_release,
             upload_assets=self.upload_assets,
             verify_remote_assets=self.verify_remote_assets,
+            cleanup=self.cleanup,
         )
 
 
@@ -168,6 +176,51 @@ def test_cancelled_pipeline_never_reports_success():
     assert [event["kind"] for event in events.events].count("result") == 1
 
 
+def test_system_exit_from_stage_is_redacted_and_emits_one_terminal_result():
+    hooks = RecordingHooks(
+        build_installer_error=SystemExit("Authorization: Bearer ghp_stage_secret")
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        local_debug_request(), hooks.as_pipeline_hooks(), events, CancellationToken()
+    )
+
+    assert result.failed_stage is ReleaseStage.BUILDING_INSTALLER
+    assert "ghp_stage_secret" not in result.error
+    assert [event["kind"] for event in events.events].count("error") == 1
+    assert [event["kind"] for event in events.events].count("result") == 1
+
+
+def test_cancellation_observed_during_cleanup_cannot_report_success():
+    token = CancellationToken()
+    hooks = RecordingHooks(cleanup=token.cancel)
+    events = RecordingEmitter()
+
+    result = run_release_request(local_debug_request(), hooks.as_pipeline_hooks(), events, token)
+
+    assert result.cancelled
+    assert ReleaseStage.SUCCEEDED not in events.stages
+    assert [event["kind"] for event in events.events].count("result") == 1
+
+
+def test_system_exit_from_cleanup_is_a_redacted_failure():
+    def fail_cleanup():
+        raise SystemExit("token=cleanup-secret")
+
+    hooks = RecordingHooks(cleanup=fail_cleanup)
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        local_debug_request(), hooks.as_pipeline_hooks(), events, CancellationToken()
+    )
+
+    assert not result.succeeded
+    assert "cleanup-secret" not in result.error
+    assert [event["kind"] for event in events.events].count("error") == 1
+    assert [event["kind"] for event in events.events].count("result") == 1
+
+
 def test_dry_run_plans_version_and_skips_every_side_effect():
     hooks = RecordingHooks()
     events = RecordingEmitter()
@@ -179,13 +232,57 @@ def test_dry_run_plans_version_and_skips_every_side_effect():
     assert hooks.calls == ["plan_version"]
     assert ReleaseStage.VERSION_SYNC in events.stages
     assert events.skipped_stages == [
+        ReleaseStage.GIT,
         ReleaseStage.BUILDING_PORTABLE,
         ReleaseStage.BUILDING_INSTALLER,
         ReleaseStage.SIGNING,
-        ReleaseStage.GIT,
         ReleaseStage.UPLOADING,
         ReleaseStage.VERIFYING,
     ]
+    progress = [event["progress"] for event in events.events]
+    assert progress == sorted(progress)
+
+
+def test_dry_run_rejects_an_invalid_planned_upload_before_plan_hook():
+    hooks = RecordingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        dry_run=True,
+        upload_release_assets=True,
+    )
+
+    result = run_release_request(
+        request, hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken()
+    )
+
+    assert result.failed_stage is ReleaseStage.PREFLIGHT
+    assert "requires signing the manifest" in result.error
+    assert hooks.calls == []
+
+
+def test_valid_full_dry_run_still_calls_only_plan_hook():
+    hooks = RecordingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        dry_run=True,
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+
+    result = run_release_request(
+        request, hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken()
+    )
+
+    assert result.succeeded
+    assert hooks.calls == ["plan_version"]
 
 
 def test_build_failure_does_not_rollback_an_applied_version():
@@ -234,8 +331,10 @@ def test_request_file_rejects_unknown_invalid_and_inline_secret_fields(tmp_path)
         '{"target_version":"3.6.22","remote":{"version":"3.6.21"},"token":"secret"}',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.raises(ValueError, match="unknown") as unknown_error:
         load_request_file(request_path)
+    assert "token" not in str(unknown_error.value).casefold()
+    assert "secret" not in str(unknown_error.value).casefold()
 
     request_path.write_text(
         '{"target_version":"3.6.22","remote":{"version":"3.6.21"},"build_portable":"yes"}',
@@ -257,3 +356,54 @@ def test_request_file_rejects_unknown_invalid_and_inline_secret_fields(tmp_path)
     )
     with pytest.raises(ValueError, match="reference"):
         load_request_file(request_path)
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "http://127.0.0.1:7890/path",
+        "http://127.0.0.1:7890?token=query-secret",
+        "http://127.0.0.1:7890#fragment-secret",
+        "ftp://127.0.0.1:7890",
+        "http://127.0.0.1",
+        "http://127.0.0.1:0",
+    ],
+)
+def test_request_file_rejects_non_endpoint_proxy_values_without_echoing_them(tmp_path, proxy):
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        (
+            '{"target_version":"3.6.22","remote":{"version":"3.6.21"},'
+            f'"custom_proxy":"{proxy}"}}'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="custom proxy endpoint") as caught:
+        load_request_file(request_path)
+
+    assert proxy not in str(caught.value)
+    assert "query-secret" not in str(caught.value)
+    assert "fragment-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "127.0.0.1:7890",
+        "http://127.0.0.1:7890",
+        "socks5://localhost:1080",
+        "env:RELEASE_PROXY_URL",
+    ],
+)
+def test_request_file_accepts_proxy_endpoints_and_environment_references(tmp_path, proxy):
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        (
+            '{"target_version":"3.6.22","remote":{"version":"3.6.21"},'
+            f'"custom_proxy":"{proxy}"}}'
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_request_file(request_path).custom_proxy == proxy
