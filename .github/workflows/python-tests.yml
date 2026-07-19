@@ -103,7 +103,7 @@ jobs:
         run: |
           python -m pip install --no-deps --force-reinstall dist/*.whl
           cd "$RUNNER_TEMP"
-          python -c "from importlib.metadata import version; import shared.runtime_adapters; import shared.selection_runtime; assert version('ucrawl') == '3.6.17'"
+          python -c "from importlib.metadata import version; from shared.version import __version__; import shared.runtime_adapters; import shared.selection_runtime; assert version('ucrawl') == __version__, (version('ucrawl'), __version__)"
           python -m entry.test_entry --self-check --verbose
 
       - name: Upload package artifacts

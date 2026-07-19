@@ -71,6 +71,18 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("importlib.metadata", compatibility_block)
         self.assertIn("entry.test_entry --self-check", compatibility_block)
 
+    def test_package_smoke_check_does_not_pin_a_stale_release_version(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
+        source = workflow.read_text(encoding="utf-8")
+        compatibility_block = source.split("  compatibility:", 1)[1].split("  security:", 1)[0]
+
+        self.assertIn("from shared.version import __version__", compatibility_block)
+        self.assertIn("assert version('ucrawl') == __version__", compatibility_block)
+        self.assertNotRegex(
+            compatibility_block,
+            r"""version\(['"]ucrawl['"]\)\s*==\s*['"]\d""",
+        )
+
     def test_security_scanner_covers_protocol_signing_code(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
