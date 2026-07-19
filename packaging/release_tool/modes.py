@@ -71,10 +71,12 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
         )
     except ValueError as error:
         if str(error) == "remote release state is unknown":
-            if _has_remote_writes(request):
-                errors.append("remote release state is unknown")
+            errors.append("remote release state is unknown")
         else:
             errors.append(str(error))
+
+    if request.same_release_repair and mode is not ReleaseMode.SAME_RELEASE_REPAIR:
+        errors.append("same release repair requires target version to equal remote version")
 
     if request.upload_release_assets:
         if not request.sign_manifest:
@@ -85,6 +87,8 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
             errors.append("upload release assets requires creating or updating the release")
         if not request.verify_remote_assets:
             errors.append("upload release assets requires remote asset verification")
+        if not request.build_installer:
+            errors.append("upload release assets requires building the installer")
 
     if mode in {
         ReleaseMode.LOCAL_DEBUG,
@@ -113,10 +117,6 @@ def _compare_versions(left: str, right: str) -> int:
     left_parts = tuple(int(part) for part in left.split("."))
     right_parts = tuple(int(part) for part in right.split("."))
     return (left_parts > right_parts) - (left_parts < right_parts)
-
-
-def _has_remote_writes(request: BuildRequest) -> bool:
-    return any(getattr(request, attribute) for _, attribute in _REMOTE_WRITE_OPTIONS)
 
 
 __all__ = ["resolve_release_mode", "validate_build_request"]
