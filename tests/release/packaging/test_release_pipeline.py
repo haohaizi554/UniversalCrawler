@@ -116,6 +116,122 @@ def _staged_validation_kwargs(installer: Path, *, source_commit: str = "a" * 40)
     }
 
 
+def _valid_request_payload() -> dict:
+    return {
+        "target_version": "3.6.21",
+        "remote": {"version": "3.6.21"},
+        "build_portable": False,
+        "build_installer": False,
+        "run_smoke_tests": False,
+        "apply_version": False,
+    }
+
+
+def test_python_main_empty_argv_keeps_headless_release_semantics():
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_headless_legacy", return_value=17) as headless:
+        assert tool.main([]) == 17
+
+    headless.assert_called_once_with([])
+
+
+def test_python_main_none_argv_keeps_headless_release_semantics():
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_headless_legacy", return_value=17) as headless:
+        assert tool.main() == 17
+
+    headless.assert_called_once_with([])
+
+
+def test_script_no_args_opens_panel():
+    tool = _load_tool()
+
+    with patch.object(tool, "_launch_panel", return_value=0) as launch:
+        assert tool.script_main([]) == 0
+
+    launch.assert_called_once_with()
+
+
+def test_script_explicit_gui_opens_panel():
+    tool = _load_tool()
+
+    with patch.object(tool, "_launch_panel", return_value=0) as launch:
+        assert tool.script_main(["--gui"]) == 0
+
+    launch.assert_called_once_with()
+
+
+def test_script_headless_request_file_runs_runner(tmp_path):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_request_file", return_value=0) as run:
+        assert tool.script_main(["--headless", "--request-file", str(request_file)]) == 0
+
+    run.assert_called_once_with(request_file)
+
+
+def test_script_headless_dry_run_builds_non_mutating_request():
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_dry_run_request", return_value=0) as run:
+        assert tool.script_main(
+            ["--headless", "--dry-run", "--version", "3.6.21", "--build-only"]
+        ) == 0
+
+    run.assert_called_once_with(version="3.6.21", build_only=True)
+
+
+def test_request_file_is_deleted_after_loading_and_runs_the_unified_runner(tmp_path):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_release_request", return_value=0) as run:
+        assert tool._run_request_file(request_file) == 0
+
+    request = run.call_args.args[0]
+    assert request == BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        apply_version=False,
+    )
+    assert not request_file.exists()
+
+
+def test_request_file_is_deleted_when_strict_loading_fails(tmp_path):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(
+        json.dumps({**_valid_request_payload(), "token": "secret"}),
+        encoding="utf-8",
+    )
+    tool = _load_tool()
+
+    with pytest.raises(ValueError, match="unknown"):
+        tool._run_request_file(request_file)
+
+    assert not request_file.exists()
+
+
+def test_dry_run_request_uses_the_unified_runner_with_no_mutating_actions():
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_release_request", return_value=0) as run:
+        assert tool._run_dry_run_request(version="3.6.21", build_only=True) == 0
+
+    request = run.call_args.args[0]
+    assert request.dry_run is True
+    assert request.target_version == "3.6.21"
+    assert request.build_portable is True
+    assert request.build_installer is True
+
+
 def test_release_mode_fails_before_build_when_manifest_key_is_missing(tmp_path):
     tool = _load_tool()
     run_build = Mock()

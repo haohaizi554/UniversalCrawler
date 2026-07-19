@@ -51,14 +51,21 @@ from release_lock import (  # noqa: E402
     release_build_lock,
     release_lock_path,
 )
+from release_tool.events import ReleaseEventEmitter  # noqa: E402
 from release_tool.models import BuildRequest, ReleaseMode, ReleaseStage  # noqa: E402
 from release_tool.modes import resolve_release_mode  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
 from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
-from release_tool.runner import ReleasePipelineHooks  # noqa: E402
+from release_tool.runner import (  # noqa: E402
+    CancellationToken,
+    ReleasePipelineHooks,
+    load_request_file,
+    run_release_request,
+)
 from release_tool.versioning import (  # noqa: E402
     apply_version_update,
     plan_version_update,
+    read_project_version,
 )
 
 
@@ -1315,8 +1322,71 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_release_request(request: BuildRequest) -> int:
+    emitter = ReleaseEventEmitter(stream=sys.stdout)
+    hooks = _build_pipeline_hooks(request, os.environ.copy(), emitter)
+    result = run_release_request(request, hooks, emitter, CancellationToken())
+    return 0 if result.succeeded else 1
+
+
+def _run_request_file(request_file: Path) -> int:
+    path = Path(request_file)
+    try:
+        request = load_request_file(path)
+    finally:
+        path.unlink(missing_ok=True)
+    return _run_release_request(request)
+
+
+def _run_dry_run_request(*, version: str, build_only: bool) -> int:
+    request = BuildRequest(
+        target_version=version,
+        dry_run=True,
+        build_portable=build_only,
+        build_installer=build_only,
+    )
+    return _run_release_request(request)
+
+
+def _launch_panel() -> int:
+    from release_tool.panel import launch_release_builder_panel
+
+    return launch_release_builder_panel()
+
+
+def build_script_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--request-file", default="")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--version", default="")
+    parser.add_argument("--build-only", action="store_true")
+    return parser
+
+
+def script_main(argv: list[str]) -> int:
+    raw = list(argv)
+    if "--gui" in raw or not raw:
+        return _launch_panel()
+    args, _unknown = build_script_parser().parse_known_args(raw)
+    if args.request_file:
+        return _run_request_file(Path(args.request_file))
+    if args.dry_run:
+        return _run_dry_run_request(
+            version=args.version or read_project_version(PROJECT_ROOT),
+            build_only=bool(args.build_only),
+        )
+    legacy_argv = [token for token in raw if token != "--headless"]
+    return main(legacy_argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args([] if argv is None else argv)
+    return _run_headless_legacy([] if argv is None else argv)
+
+
+def _run_headless_legacy(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
     package_version, _installer = _project_release_metadata()
     version = str(args.version or package_version).strip()
     tag = str(args.tag or f"v{version}").strip()
@@ -1383,4 +1453,4 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(script_main(sys.argv[1:]))
