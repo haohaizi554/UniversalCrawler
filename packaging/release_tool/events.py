@@ -117,6 +117,25 @@ _SENSITIVE_KEY_NAMES = frozenset(
     }
 )
 _TRANSPORT_KEY_PREFIXES = frozenset({"x"})
+_CREDENTIAL_KEY_SEGMENTS = frozenset(
+    {
+        "authorization",
+        "authorizations",
+        "cookie",
+        "cookies",
+        "credential",
+        "credentials",
+        "password",
+        "passwords",
+        "passwd",
+        "passwds",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    }
+)
+_KEY_CONTEXT_SEGMENTS = frozenset({"access", "api", "client", "private", "proxy", "signing", "x"})
 
 
 def redact_release_text(text: str) -> str:
@@ -133,17 +152,28 @@ def redact_release_text(text: str) -> str:
 
 
 def _canonical_key_name(key: str) -> str:
+    return "".join(_key_segments(key))
+
+
+def _key_segments(key: str) -> tuple[str, ...]:
     normalized = _KEY_CASE_BOUNDARY.sub("_", key).casefold()
-    return "".join(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
+    return tuple(segment for segment in _KEY_SEPARATOR.split(normalized) if segment)
 
 
 def _is_sensitive_key(key: str) -> bool:
+    segments = _key_segments(key)
     canonical = _canonical_key_name(key)
     if canonical in _SENSITIVE_KEY_NAMES:
         return True
-    return any(
+    if any(
         canonical.startswith(prefix) and canonical[len(prefix) :] in _SENSITIVE_KEY_NAMES
         for prefix in _TRANSPORT_KEY_PREFIXES
+    ):
+        return True
+    if any(segment in _CREDENTIAL_KEY_SEGMENTS for segment in segments):
+        return True
+    return "key" in segments and (
+        len(segments) == 1 or bool(_KEY_CONTEXT_SEGMENTS.intersection(segments))
     )
 
 

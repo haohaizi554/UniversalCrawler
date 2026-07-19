@@ -161,6 +161,42 @@ def test_canonical_credential_keys_redact_mapping_assignment_and_query_values(ke
     assert redact_release_text(text) == f"{key}=[REDACTED]; ?{key}=[REDACTED]"
 
 
+@pytest.mark.parametrize(
+    "key",
+    (
+        "api_secret",
+        "apiSecret",
+        "api-secret",
+        "api_token",
+        "apiToken",
+        "api-token",
+        "smtp_password",
+        "smtpPassword",
+        "smtp-password",
+        "api_key",
+        "privateKey",
+        "signing-key",
+        "accessKey",
+        "client_key",
+        "proxyKey",
+        "x-key",
+    ),
+)
+def test_compound_credential_keys_redact_mapping_assignment_query_and_headers(key):
+    secret = "compound-secret"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: secret}},
+    )
+
+    assert event.data["nested"][key] == "[REDACTED]"
+    assert redact_release_text(f'{key}="{secret}"') == f"{key}=[REDACTED]"
+    assert redact_release_text(f"?{key}={secret}") == f"?{key}=[REDACTED]"
+    assert redact_release_text(f"{key}: {secret}") == f"{key}: [REDACTED]"
+
+
 @pytest.mark.parametrize("key", ("monkey", "keyframe", "tokenize"))
 def test_benign_keys_survive_mapping_assignment_and_query_values(key):
     value = "plain words"
@@ -174,6 +210,25 @@ def test_benign_keys_survive_mapping_assignment_and_query_values(key):
 
     assert event.data["nested"][key] == value
     assert redact_release_text(text) == text
+
+
+@pytest.mark.parametrize(
+    "key",
+    ("monkey", "keyframe", "tokenize", "smtp_status", "cache_key", "request_id"),
+)
+def test_benign_compound_keys_survive_mapping_assignment_query_and_headers(key):
+    value = "diagnostic value"
+    event = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC).emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"nested": {key: value}},
+    )
+
+    assert event.data["nested"][key] == value
+    assert redact_release_text(f'{key}="{value}"') == f'{key}="{value}"'
+    assert redact_release_text(f"?{key}={value}") == f"?{key}={value}"
+    assert redact_release_text(f"{key}: {value}") == f"{key}: {value}"
 
 
 @pytest.mark.parametrize(
