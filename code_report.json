@@ -4,28 +4,28 @@
   "total_dirs": 155,
   "total_files": 967,
   "code_files": 641,
-  "test_cases": 3241,
+  "test_cases": 3243,
   "totals": {
     "all": {
       "files": 641,
-      "total": 197415,
-      "blank": 23818,
-      "comment": 1180,
-      "code": 172417
+      "total": 197365,
+      "blank": 23825,
+      "comment": 1184,
+      "code": 172356
     },
     "prod": {
       "files": 421,
-      "total": 121633,
-      "blank": 12286,
-      "comment": 759,
-      "code": 108588
+      "total": 121552,
+      "blank": 12288,
+      "comment": 763,
+      "code": 108501
     },
     "test": {
       "files": 220,
-      "total": 75782,
-      "blank": 11532,
+      "total": 75813,
+      "blank": 11537,
       "comment": 421,
-      "code": 63829
+      "code": 63855
     }
   },
   "by_language": {
@@ -39,17 +39,17 @@
       },
       "JSON": {
         "files": 12,
-        "total": 3148,
+        "total": 3042,
         "blank": 0,
         "comment": 0,
-        "code": 3148
+        "code": 3042
       },
       "Python": {
         "files": 592,
-        "total": 176365,
-        "blank": 22319,
-        "comment": 1126,
-        "code": 152920
+        "total": 176421,
+        "blank": 22326,
+        "comment": 1130,
+        "code": 152965
       },
       "YAML": {
         "files": 3,
@@ -97,17 +97,17 @@
       },
       "JSON": {
         "files": 12,
-        "total": 3148,
+        "total": 3042,
         "blank": 0,
         "comment": 0,
-        "code": 3148
+        "code": 3042
       },
       "Python": {
         "files": 372,
-        "total": 100583,
-        "blank": 10787,
-        "comment": 705,
-        "code": 89091
+        "total": 100608,
+        "blank": 10789,
+        "comment": 709,
+        "code": 89110
       },
       "YAML": {
         "files": 3,
@@ -148,10 +148,10 @@
     "test": {
       "Python": {
         "files": 220,
-        "total": 75782,
-        "blank": 11532,
+        "total": 75813,
+        "blank": 11537,
         "comment": 421,
-        "code": 63829
+        "code": 63855
       }
     }
   },
@@ -249,10 +249,10 @@
     },
     "packaging": {
       "files": 11,
-      "total": 2176,
-      "blank": 239,
-      "comment": 21,
-      "code": 1916
+      "total": 2201,
+      "blank": 241,
+      "comment": 25,
+      "code": 1935
     },
     "scripts": {
       "files": 3,
@@ -263,17 +263,17 @@
     },
     "tests": {
       "files": 219,
-      "total": 75368,
-      "blank": 11489,
+      "total": 75399,
+      "blank": 11494,
       "comment": 400,
-      "code": 63479
+      "code": 63505
     },
     "other": {
       "files": 22,
-      "total": 6405,
+      "total": 6299,
       "blank": 373,
       "comment": 33,
-      "code": 5999
+      "code": 5893
     }
   },
   "by_suite": {
@@ -327,11 +327,11 @@
     },
     "release": {
       "files": 7,
-      "total": 5662,
-      "blank": 932,
+      "total": 5693,
+      "blank": 937,
       "comment": 22,
-      "code": 4708,
-      "test_cases": 316
+      "code": 4734,
+      "test_cases": 318
     },
     "testkit": {
       "files": 3,
