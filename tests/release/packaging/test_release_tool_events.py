@@ -20,6 +20,7 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
 
 from release_tool.events import (
     EVENT_PREFIX,
+    ReleaseEvent,
     ReleaseEventEmitter,
     ReleaseLogError,
     ReleaseLogWriter,
@@ -700,3 +701,126 @@ def test_log_writer_raises_named_error_when_persistence_fails(tmp_path: Path, mo
 
     with pytest.raises(ReleaseLogError, match="release log"):
         ReleaseLogWriter(tmp_path / "release.log").write_line("progress")
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    (
+        (
+            'prefix {"api_secret":"raw-secret',
+            "raw-secret",
+            'prefix {"api_secret":"[REDACTED]"',
+        ),
+        (
+            'prefix {"token":raw-secret, "safe": 1}',
+            "raw-secret",
+            'prefix {"token":"[REDACTED]", "safe": 1}',
+        ),
+    ),
+)
+def test_release_text_fails_closed_for_malformed_sensitive_json_scalars(text, secret, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    assert secret not in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    (
+        (
+            "proxy=https://alice:password@with-at@proxy.invalid:8080/health",
+            "alice:password@with-at",
+            "proxy=https://[REDACTED]@proxy.invalid:8080/health",
+        ),
+        (
+            "proxy=alice:password@host:8080",
+            "alice:password",
+            "proxy=[REDACTED]@host:8080",
+        ),
+        (
+            "ssh://git@github.com/openai/release-builder.git",
+            "",
+            "ssh://git@github.com/openai/release-builder.git",
+        ),
+    ),
+)
+def test_release_text_redacts_proxy_userinfo_without_hiding_username_only_urls(text, secret, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    if secret:
+        assert secret not in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    (
+        (" \tAuthorization: Bearer raw-token", "raw-token", " \tAuthorization: [REDACTED]"),
+        ("\tCookie: session=raw-cookie", "raw-cookie", "\tCookie: [REDACTED]"),
+        ("  X-API-Key: raw-api-key", "raw-api-key", "  X-API-Key: [REDACTED]"),
+    ),
+)
+def test_release_text_redacts_indented_sensitive_headers(text, secret, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    assert secret not in redacted
+
+
+def test_sensitive_event_data_is_validated_before_redaction():
+    emitter = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC)
+
+    with pytest.raises(ValueError, match="finite"):
+        emitter.emit(
+            "progress",
+            stage=ReleaseStage.PREFLIGHT,
+            progress=10,
+            data={"token": {"nested": math.nan}},
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"kind": ""},
+        {"kind": 1},
+        {"timestamp": ""},
+        {"timestamp": 1},
+        {"sequence": 0},
+        {"sequence": True},
+        {"stage": "preflight"},
+        {"progress": -1},
+        {"progress": True},
+        {"data": {"token": {"nested": math.nan}}},
+        {"data": {1: "non-string-key"}},
+    ),
+)
+def test_release_event_direct_construction_enforces_public_invariants(overrides):
+    arguments = {
+        "kind": "progress",
+        "sequence": 1,
+        "timestamp": "2026-07-19T04:05:06Z",
+        "stage": ReleaseStage.PREFLIGHT,
+        "progress": 10,
+        "data": {"safe": "value"},
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(ValueError):
+        ReleaseEvent(**arguments)
+
+
+def test_release_event_direct_construction_redacts_and_deep_freezes_data():
+    event = ReleaseEvent(
+        kind="progress",
+        sequence=1,
+        timestamp="2026-07-19T04:05:06Z",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={"token": {"nested": "raw-secret"}, "items": [{"safe": "value"}]},
+    )
+
+    assert event.data["token"] == "[REDACTED]"
+    with pytest.raises(TypeError):
+        event.data["items"][0]["safe"] = "mutated"

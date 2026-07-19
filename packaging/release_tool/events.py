@@ -32,7 +32,7 @@ _TRUNCATED_PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _HEADER_FIELD = re.compile(
-    r"(?im)^(?P<key>[A-Za-z][A-Za-z0-9_-]*)(?P<separator>\s*:\s*)(?P<value>[^\r\n]*)$"
+    r"(?im)^(?P<indent>[ \t]*)(?P<key>[A-Za-z][A-Za-z0-9_-]*)(?P<separator>\s*:\s*)(?P<value>[^\r\n]*)$"
 )
 _BEARER_TOKEN = re.compile(
     r'''(?i)\bbearer\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[a-z0-9._~+/=-]+)'''
@@ -40,7 +40,8 @@ _BEARER_TOKEN = re.compile(
 _GITHUB_TOKEN = re.compile(
     r"(?i)(?<![a-z0-9_])(?:gh[pours]_[a-z0-9_]+|github_pat_[a-z0-9_]+)(?![a-z0-9_])"
 )
-_URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
+_URL_SCHEME = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://")
+_PROXY_ENDPOINT = re.compile(r"(?i)\bproxy\s*=\s*")
 _KEY_VALUE_PAIR = re.compile(
     r'''(?x)
     (?P<prefix>[?&;]|(?<![A-Za-z0-9_]))
@@ -151,6 +152,7 @@ _CREDENTIAL_KEY_SEGMENTS = frozenset(
     }
 )
 _KEY_CONTEXT_SEGMENTS = frozenset({"access", "api", "client", "private", "proxy", "signing", "x"})
+_AUTHORITY_TERMINATORS = frozenset("/?# \t\r\n,;\"'")
 
 
 def redact_release_text(text: str) -> str:
@@ -165,7 +167,7 @@ def redact_release_text(text: str) -> str:
     redacted = _HEADER_FIELD.sub(_redact_sensitive_header_field, redacted)
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
-    redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
+    redacted = _redact_url_userinfo(redacted)
     redacted = _redact_sensitive_json_fragments(redacted)
     return _KEY_VALUE_PAIR.sub(_redact_sensitive_key_value_pair, redacted)
 
@@ -205,7 +207,43 @@ def _redact_sensitive_key_value_pair(match: re.Match[str]) -> str:
 def _redact_sensitive_header_field(match: re.Match[str]) -> str:
     if not _is_sensitive_key(match.group("key")):
         return match.group(0)
-    return f"{match.group('key')}{match.group('separator')}{REDACTED}"
+    return f"{match.group('indent')}{match.group('key')}{match.group('separator')}{REDACTED}"
+
+
+def _redact_url_userinfo(text: str) -> str:
+    spans: list[tuple[int, int]] = []
+    for match in _URL_SCHEME.finditer(text):
+        span = _userinfo_span(text, match.end())
+        if span is not None:
+            spans.append(span)
+    for match in _PROXY_ENDPOINT.finditer(text):
+        span = _userinfo_span(text, match.end())
+        if span is not None:
+            spans.append(span)
+    if not spans:
+        return text
+
+    parts: list[str] = []
+    position = 0
+    for start, end in sorted(spans):
+        if start < position:
+            continue
+        parts.append(text[position:start])
+        parts.append(f"{REDACTED}@")
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _userinfo_span(text: str, start: int) -> tuple[int, int] | None:
+    end = start
+    while end < len(text) and text[end] not in _AUTHORITY_TERMINATORS:
+        end += 1
+    authority = text[start:end]
+    separator = authority.rfind("@")
+    if separator < 0 or ":" not in authority[:separator]:
+        return None
+    return start, start + separator + 1
 
 
 def _redact_sensitive_json_fragments(text: str) -> str:
@@ -240,7 +278,22 @@ def _json_fragment_value_end(text: str, start: int) -> int | None:
     if text[start] in "{[":
         return _scan_json_composite_end(text, start)
     primitive = _JSON_PRIMITIVE_VALUE.match(text, start)
-    return None if primitive is None else primitive.end()
+    if primitive is not None and _is_json_value_boundary(text, primitive.end()):
+        return primitive.end()
+    if text[start] == '"':
+        return len(text)
+    return _malformed_json_scalar_end(text, start)
+
+
+def _is_json_value_boundary(text: str, position: int) -> bool:
+    return position >= len(text) or text[position].isspace() or text[position] in ",}]"
+
+
+def _malformed_json_scalar_end(text: str, start: int) -> int:
+    for position in range(start, len(text)):
+        if text[position] in ",}]\r\n":
+            return position
+    return len(text)
 
 
 def _scan_json_composite_end(text: str, start: int) -> int:
@@ -272,6 +325,26 @@ def _scan_json_composite_end(text: str, start: int) -> int:
     return len(text)
 
 
+def _validate_json_value(value: object) -> None:
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("release event data must contain only finite floats")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("release event data object keys must be strings")
+            _validate_json_value(item)
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            _validate_json_value(item)
+        return
+    raise ValueError("release event data must contain only strict JSON values")
+
+
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
     if key and _is_sensitive_key(key):
         return REDACTED
@@ -280,8 +353,6 @@ def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("release event data must contain only finite floats")
         return value
     if isinstance(value, Mapping):
         return {
@@ -354,8 +425,20 @@ class ReleaseEvent:
     data: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, str) or not self.kind:
+            raise ValueError("release event kind must be a non-empty string")
+        if isinstance(self.sequence, bool) or not isinstance(self.sequence, int) or self.sequence < 1:
+            raise ValueError("release event sequence must be a positive integer")
+        if not isinstance(self.timestamp, str) or not self.timestamp:
+            raise ValueError("release event timestamp must be a non-empty string")
+        if not isinstance(self.stage, ReleaseStage):
+            raise ValueError("release event stage must be a ReleaseStage")
+        _validated_progress(self.progress)
+        if not isinstance(self.message, str):
+            raise ValueError("release event message must be a string")
         if not isinstance(self.data, Mapping):
             raise ValueError("release event data must be a mapping")
+        _validate_json_value(self.data)
         data = _redact_event_data(self.data)
         if not isinstance(data, Mapping):  # Defensive guard for the declared event contract.
             raise ValueError("release event data must be a mapping")
