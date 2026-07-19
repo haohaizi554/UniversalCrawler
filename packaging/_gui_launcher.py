@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """UniversalCrawlerPro.exe 入口：直接启动 GUI 模式。
-由 packaging/portable.spec 在打包时自动生成。
+作为受 Git 管理的 canonical 构建入口，由 packaging/portable.spec 只读消费。
 
 设计要点：
 - 直接调用 entry.gui_entry.main()，完全绕过 dispatcher。

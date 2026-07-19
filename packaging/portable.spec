@@ -144,60 +144,18 @@ pyz = PYZ(a.pure)
 # - CrawlerWebPortal.exe    -> entry.web_entry.main()      (FastAPI + Qt 托盘)
 # - updater_helper.exe      -> entry.updater_helper.main() (独立更新辅助进程)
 
+# 三个 launcher 是受 Git 管理的 canonical 源文件。spec 只读消费，禁止在构建
+# 期间生成或改写，否则 sourceCommit 快照完整性门禁无法区分构建副作用和篡改。
 gui_launcher_script = project_root / "packaging" / "_gui_launcher.py"
-gui_launcher_script.write_text(
-    '''#!/usr/bin/env python3
-"""UniversalCrawlerPro.exe 入口：直接启动 GUI 模式。
-由 packaging/portable.spec 在打包时自动生成。
-
-设计要点：
-- 直接调用 entry.gui_entry.main()，完全绕过 dispatcher。
-- 双击 EXE 时**直接进入 GUI**，不再弹"模式选择菜单"（TUI 或 Qt 弹窗）。
-- 用户从命令行传入的参数原样透传给 gui_entry（虽然 GUI 模式不消费参数，
-  但保持与其它 entry 一致的 argv 转发语义）。
-"""
-import sys
-
-from entry.gui_entry import main as _main
-sys.exit(_main(sys.argv[1:] if len(sys.argv) > 1 else None))
-''',
-    encoding="utf-8",
-)
-
 webui_entry_script = project_root / "packaging" / "_webui_launcher.py"
-webui_entry_script.write_text(
-    '''#!/usr/bin/env python3
-"""CrawlerWebPortal.exe 入口：直接启动 Web 模式。
-由 packaging/portable.spec 在打包时自动生成。
-
-设计要点：
-- 直接调用 entry.web_entry.main()，完全绕过 dispatcher。
-  避免 dispatcher 透传 [] 时误转 None，导致 web_entry 误读 sys.argv 的 --mode。
-- 用户传入的 CLI 参数（--port / --host / --no-qt / --no-browser 等）
-  全部原样转发给 web_entry。
-- console=False：Qt 托盘 + 端口弹窗仍可见。
-"""
-import sys
-
-from entry.web_entry import main as _main
-sys.exit(_main(sys.argv[1:] if len(sys.argv) > 1 else None))
-''',
-    encoding="utf-8",
-)
-
 updater_helper_script = project_root / "packaging" / "_updater_helper_launcher.py"
-updater_helper_script.write_text(
-    '''#!/usr/bin/env python3
-"""updater_helper.exe 入口：独立安装 helper。
-由 packaging/portable.spec 在打包时自动生成。
-"""
-import sys
-
-from entry.updater_helper import main as _main
-sys.exit(_main(sys.argv[1:]))
-''',
-    encoding="utf-8",
-)
+for launcher_script in (
+    gui_launcher_script,
+    webui_entry_script,
+    updater_helper_script,
+):
+    if not launcher_script.is_file():
+        raise FileNotFoundError(f"missing tracked launcher: {launcher_script}")
 
 # 冻结态统一启动中心：保留 main.py 原始脚本，由 dispatcher 在无控制台时打开 Qt
 # 模式选择器。它是新增入口，不替换下方 GUI/Web 直达 EXE。

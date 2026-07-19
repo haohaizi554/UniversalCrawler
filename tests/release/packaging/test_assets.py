@@ -5,7 +5,7 @@
 - 集成测试：所需文件存在性、依赖项、配置一致性
 - 静态分析：hiddenimports 必须包含动态加载的 entry/cli 模块
 - 图标分配：主 EXE 用 favicon.ico，Web EXE 用 Web.ico
-- 启动器：packaging 生成的 _gui_launcher.py / _webui_launcher.py 内容正确
+- 启动器：受 Git 管理的 _gui_launcher.py / _webui_launcher.py 内容正确
 - 运行时钩子：NullStream 兜底、PLAYWRIGHT_BROWSERS_PATH 设置、AppUserModelID
 
 设计原则：
@@ -29,6 +29,9 @@ from tests.support.paths import PROJECT_ROOT
 
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
+GUI_LAUNCHER = PACKAGING_DIR / "_gui_launcher.py"
+WEBUI_LAUNCHER = PACKAGING_DIR / "_webui_launcher.py"
+UPDATER_HELPER_LAUNCHER = PACKAGING_DIR / "_updater_helper_launcher.py"
 UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
 PLAYWRIGHT_BUNDLE_TOOL = PACKAGING_DIR / "playwright_bundle.py"
 BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
@@ -1071,30 +1074,36 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs["shell"])
 
 class LauncherTemplateTests(unittest.TestCase):
-    """_gui_launcher.py 和 _webui_launcher.py 模板正确性。"""
+    """受 Git 管理的冻结入口脚本保持可审计且只读。"""
 
     def test_gui_launcher_content(self):
-        """spec 中的 _gui_launcher.py 模板必须调用 entry.gui_entry.main。"""
-        with open(SPEC_FILE, "r", encoding="utf-8") as f:
-            source = f.read()
+        """_gui_launcher.py 必须调用 entry.gui_entry.main。"""
+        source = GUI_LAUNCHER.read_text(encoding="utf-8")
         self.assertIn("from entry.gui_entry import main", source)
         # 不走 dispatcher（直接启动 GUI）
         self.assertIn("_main(sys.argv", source)
 
     def test_webui_launcher_content(self):
-        """spec 中的 _webui_launcher.py 模板必须调用 entry.web_entry.main。"""
-        with open(SPEC_FILE, "r", encoding="utf-8") as f:
-            source = f.read()
+        """_webui_launcher.py 必须调用 entry.web_entry.main。"""
+        source = WEBUI_LAUNCHER.read_text(encoding="utf-8")
         self.assertIn("from entry.web_entry import main", source)
         # 不走 dispatcher
         self.assertIn("_main(sys.argv", source)
 
     def test_updater_helper_launcher_content(self):
-        """spec 中的 updater helper 模板必须调用 entry.updater_helper.main。"""
-        with open(SPEC_FILE, "r", encoding="utf-8") as f:
-            source = f.read()
+        """updater helper 入口必须调用 entry.updater_helper.main。"""
+        source = UPDATER_HELPER_LAUNCHER.read_text(encoding="utf-8")
         self.assertIn("from entry.updater_helper import main", source)
-        self.assertIn("UPDATER_HELPER_NAME", source)
+
+    def test_spec_consumes_tracked_launchers_without_rewriting_them(self):
+        source = SPEC_FILE.read_text(encoding="utf-8")
+        for name in (
+            "_gui_launcher.py",
+            "_webui_launcher.py",
+            "_updater_helper_launcher.py",
+        ):
+            self.assertIn(name, source)
+        self.assertNotIn("launcher_script.write_text", source)
 
     def test_frozen_mode_launcher_reuses_main_dispatcher_without_console(self):
         """第三个用户入口复用 main.py，且双击时由 Qt 模式选择器接管。"""
