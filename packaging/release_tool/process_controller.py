@@ -9,6 +9,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -39,6 +40,7 @@ MAX_LINES_PER_TICK = 200
 DEFAULT_LOG_CAPACITY = 5000
 WRITER_CAPACITY = 4096
 WRITER_CLOSE_TIMEOUT_SECONDS = 0.25
+WRITER_ABANDON_TIMEOUT_SECONDS = 5.0
 WRITER_CLOSE_POLL_MS = 50
 TASKKILL_CONFIRMATION_MS = 250
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -68,7 +70,7 @@ class _BackgroundLogWriter:
         self._thread = threading.Thread(
             target=self._run,
             name="release-log-writer",
-            daemon=False,
+            daemon=True,
         )
         self._thread.start()
 
@@ -91,11 +93,7 @@ class _BackgroundLogWriter:
     ) -> bool:
         self._stop.set()
         self._thread.join(max(0.0, float(timeout_seconds)))
-        if self._thread.is_alive():
-            if not self.error:
-                self.error = "timed out while closing release log"
-            return False
-        return True
+        return not self._thread.is_alive()
 
     def _run(self) -> None:
         try:
@@ -150,6 +148,7 @@ class ReleaseProcessController(QObject):
         log_capacity: int = DEFAULT_LOG_CAPACITY,
         writer_factory: Callable[[Path], _BackgroundLogWriter] | None = None,
         writer_close_timeout_seconds: float = WRITER_CLOSE_TIMEOUT_SECONDS,
+        writer_abandon_timeout_seconds: float = WRITER_ABANDON_TIMEOUT_SECONDS,
         taskkill_process_factory: Callable[[QObject], QProcess] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -195,8 +194,14 @@ class ReleaseProcessController(QObject):
             0.0,
             float(writer_close_timeout_seconds),
         )
+        self._writer_abandon_timeout_seconds = max(
+            0.0,
+            float(writer_abandon_timeout_seconds),
+        )
+        self._writer_close_deadline: float | None = None
         self._log_writer: _BackgroundLogWriter | None = None
         self._writer_failure_reported = False
+        self.audit_log_warning = ""
         self._taskkill_process_factory = taskkill_process_factory or QProcess
         self._taskkill_process: QProcess | None = None
         self._running = False
@@ -426,6 +431,8 @@ class ReleaseProcessController(QObject):
         self._stdout_partial = ""
         self._stderr_partial = ""
         self._writer_failure_reported = False
+        self._writer_close_deadline = None
+        self.audit_log_warning = ""
         self.result = ReleaseResult(mode=self._mode, stage=ReleaseStage.IDLE)
 
     def _write_request_file(self, request: BuildRequest) -> Path:
@@ -616,14 +623,20 @@ class ReleaseProcessController(QObject):
         closed = writer.close(
             timeout_seconds=self._writer_close_timeout_seconds,
         )
-        if writer.error and not self._writer_failure_reported:
-            self._writer_failure_reported = True
-            self.error_reported.emit(writer.error)
-            self._mark_result_failed(writer.error)
+        self._record_writer_failure(writer)
         if closed:
             self._log_writer = None
+            self._writer_close_deadline = None
             self._writer_close_timer.stop()
-        elif not self._writer_close_timer.isActive():
+        else:
+            if self._writer_close_deadline is None:
+                self._writer_close_deadline = (
+                    time.monotonic() + self._writer_abandon_timeout_seconds
+                )
+            if time.monotonic() >= self._writer_close_deadline:
+                self._abandon_log_writer()
+                return
+        if self._log_writer is not None and not self._writer_close_timer.isActive():
             self._writer_close_timer.start()
 
     @pyqtSlot()
@@ -634,9 +647,35 @@ class ReleaseProcessController(QObject):
             self._maybe_emit_completed()
             return
         if writer.close(timeout_seconds=0.0):
+            self._record_writer_failure(writer)
             self._log_writer = None
+            self._writer_close_deadline = None
             self._writer_close_timer.stop()
             self._maybe_emit_completed()
+            return
+        deadline = self._writer_close_deadline
+        if deadline is not None and time.monotonic() >= deadline:
+            self._abandon_log_writer()
+            self._maybe_emit_completed()
+
+    def _record_writer_failure(self, writer: _BackgroundLogWriter) -> None:
+        if not writer.error or self._writer_failure_reported:
+            return
+        self._writer_failure_reported = True
+        self.error_reported.emit(writer.error)
+        self._mark_result_failed(writer.error)
+
+    def _abandon_log_writer(self) -> None:
+        if self._log_writer is None:
+            return
+        self.audit_log_warning = (
+            "release audit log did not close before the shutdown deadline; "
+            "the log may be incomplete"
+        )
+        self.error_reported.emit(self.audit_log_warning)
+        self._log_writer = None
+        self._writer_close_deadline = None
+        self._writer_close_timer.stop()
 
     def _mark_result_failed(self, message: str) -> None:
         safe_message = redact_release_text(message)

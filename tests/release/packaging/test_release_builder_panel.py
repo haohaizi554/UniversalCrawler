@@ -23,7 +23,13 @@ from app.ui.dialogs.chromed_dialog import ChromedDialog
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
 from release_tool.events import EVENT_PREFIX
-from release_tool.models import BuildRequest, ReleaseMode, RemoteReleaseInfo, ReleaseStage
+from release_tool.models import (
+    BuildRequest,
+    ReleaseMode,
+    ReleaseResult,
+    ReleaseStage,
+    RemoteReleaseInfo,
+)
 from release_tool import panel as panel_module
 from release_tool import process_controller as process_controller_module
 from release_tool.panel import (
@@ -634,7 +640,6 @@ class _DeferredCloseWriter:
 
     def close(self, *, timeout_seconds: float) -> bool:
         if not self.can_close:
-            self.error = "timed out while closing release log"
             return False
         self.active = False
         return True
@@ -658,11 +663,69 @@ def test_background_writer_close_is_bounded_and_drop_notice_is_reliable(tmp_path
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.2
-    assert "timed out" in writer.error
+    assert writer.error == ""
+    assert writer._thread.daemon is True
 
     stream.release_write.set()
     assert writer.close(timeout_seconds=1.0) is True
     assert "dropped" in "".join(stream.writes)
+
+
+def test_pending_writer_close_does_not_turn_success_into_failure(tmp_path):
+    writers: list[_DeferredCloseWriter] = []
+
+    def create_writer(path: Path) -> _DeferredCloseWriter:
+        writer = _DeferredCloseWriter(path)
+        writers.append(writer)
+        return writer
+
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        log_directory=tmp_path / "logs",
+        writer_factory=create_writer,
+        writer_close_timeout_seconds=0.0,
+    )
+    controller._log_writer = create_writer(tmp_path / "audit.log")
+    controller.result = ReleaseResult(
+        mode=ReleaseMode.NEW_RELEASE,
+        stage=ReleaseStage.SUCCEEDED,
+    )
+    controller._completion_pending = True
+
+    controller._finish_writer_or_defer()
+
+    assert controller.result.succeeded is True
+    assert controller.shutdown_complete is False
+
+    writers[-1].can_close = True
+    controller._poll_writer_close()
+
+    assert controller.result.succeeded is True
+    assert controller.shutdown_complete is True
+
+
+def test_writer_shutdown_deadline_allows_application_exit(tmp_path):
+    writer = _DeferredCloseWriter(tmp_path / "audit.log")
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        log_directory=tmp_path / "logs",
+        writer_factory=lambda _path: writer,
+        writer_close_timeout_seconds=0.0,
+        writer_abandon_timeout_seconds=0.0,
+    )
+    controller._log_writer = writer
+    controller.result = ReleaseResult(
+        mode=ReleaseMode.NEW_RELEASE,
+        stage=ReleaseStage.SUCCEEDED,
+    )
+    controller._completion_pending = True
+
+    controller._finish_writer_or_defer()
+    controller._maybe_emit_completed()
+
+    assert controller.shutdown_complete is True
+    assert controller.result.succeeded is True
+    assert "may be incomplete" in controller.audit_log_warning
 
 
 def test_start_failure_retains_writer_until_bounded_close_completes(tmp_path):

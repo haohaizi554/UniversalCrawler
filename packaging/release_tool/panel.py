@@ -840,7 +840,10 @@ class ReleaseBuilderWindow(QWidget):
     @pyqtSlot(object)
     def _on_process_completed(self, result: ReleaseResult) -> None:
         if result.succeeded:
-            self.status_label.setText("Release build succeeded")
+            message = "Release build succeeded"
+            if self.process_controller.audit_log_warning:
+                message += "; audit log may be incomplete"
+            self.status_label.setText(message)
             self.progress_bar.setValue(100)
         else:
             self.status_label.setText(
