@@ -36,6 +36,7 @@ UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
 PLAYWRIGHT_BUNDLE_TOOL = PACKAGING_DIR / "playwright_bundle.py"
 BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
 BUILD_INSTALLER_TOOL = PACKAGING_DIR / "build_installer.py"
+RELEASE_BUILDER_ASSETS = PACKAGING_DIR / "release_tool" / "assets"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
 REQUIREMENTS_RUNTIME = PROJECT_ROOT / "requirements.txt"
@@ -1471,6 +1472,14 @@ class ProjectFileExistenceTests(unittest.TestCase):
     def test_report_ico_exists(self):
         """代码统计报告图标必须存在。"""
         self.assertTrue((PROJECT_ROOT / "analytics.ico").exists())
+
+    def test_release_builder_assets_exist_separately_from_application_icons(self):
+        """维护工具图标只归 release builder 使用，不替换应用图标。"""
+        self.assertTrue((RELEASE_BUILDER_ASSETS / "release-builder.png").is_file())
+        self.assertTrue((RELEASE_BUILDER_ASSETS / "release-builder.ico").is_file())
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "favicon.ico")
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "Web.ico")
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "analytics.ico")
 
     def test_ffmpeg_exists(self):
         self.assertTrue((PROJECT_ROOT / "ffmpeg.exe").exists())
