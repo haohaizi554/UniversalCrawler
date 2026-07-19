@@ -760,6 +760,54 @@ def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
     assert calls[0]["argv"][:2] == ["msiexec.exe", "/i"]
 
 
+def test_installer_runner_detaches_inno_self_update_with_post_install_handoff(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    digest = hashlib.sha256(installer.read_bytes()).hexdigest()
+    asset = UpdateAsset(
+        name="installer.exe",
+        url="https://github.com/owner/repo/releases/download/v/installer.exe",
+        sha256=digest,
+        size=installer.stat().st_size,
+        installer_type="inno",
+        os="windows",
+        arch="x64",
+    )
+    install_dir = tmp_path / "installed"
+    install_dir.mkdir()
+    restart_handoff = tmp_path / "restart.json"
+    calls: list[dict] = []
+    process = SimpleNamespace(pid=4321)
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, "kwargs": kwargs})
+        return process
+
+    runner = InstallerRunner(
+        package_verifier=PackageVerifier(
+            os_name="windows",
+            trusted_publishers=["CN=Test"],
+            verify_func=lambda _p, _a: None,
+        ),
+        popen_func=fake_popen,
+    )
+
+    launched = runner.launch_verified_installer(
+        installer,
+        asset,
+        version="3.7.0",
+        log_path=tmp_path / "install.log",
+        install_dir=install_dir,
+        restart_handoff_path=restart_handoff,
+    )
+
+    assert launched is process
+    assert calls[0]["kwargs"]["shell"] is False
+    assert calls[0]["kwargs"]["close_fds"] is True
+    assert f"/DIR={install_dir}" in calls[0]["argv"]
+    assert f"/UCrawlRestartHandoff={restart_handoff}" in calls[0]["argv"]
+
+
 def _windows_asset_for_file(path: Path) -> UpdateAsset:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return UpdateAsset(
@@ -1141,34 +1189,38 @@ def test_updater_helper_rejects_signed_manifest_for_another_version(tmp_path, mo
         )
 
 
-def test_updater_helper_restarts_app_after_success_without_shell(tmp_path, monkeypatch):
+def test_updater_helper_detaches_installer_and_writes_restart_handoff(tmp_path, monkeypatch):
     from entry import updater_helper
 
     asset = UpdateAsset(
-        name="installer.msi",
-        url="https://github.com/owner/repo/releases/download/v/installer.msi",
+        name="installer.exe",
+        url="https://github.com/owner/repo/releases/download/v/installer.exe",
         sha256="a" * 64,
         size=1,
-        installer_type="msi",
+        installer_type="inno",
         os="windows",
         arch="x64",
     )
     manifest_path = tmp_path / "latest.json"
     signature_path = tmp_path / "latest.json.sig"
-    installer = tmp_path / "installer.msi"
+    installer = tmp_path / "installer.exe"
     installer.write_bytes(b"x")
+    install_dir = tmp_path / "installed"
+    install_dir.mkdir()
+    restart_exe = install_dir / "UniversalCrawlerPro.exe"
+    restart_exe.write_bytes(b"exe")
     calls: list[dict] = []
 
     class FakeRunner:
         def __init__(self, **_kwargs):
             pass
 
-        def run_verified_installer(self, *_args, **_kwargs):
-            return SimpleNamespace(exit_code=0, succeeded=True)
+        def launch_verified_installer(self, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(updater_helper, "InstallerRunner", FakeRunner)
     monkeypatch.setattr(updater_helper, "_load_verified_asset", lambda **_kwargs: asset)
-    monkeypatch.setattr(updater_helper.subprocess, "Popen", lambda argv, **kwargs: calls.append({"argv": argv, "kwargs": kwargs}))
 
     exit_code = updater_helper.main(
         [
@@ -1182,13 +1234,133 @@ def test_updater_helper_restarts_app_after_success_without_shell(tmp_path, monke
             "3.7.0",
             "--log-path",
             str(tmp_path / "install.log"),
+            "--install-dir",
+            str(install_dir),
             "--restart-argv-json",
-            json.dumps(["python", "-m", "entry.gui_entry"]),
+            json.dumps([str(restart_exe), "--updated"]),
         ]
     )
 
     assert exit_code == 0
-    assert calls == [{"argv": ["python", "-m", "entry.gui_entry"], "kwargs": {"shell": False}}]
+    assert len(calls) == 1
+    assert calls[0]["args"][:2] == (installer, asset)
+    assert calls[0]["kwargs"]["install_dir"] == install_dir.resolve()
+    handoff_path = calls[0]["kwargs"]["restart_handoff_path"]
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff["restart_argv"] == [str(restart_exe), "--updated"]
+    assert handoff["install_dir"] == str(install_dir.resolve())
+    assert handoff["version"] == "3.7.0"
+
+
+def test_updater_helper_post_install_restarts_validated_installed_app(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    install_dir = tmp_path / "installed"
+    install_dir.mkdir()
+    helper_exe = install_dir / "updater_helper.exe"
+    restart_exe = install_dir / "UniversalCrawlerPro.exe"
+    helper_exe.write_bytes(b"helper")
+    restart_exe.write_bytes(b"app")
+    handoff_path = tmp_path / "restart.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "restart_argv": [str(restart_exe), "--updated"],
+                "install_dir": str(install_dir),
+                "version": "3.7.0",
+                "log_path": str(tmp_path / "install.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(updater_helper.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater_helper.sys, "executable", str(helper_exe))
+    monkeypatch.setattr(
+        updater_helper.subprocess,
+        "Popen",
+        lambda argv, **kwargs: calls.append({"argv": argv, "kwargs": kwargs}),
+    )
+
+    exit_code = updater_helper.main(
+        [
+            "--complete-install",
+            "--restart-handoff",
+            str(handoff_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert not handoff_path.exists()
+    assert calls[0]["argv"] == [str(restart_exe), "--updated"]
+    assert calls[0]["kwargs"]["shell"] is False
+    assert calls[0]["kwargs"]["cwd"] == str(install_dir.resolve())
+
+
+def test_updater_helper_post_install_restart_survives_telemetry_failure(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    install_dir = tmp_path / "installed"
+    install_dir.mkdir()
+    helper_exe = install_dir / "updater_helper.exe"
+    restart_exe = install_dir / "UniversalCrawlerPro.exe"
+    helper_exe.write_bytes(b"helper")
+    restart_exe.write_bytes(b"app")
+    log_path = tmp_path / "install.log"
+    handoff_path = tmp_path / "restart.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "restart_argv": [str(restart_exe)],
+                "install_dir": str(install_dir),
+                "version": "3.7.0",
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    launches: list[list[str]] = []
+    monkeypatch.setattr(updater_helper.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater_helper.sys, "executable", str(helper_exe))
+    monkeypatch.setattr(
+        updater_helper,
+        "log_update_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("logger unavailable")),
+    )
+    monkeypatch.setattr(
+        updater_helper.subprocess,
+        "Popen",
+        lambda argv, **_kwargs: launches.append(argv),
+    )
+
+    exit_code = updater_helper.main(
+        [
+            "--complete-install",
+            "--restart-handoff",
+            str(handoff_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert launches == [[str(restart_exe)]]
+    assert not handoff_path.exists()
+
+
+def test_updater_helper_persists_windowed_failure_when_telemetry_is_unavailable(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    log_path = tmp_path / "install.log"
+    monkeypatch.setattr(
+        updater_helper,
+        "log_update_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("logger unavailable")),
+    )
+
+    exit_code = updater_helper.main(["--log-path", str(log_path)])
+
+    assert exit_code == 1
+    assert "updater helper failed" in log_path.read_text(encoding="utf-8")
+    assert "missing updater helper arguments" in log_path.read_text(encoding="utf-8")
 
 
 def test_updater_helper_waits_for_parent_before_running_installer(tmp_path, monkeypatch):
@@ -1213,9 +1385,9 @@ def test_updater_helper_waits_for_parent_before_running_installer(tmp_path, monk
         def __init__(self, **_kwargs):
             pass
 
-        def run_verified_installer(self, *_args, **_kwargs):
+        def launch_verified_installer(self, *_args, **_kwargs):
             events.append(("install", None))
-            return SimpleNamespace(exit_code=0, succeeded=True)
+            return SimpleNamespace(pid=4243)
 
     monkeypatch.setattr(updater_helper, "InstallerRunner", FakeRunner)
     monkeypatch.setattr(updater_helper, "_load_verified_asset", lambda **_kwargs: asset)
@@ -1233,6 +1405,8 @@ def test_updater_helper_waits_for_parent_before_running_installer(tmp_path, monk
             "3.7.0",
             "--log-path",
             str(tmp_path / "install.log"),
+            "--install-dir",
+            str(tmp_path),
             "--wait-pid",
             "4242",
         ]

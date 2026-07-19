@@ -606,6 +606,16 @@ def _scan_text_for_sensitive_markers(text: str, *, label: str) -> list[SecretFin
     return findings
 
 
+def _added_diff_text(diff: str) -> str:
+    """只返回会进入下一次提交的新增行，避免已删除的泄漏样例阻塞清理提交。"""
+
+    return "\n".join(
+        line[1:]
+        for line in str(diff or "").splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+
 def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[SecretFinding]:
     """扫描已跟踪文件、差异和未跟踪路径，但不打印敏感值。"""
 
@@ -625,7 +635,8 @@ def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[Se
         ("staged diff", ["diff", "--cached", "--no-ext-diff", "--unified=0"], ["diff", "--cached", "--name-only", "-z"]),
         ("working tree diff", ["diff", "--no-ext-diff", "--unified=0"], ["diff", "--name-only", "-z"]),
     ):
-        findings.extend(_scan_text_for_sensitive_markers(_git_stdout(diff_args, project_root=project_root), label=label))
+        diff = _git_stdout(diff_args, project_root=project_root)
+        findings.extend(_scan_text_for_sensitive_markers(_added_diff_text(diff), label=label))
         for path in _git_paths(name_args, project_root=project_root):
             if _is_dangerous_secret_path(path):
                 findings.append(SecretFinding(path.relative_to(project_root).as_posix(), f"dangerous signing file in {label}"))
@@ -645,7 +656,8 @@ def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[Se
             ("staged diff", ["diff", "--cached", "--no-ext-diff", "--unified=0"]),
             ("working tree diff", ["diff", "--no-ext-diff", "--unified=0"]),
         ):
-            if secret_text and secret_text in _git_stdout(diff_args, project_root=project_root):
+            diff = _added_diff_text(_git_stdout(diff_args, project_root=project_root))
+            if secret_text and secret_text in diff:
                 findings.append(SecretFinding(label, "local release secret path appears in git diff"))
     return findings
 

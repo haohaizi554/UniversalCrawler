@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -583,12 +584,13 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertIn("_download_verified_update", source)
         self.assertIn("_cancel_update_download", source)
         self.assertIn("launch_prepared_update", source)
-        self.assertIn("entry.updater_helper", service_source)
+        self.assertIn('"updater_helper.exe"', service_source)
         self.assertIn('"--wait-pid"', service_source)
+        self.assertIn('"--install-dir"', service_source)
         self.assertIn('"--manifest"', service_source)
         self.assertIn('"--signature"', service_source)
         self.assertNotIn('"--asset-json"', combined)
-        self.assertIn("shell=False", service_source)
+        self.assertIn('"shell": False', service_source)
         self.assertIn("record_skipped_update", source)
         self.assertIn("跳过此版本", source)
         self.assertNotIn("下载和安装稍后接入", source)
@@ -604,6 +606,11 @@ class UpdateCheckServiceTests(unittest.TestCase):
             signature = root / "latest.json.sig"
             for path in (installer, manifest, signature):
                 path.write_bytes(b"verified")
+            app_exe = root / "CrawlerWebPortal.exe"
+            helper_exe = root / "updater_helper.exe"
+            app_exe.write_bytes(b"app")
+            helper_exe.write_bytes(b"helper")
+            resolved_helper_exe = helper_exe.resolve()
             prepared = PreparedUpdate(
                 installer_path=os.fspath(installer),
                 manifest_path=os.fspath(manifest),
@@ -612,20 +619,30 @@ class UpdateCheckServiceTests(unittest.TestCase):
                 log_path=os.fspath(root / "install.log"),
             )
             popen = Mock()
-            with patch("app.services.update_check_service.record_pending_install") as record_pending:
+            with (
+                patch("app.services.update_check_service.record_pending_install") as record_pending,
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(app_exe)),
+            ):
                 launch_prepared_update(
                     prepared,
-                    restart_argv=["CrawlerWebPortal.exe", "--port", "8000"],
+                    restart_argv=[str(app_exe), "--port", "8000"],
                     popen=popen,
                 )
 
         argv = popen.call_args.args[0]
-        self.assertIn("entry.updater_helper", argv)
+        self.assertEqual(Path(argv[0]), resolved_helper_exe)
         self.assertIn("--manifest", argv)
         self.assertIn(os.fspath(manifest), argv)
         self.assertIn("--signature", argv)
         self.assertIn(os.fspath(signature), argv)
-        self.assertEqual(popen.call_args.kwargs, {"shell": False})
+        self.assertIn("--install-dir", argv)
+        self.assertFalse(popen.call_args.kwargs["shell"])
+        self.assertTrue(popen.call_args.kwargs["close_fds"])
+        self.assertEqual(
+            popen.call_args.kwargs["creationflags"],
+            getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         record_pending.assert_called_once()
 
     def test_update_ui_describes_only_mandatory_verification_layers(self):

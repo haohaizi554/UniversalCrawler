@@ -69,6 +69,39 @@ def test_scan_secrets_detects_private_key_marker(tmp_path, monkeypatch):
     assert any("private key" in finding.reason for finding in findings)
 
 
+def test_scan_secrets_ignores_sensitive_marker_removed_from_worktree(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    monkeypatch.setenv("UCRAWL_RELEASE_SECRETS_DIR", str(tmp_path / "outside"))
+    marker = "-----" + "BEGIN " + "PRIVATE KEY" + "-----"
+    tracked = repo / "example.txt"
+    tracked.write_text(marker, encoding="utf-8")
+    subprocess.run(["git", "add", "example.txt"], cwd=repo, check=True, shell=False)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Secret Scan Test",
+            "commit",
+            "-m",
+            "add fixture",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    tracked.write_text("fixture removed\n", encoding="utf-8")
+
+    findings = bootstrap.scan_repository_for_secrets(project_root=repo)
+
+    assert findings == []
+
+
 def test_scan_secrets_detects_dangerous_untracked_signing_file(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

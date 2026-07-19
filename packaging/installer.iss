@@ -28,6 +28,9 @@
 #ifndef WebUIExeName
   #define WebUIExeName "CrawlerWebPortal.exe"
 #endif
+#ifndef UpdaterHelperExeName
+  #define UpdaterHelperExeName "updater_helper.exe"
+#endif
 #ifndef WebUIDisplayName
   #define WebUIDisplayName "Crawler Web Portal"
 #endif
@@ -209,6 +212,15 @@ begin
     Result := Result + ' image';
 end;
 
+function ShouldCompleteHotUpdate(): Boolean;
+var
+  HandoffPath: String;
+begin
+  HandoffPath := ExpandConstant('{param:UCrawlRestartHandoff|}');
+  Result := (HandoffPath <> '') and FileExists(HandoffPath);
+end;
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Parameters: "--app-name ""{#AppName}"" --register-file-associations{code:GetAssociationKinds} --set-default-file-associations"; StatusMsg: "正在配置默认打开方式..."; Flags: waituntilterminated runhidden skipifsilent; Check: ShouldOpenAssociationSettings
+Filename: "{app}\{#UpdaterHelperExeName}"; Parameters: "--complete-install --restart-handoff ""{param:UCrawlRestartHandoff|}"""; StatusMsg: "正在完成更新并重启应用..."; Flags: nowait runhidden skipifdoesntexist; Check: ShouldCompleteHotUpdate
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent unchecked

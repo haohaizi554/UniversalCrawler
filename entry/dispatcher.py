@@ -32,7 +32,15 @@ class Mode(str, Enum):
     REPORT = "report"            # 项目代码量统计与 HTML 报告
 
 FROZEN_CONSOLE_EXE_NAME = "UCrawlCLI.exe"
-_CONSOLE_REQUIRED_MODES = frozenset({Mode.CLI, Mode.INTERACTIVE})
+_CONSOLE_REQUIRED_MODES = frozenset(
+    {
+        Mode.CLI,
+        Mode.INTERACTIVE,
+        Mode.TEST,
+        Mode.REPORT,
+    }
+)
+_PERSISTENT_CONSOLE_MODES = frozenset({Mode.CLI, Mode.TEST})
 
 
 class _MenuUnavailable(Exception):
@@ -530,15 +538,19 @@ def _spawn_frozen_console_mode(mode: Mode, argv: Sequence[str]) -> int:
             stream.write(f"error: missing frozen console launcher: {console_exe}\n")
         return 2
     command = [str(console_exe), "--mode", mode.value, *list(argv)]
-    if mode is Mode.CLI and not argv and os.name == "nt":
-        # 单次执行 ``UCrawlCLI --mode cli`` 只会打印 argparse 帮助后退出。
-        # 显式保留命令行窗口，让启动中心打开的终端可继续使用；``/D`` 用于禁用
-        # 用户 AutoRun 钩子，固定的可执行文件名也能避免把安装路径拼进 cmd 文本。
+    if mode in _PERSISTENT_CONSOLE_MODES and not argv and os.name == "nt":
+        # CLI 帮助和安装包自检都可能在数秒内结束。由启动中心选择这些模式时
+        # 保留终端，既让 CLI 可继续输入，也让自检结果不会随进程退出而闪退。
+        # ``/D`` 禁用用户 AutoRun 钩子，固定可执行文件名则避免把安装路径
+        # 拼入 cmd 文本后再次经历一层转义。
         comspec = os.environ.get("COMSPEC") or str(
             Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
         )
+        console_arguments = [FROZEN_CONSOLE_EXE_NAME, "--mode", mode.value]
+        if mode is Mode.CLI:
+            console_arguments.append("--help")
         help_command = subprocess.list2cmdline(
-            [FROZEN_CONSOLE_EXE_NAME, "--mode", mode.value, "--help"]
+            console_arguments
         )
         command = [comspec, "/D", "/K", help_command]
     try:

@@ -14,6 +14,36 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+_ROOT_HELP_EPILOG = """\
+快速上手:
+  安装版 / 免安装包:
+    UCrawlCLI.exe platforms
+    UCrawlCLI.exe interactive
+
+  源码运行:
+    python main.py --mode cli platforms
+    python main.py --mode cli interactive
+
+常用任务:
+  ucrawl platforms
+      查看平台 ID、中文名称和可用别名。
+  ucrawl search --source douyin "关键词" --max-items 20 --pretty
+      搜索并下载；使用 --no-download 可只解析列表。
+  ucrawl download --source bilibili "https://example.com/video" --save-dir "D:/Downloads" --pretty
+      直接下载已知媒体或分享链接。
+  ucrawl scan "D:/Downloads" --pretty
+      扫描本地媒体目录并输出结构化结果。
+
+继续了解:
+  ucrawl <子命令> --help
+  ucrawl <平台> --help
+  ucrawl <平台> <search|download> --help
+
+说明:
+  上述 ucrawl 是安装到 PATH 后的命令名。免安装包可将其替换为
+  UCrawlCLI.exe；源码态可替换为 python main.py --mode cli。
+"""
+
 
 def build_parser(
     platforms: Sequence[CliPlatform] | None = None,
@@ -48,6 +78,7 @@ def build_parser(
         prog="ucrawl",
         description="UCrawl 通用爬虫命令行",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_ROOT_HELP_EPILOG,
     )
     parser.add_argument("--version", "-V", action="store_true", help="显示版本")
     subparsers = parser.add_subparsers(dest="main_command", title="子命令")

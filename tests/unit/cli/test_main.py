@@ -43,6 +43,29 @@ class CliNoArgsTests(unittest.TestCase):
             result = main([])
         self.assertEqual(result, 0)
 
+
+class CliHelpGuideTests(unittest.TestCase):
+    """顶层帮助应让源码用户与免安装包用户都能直接开始操作。"""
+
+    def test_root_help_contains_entry_forms_examples_and_next_step(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser(
+            (
+                CliPlatform("douyin", "抖音", ("dy",)),
+                CliPlatform("bilibili", "Bilibili", ("bili", "bl")),
+            )
+        )
+        help_text = parser.format_help()
+
+        self.assertIn("快速上手", help_text)
+        self.assertIn("UCrawlCLI.exe platforms", help_text)
+        self.assertIn("python main.py --mode cli platforms", help_text)
+        self.assertIn('ucrawl search --source douyin "关键词"', help_text)
+        self.assertIn("ucrawl <子命令> --help", help_text)
+
+
 class CliSearchSubcommandTests(unittest.TestCase):
     """search 子命令参数解析测试。"""
 

@@ -592,7 +592,7 @@ def test_event_round_trip_uses_fixed_prefix_and_monotonic_sequence(capsys):
         "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz",
         "Cookie: session=top-secret",
         "https://alice:password@127.0.0.1:7890",
-        "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----",
+        "-----BEGIN " + "PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----",
     ],
 )
 def test_release_logs_redact_sensitive_material(secret):

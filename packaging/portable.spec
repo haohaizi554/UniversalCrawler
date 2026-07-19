@@ -174,8 +174,9 @@ launcher_exe = EXE(
     icon=str(icon_file) if icon_file.exists() else None,
 )
 
-# CLI/Interactive 依赖真实 stdin/stdout。窗口子系统启动中心选择这两种模式时，
-# dispatcher 会启动本 console=True 入口，并透传 --mode 与其余参数。
+# CLI/Interactive/Test/Report 依赖真实标准流，或需要向用户保留运行结果。
+# 窗口子系统启动中心选择这些模式时，dispatcher 会启动本 console=True
+# 入口，并透传 --mode 与其余参数。
 cli_launcher_exe = EXE(
     pyz,
     a.scripts,
@@ -247,7 +248,7 @@ updater_helper_exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     icon=str(icon_file) if icon_file.exists() else None,
 )

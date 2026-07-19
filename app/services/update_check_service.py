@@ -189,6 +189,8 @@ def launch_prepared_update(
 ) -> Any:
     """只使用 PreparedUpdate 中由服务端保存的路径启动 helper，不接收前端自报路径。"""
 
+    if not getattr(sys, "frozen", False):
+        raise UpdateCheckError("automatic update installation requires a packaged application")
     installer_path = Path(prepared.installer_path)
     manifest_path = Path(prepared.manifest_path)
     signature_path = Path(prepared.signature_path)
@@ -201,10 +203,12 @@ def launch_prepared_update(
             raise UpdateCheckError(f"prepared update {label} is missing")
     log_path = Path(prepared.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    install_root = Path(sys.executable).resolve().parent
+    helper_exe = install_root / "updater_helper.exe"
+    if not helper_exe.is_file():
+        raise UpdateCheckError(f"packaged updater helper is missing: {helper_exe}")
     argv = [
-        sys.executable,
-        "-m",
-        "entry.updater_helper",
+        os.fspath(helper_exe),
         "--installer",
         os.fspath(installer_path),
         "--manifest",
@@ -215,20 +219,25 @@ def launch_prepared_update(
         prepared.version,
         "--log-path",
         os.fspath(log_path),
+        "--install-dir",
+        os.fspath(install_root),
         "--restart-argv-json",
         json.dumps([str(item) for item in restart_argv]),
         "--wait-pid",
         str(os.getpid()),
     ]
-    helper_exe = Path(sys.executable).with_name("updater_helper.exe")
-    if getattr(sys, "frozen", False) and helper_exe.is_file():
-        argv = [os.fspath(helper_exe), *argv[3:]]
     record_pending_install(
         version=prepared.version,
         installer_path=os.fspath(installer_path),
         log_path=os.fspath(log_path),
     )
-    return popen(argv, shell=False)
+    process_kwargs: dict[str, Any] = {
+        "shell": False,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return popen(argv, **process_kwargs)
 
 
 def normalize_version(value: Any) -> str:

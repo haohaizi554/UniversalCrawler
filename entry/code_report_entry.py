@@ -73,7 +73,12 @@ def _select_project_root() -> Path | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """统计显式或用户选择的源码项目，生成报告后交给默认浏览器打开。"""
+    """统计显式或用户选择的源码项目，生成报告后交给默认浏览器打开。
+
+    扫描根目录属于一次性输入，报告则属于应用生成的用户数据。两者必须分开：
+    安装目录或被扫描项目可能只读，也不应因为生成报告而污染源码工作树。
+    """
+    from app.utils.runtime_paths import user_data_root
     from count_project import main as run_report
 
     forwarded = list(argv) if argv is not None else []
@@ -86,12 +91,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if project_root is None:
         print("未选择项目目录，代码量报告已取消。", file=sys.stderr)
         return 2
-    report_path = project_root / "code_report.html"
 
     if not _has_option(forwarded, "--root"):
         forwarded.extend(("--root", str(project_root)))
     if not _has_option(forwarded, "--html"):
-        forwarded.extend(("--html", str(report_path)))
+        forwarded.extend(("--html", str(user_data_root() / "code_report.html")))
     if "--open" not in forwarded:
         forwarded.append("--open")
 

@@ -149,7 +149,7 @@ class DispatcherTests(unittest.TestCase):
             # 透传后 argv 为空也必须保留为 []，避免下游重新读取 dispatcher 的 sys.argv。
             mock_handler.assert_called_once_with([])
 
-    def test_frozen_windowed_launcher_delegates_cli_modes_to_console_exe(self):
+    def test_frozen_windowed_launcher_delegates_console_modes_to_console_exe(self):
         from entry import dispatcher
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -159,7 +159,12 @@ class DispatcherTests(unittest.TestCase):
             windowed_launcher.touch()
             console_launcher.touch()
 
-            for mode in (dispatcher.Mode.CLI, dispatcher.Mode.INTERACTIVE):
+            for mode in (
+                dispatcher.Mode.CLI,
+                dispatcher.Mode.INTERACTIVE,
+                dispatcher.Mode.TEST,
+                dispatcher.Mode.REPORT,
+            ):
                 direct_handler = Mock()
                 with (
                     self.subTest(mode=mode),
@@ -269,6 +274,39 @@ class DispatcherTests(unittest.TestCase):
         )
         direct_handler.assert_not_called()
 
+    def test_frozen_windowed_launcher_keeps_default_test_results_visible(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir)
+            windowed_launcher = install_root / "UCrawlLauncher.exe"
+            console_launcher = install_root / "UCrawlCLI.exe"
+            windowed_launcher.touch()
+            console_launcher.touch()
+            comspec = r"C:\Windows\System32\cmd.exe"
+            direct_handler = Mock()
+            with (
+                patch.object(dispatcher.sys, "frozen", True, create=True),
+                patch.object(dispatcher.sys, "executable", str(windowed_launcher)),
+                patch.object(dispatcher.subprocess, "Popen") as popen,
+                patch.object(dispatcher, "_HANDLERS", {dispatcher.Mode.TEST: direct_handler}),
+                patch.dict(dispatcher.os.environ, {"COMSPEC": comspec}),
+            ):
+                result = dispatcher._dispatch(dispatcher.Mode.TEST, [])
+
+        resolved_root = install_root.resolve()
+        console_command = subprocess.list2cmdline(
+            ["UCrawlCLI.exe", "--mode", "test"]
+        )
+        self.assertEqual(result, 0)
+        popen.assert_called_once_with(
+            [comspec, "/D", "/K", console_command],
+            cwd=str(resolved_root),
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            shell=False,
+        )
+        direct_handler.assert_not_called()
+
     def test_frozen_windowed_launcher_fails_closed_when_console_exe_is_missing(self):
         from entry import dispatcher
 
@@ -361,22 +399,37 @@ class DispatcherTests(unittest.TestCase):
     def test_code_report_entry_supplies_root_output_and_open(self):
         from entry import code_report_entry
 
-        with patch("count_project.main", return_value=0) as mocked:
+        with (
+            tempfile.TemporaryDirectory() as user_data_dir,
+            patch.dict(
+                os.environ,
+                {"UCRAWL_USER_DATA_ROOT": user_data_dir},
+            ),
+            patch("count_project.main", return_value=0) as mocked,
+        ):
             self.assertEqual(code_report_entry.main([]), 0)
 
         forwarded = mocked.call_args.args[0]
         self.assertIn("--root", forwarded)
         self.assertIn("--html", forwarded)
         self.assertIn("--open", forwarded)
-        self.assertTrue(str(forwarded[forwarded.index("--html") + 1]).endswith("code_report.html"))
+        self.assertEqual(
+            Path(forwarded[forwarded.index("--html") + 1]),
+            Path(user_data_dir) / "code_report.html",
+        )
 
     def test_code_report_entry_selects_project_when_not_running_from_source_tree(self):
         from entry import code_report_entry
 
         selected_root = Path(__file__).resolve().parent
         with (
+            tempfile.TemporaryDirectory() as user_data_dir,
             patch.object(code_report_entry, "_discover_default_project_root", return_value=None),
             patch.object(code_report_entry, "_select_project_root", return_value=selected_root),
+            patch.dict(
+                os.environ,
+                {"UCRAWL_USER_DATA_ROOT": user_data_dir},
+            ),
             patch("count_project.main", return_value=0) as mocked,
         ):
             self.assertEqual(code_report_entry.main([]), 0)
@@ -388,7 +441,7 @@ class DispatcherTests(unittest.TestCase):
         )
         self.assertEqual(
             Path(forwarded[forwarded.index("--html") + 1]),
-            selected_root / "code_report.html",
+            Path(user_data_dir) / "code_report.html",
         )
 
     def test_code_report_entry_aborts_when_installed_user_cancels_project_selection(self):
@@ -407,7 +460,8 @@ class DispatcherTests(unittest.TestCase):
         from entry import code_report_entry
 
         with (
-            tempfile.TemporaryDirectory() as temp_dir,
+            tempfile.TemporaryDirectory() as project_dir,
+            tempfile.TemporaryDirectory() as user_data_dir,
             patch.object(
                 code_report_entry,
                 "_discover_default_project_root",
@@ -418,14 +472,45 @@ class DispatcherTests(unittest.TestCase):
                 "_select_project_root",
                 side_effect=AssertionError("explicit root must bypass picker"),
             ),
+            patch.dict(
+                os.environ,
+                {"UCRAWL_USER_DATA_ROOT": user_data_dir},
+            ),
             patch("count_project.main", return_value=0) as mocked,
         ):
-            self.assertEqual(code_report_entry.main(["--root", temp_dir]), 0)
+            self.assertEqual(code_report_entry.main(["--root", project_dir]), 0)
 
         forwarded = mocked.call_args.args[0]
         self.assertEqual(
             Path(forwarded[forwarded.index("--html") + 1]),
-            Path(temp_dir).resolve() / "code_report.html",
+            Path(user_data_dir) / "code_report.html",
+        )
+
+    def test_code_report_entry_preserves_explicit_html_output(self):
+        from entry import code_report_entry
+
+        with (
+            tempfile.TemporaryDirectory() as project_dir,
+            tempfile.TemporaryDirectory() as output_dir,
+            patch("count_project.main", return_value=0) as mocked,
+        ):
+            explicit_output = Path(output_dir) / "custom-report.html"
+            self.assertEqual(
+                code_report_entry.main(
+                    [
+                        "--root",
+                        project_dir,
+                        "--html",
+                        str(explicit_output),
+                    ]
+                ),
+                0,
+            )
+
+        forwarded = mocked.call_args.args[0]
+        self.assertEqual(
+            Path(forwarded[forwarded.index("--html") + 1]),
+            explicit_output,
         )
 
     def test_run_with_prompt_returns_none_exits_zero(self):

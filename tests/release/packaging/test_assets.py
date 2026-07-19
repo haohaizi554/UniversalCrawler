@@ -1095,6 +1095,19 @@ class LauncherTemplateTests(unittest.TestCase):
         source = UPDATER_HELPER_LAUNCHER.read_text(encoding="utf-8")
         self.assertIn("from entry.updater_helper import main", source)
 
+    def test_updater_helper_is_windowed_and_installer_owns_post_install_restart(self):
+        """helper 不显示空白控制台，且不得同步等待会覆盖自身的安装器。"""
+        spec_source = SPEC_FILE.read_text(encoding="utf-8")
+        helper_block = spec_source.split("updater_helper_exe = EXE(", 1)[1].split(
+            ")\n",
+            1,
+        )[0]
+        installer_source = INSTALLER_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("console=False", helper_block)
+        self.assertIn("UCrawlRestartHandoff", installer_source)
+        self.assertIn("--complete-install", installer_source)
+
     def test_spec_consumes_tracked_launchers_without_rewriting_them(self):
         source = SPEC_FILE.read_text(encoding="utf-8")
         for name in (

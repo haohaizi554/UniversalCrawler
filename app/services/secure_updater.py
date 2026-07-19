@@ -1172,9 +1172,11 @@ class InstallerRunner:
         *,
         package_verifier: PackageVerifier,
         run_func: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+        popen_func: Callable[..., subprocess.Popen] = subprocess.Popen,
     ) -> None:
         self.package_verifier = package_verifier
         self._run = run_func
+        self._popen = popen_func
 
     def run_verified_installer(self, path: Path, asset: UpdateAsset, *, version: str, log_path: Path | None = None) -> InstallResult:
         self.package_verifier.verify(path, asset)
@@ -1192,14 +1194,73 @@ class InstallerRunner:
         )
         return InstallResult(exit_code=int(result.returncode), succeeded=succeeded, log_path=log_path)
 
+    def launch_verified_installer(
+        self,
+        path: Path,
+        asset: UpdateAsset,
+        *,
+        version: str,
+        log_path: Path,
+        install_dir: Path,
+        restart_handoff_path: Path | None,
+    ) -> subprocess.Popen:
+        """验证后异步启动会覆盖当前安装目录的 Inno 安装器。
+
+        updater helper 本身也位于安装目录。若在 helper 内同步等待安装器，
+        Windows Restart Manager 会要求 helper 退出，而 helper 又在等待安装器，
+        最终形成死锁。这里仅完成最后一次校验与进程交接，让 helper 随即退出；
+        安装成功后的重启由 Inno 调用新版本 helper 完成。
+        """
+
+        if normalize_os(asset.os) != "windows" or asset.installer_type.lower() != "inno":
+            raise InstallError("detached self-update currently requires a Windows Inno installer")
+        self.package_verifier.verify(path, asset)
+        argv = self._install_argv(
+            path,
+            asset,
+            log_path,
+            install_dir=install_dir,
+            restart_handoff_path=restart_handoff_path,
+        )
+        _log_update_event(
+            "update.install.started",
+            "installer started",
+            version=version,
+            installer=asset.name,
+            detached=True,
+        )
+        process_kwargs: dict[str, Any] = {"shell": False, "close_fds": True}
+        if os.name == "nt":
+            process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = self._popen(argv, **process_kwargs)
+        _log_update_event(
+            "update.install.handoff",
+            "installer process detached from updater helper",
+            version=version,
+            installer_pid=getattr(process, "pid", 0),
+        )
+        return process
+
     @staticmethod
-    def _install_argv(path: Path, asset: UpdateAsset, log_path: Path) -> list[str]:
+    def _install_argv(
+        path: Path,
+        asset: UpdateAsset,
+        log_path: Path,
+        *,
+        install_dir: Path | None = None,
+        restart_handoff_path: Path | None = None,
+    ) -> list[str]:
         os_name = normalize_os(asset.os)
         installer_type = asset.installer_type.lower()
         if os_name == "windows" and installer_type == "msi":
             return ["msiexec.exe", "/i", str(path), "/passive", "/norestart", "/L*v", str(log_path)]
         if os_name == "windows" and installer_type == "inno":
-            return [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/LOG={log_path}"]
+            argv = [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/LOG={log_path}"]
+            if install_dir is not None:
+                argv.append(f"/DIR={install_dir}")
+            if restart_handoff_path is not None:
+                argv.append(f"/UCrawlRestartHandoff={restart_handoff_path}")
+            return argv
         if os_name == "windows" and installer_type == "nsis":
             return [str(path), "/S"]
         if os_name == "macos" and installer_type == "pkg":
