@@ -53,6 +53,19 @@ _KEY_VALUE_PAIR = re.compile(
     )
     '''
 )
+_JSON_KEY_VALUE_PAIR = re.compile(
+    r'''(?x)
+    (?P<key>"(?:\\.|[^"\\\r\n])*")
+    (?P<separator>\s*:\s*)
+    (?P<value>
+        "(?:\\.|[^"\\\r\n])*"
+        | -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?
+        | true
+        | false
+        | null
+    )
+    '''
+)
 _KEY_CASE_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _SENSITIVE_KEY_NAMES = frozenset(
@@ -142,12 +155,16 @@ def redact_release_text(text: str) -> str:
     """Return text with credential-like content removed before it can be emitted."""
 
     redacted = str(text)
+    complete_json = _redact_complete_json(redacted)
+    if complete_json is not None:
+        return complete_json
     redacted = _PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     redacted = _TRUNCATED_PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     redacted = _HEADER_FIELD.sub(_redact_sensitive_header_field, redacted)
     redacted = _BEARER_TOKEN.sub(f"Bearer {REDACTED}", redacted)
     redacted = _GITHUB_TOKEN.sub(REDACTED, redacted)
     redacted = _URL_USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", redacted)
+    redacted = _JSON_KEY_VALUE_PAIR.sub(_redact_sensitive_json_key_value_pair, redacted)
     return _KEY_VALUE_PAIR.sub(_redact_sensitive_key_value_pair, redacted)
 
 
@@ -189,6 +206,16 @@ def _redact_sensitive_header_field(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('separator')}{REDACTED}"
 
 
+def _redact_sensitive_json_key_value_pair(match: re.Match[str]) -> str:
+    try:
+        key = _strict_json_loads(match.group("key"))
+    except (json.JSONDecodeError, ValueError):
+        return match.group(0)
+    if not isinstance(key, str) or not _is_sensitive_key(key):
+        return match.group(0)
+    return f"{match.group('key')}{match.group('separator')}{json.dumps(REDACTED)}"
+
+
 def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
     if key and _is_sensitive_key(key):
         return REDACTED
@@ -228,6 +255,24 @@ def _mutable_json_value(value: JSONValue) -> JSONValue:
 
 def _reject_non_standard_json_constant(value: str) -> None:
     raise ValueError(f"release event payload contains non-standard JSON constant {value!r}")
+
+
+def _strict_json_loads(text: str) -> object:
+    return json.loads(text, parse_constant=_reject_non_standard_json_constant)
+
+
+def _redact_complete_json(text: str) -> str | None:
+    leading = text[: len(text) - len(text.lstrip())]
+    trailing = text[len(text.rstrip()) :]
+    payload_text = text.strip()
+    if not payload_text:
+        return None
+    try:
+        payload = _strict_json_loads(payload_text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    redacted = _redact_event_data(payload)
+    return f"{leading}{json.dumps(redacted, allow_nan=False, ensure_ascii=False, separators=(',', ':'))}{trailing}"
 
 
 def _timestamp_text(value: datetime) -> str:
@@ -366,10 +411,7 @@ def parse_event_line(line: str) -> ReleaseEvent | None:
     text = str(line).rstrip("\r\n")
     if not text.startswith(EVENT_PREFIX):
         return None
-    payload = json.loads(
-        text[len(EVENT_PREFIX) :],
-        parse_constant=_reject_non_standard_json_constant,
-    )
+    payload = _strict_json_loads(text[len(EVENT_PREFIX) :])
     if not isinstance(payload, Mapping):
         raise ValueError("release event payload must be a JSON object")
     return ReleaseEvent.from_payload(payload)

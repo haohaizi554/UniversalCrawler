@@ -74,6 +74,69 @@ def test_credential_text_corpus_redacts_secrets_and_preserves_benign_text(text, 
     assert all(secret not in redacted for secret in secrets)
 
 
+def test_release_text_redacts_complete_json_documents_with_nested_credentials():
+    private_key = "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----"
+    document = {
+        "api_secret": "raw-secret",
+        "nested": [
+            {"cookie": "raw-cookie"},
+            {"token": "raw-token"},
+            {"material": private_key},
+        ],
+        "monkey": "banana",
+    }
+
+    redacted = redact_release_text(f"  {json.dumps(document)}\t")
+
+    assert redacted.startswith("  ")
+    assert redacted.endswith("\t")
+    assert json.loads(redacted) == {
+        "api_secret": "[REDACTED]",
+        "nested": [
+            {"cookie": "[REDACTED]"},
+            {"token": "[REDACTED]"},
+            {"material": "[REDACTED]"},
+        ],
+        "monkey": "banana",
+    }
+    assert all(secret not in redacted for secret in ("raw-secret", "raw-cookie", "raw-token", private_key))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (["plain", {"api_secret": "array-secret"}], ["plain", {"api_secret": "[REDACTED]"}]),
+        ("plain scalar", "plain scalar"),
+        (42, 42),
+        (None, None),
+    ],
+)
+def test_release_text_round_trips_complete_strict_json_arrays_and_scalars(value, expected):
+    redacted = redact_release_text(json.dumps(value))
+
+    assert json.loads(redacted) == expected
+    assert "array-secret" not in redacted
+
+
+@pytest.mark.parametrize("value", ('"raw-secret"', "42", "null"))
+def test_release_text_redacts_sensitive_json_fragments_in_mixed_prose(value):
+    text = f'prefix {{"api_secret":{value},"monkey":"banana"}} suffix'
+
+    redacted = redact_release_text(text)
+
+    assert redacted == 'prefix {"api_secret":"[REDACTED]","monkey":"banana"} suffix'
+    assert "raw-secret" not in redacted
+
+
+def test_release_text_preserves_benign_and_malformed_json_while_redacting_sensitive_fragments():
+    benign = '{"monkey":"banana","cache_key":"diagnostic","keyframe":"value"}'
+    malformed = 'prefix {"api_secret":"raw-secret", "note":"unterminated" suffix'
+
+    assert json.loads(redact_release_text(benign)) == json.loads(benign)
+    assert redact_release_text(malformed) == 'prefix {"api_secret":"[REDACTED]", "note":"unterminated" suffix'
+    assert "raw-secret" not in redact_release_text(malformed)
+
+
 @pytest.mark.parametrize(
     ("key", "redacted"),
     [
