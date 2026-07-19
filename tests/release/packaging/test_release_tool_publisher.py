@@ -44,7 +44,10 @@ def release_payload(tag="v3.6.22", *, assets=()):
 
 
 def releases_response(*releases):
-    return completed([], stdout=json.dumps([list(releases)]))
+    if not releases:
+        return completed([], stdout="HTTP/2 404 Not Found\r\n\r\n{}", returncode=1)
+    assert len(releases) == 1
+    return completed([], stdout=f"HTTP/2 200 OK\r\n\r\n{json.dumps(releases[0])}")
 
 
 def tags_response(*refs):
@@ -84,7 +87,8 @@ def test_publisher_uses_argument_arrays_and_never_shell(tmp_path):
     assert args[0][args[0].index("--") + 1] == "v3.6.22"
     assert kwargs["env"] is not publisher.environment
     assert kwargs["cwd"] == str(PROJECT_ROOT)
-    assert kwargs["timeout"] > 0
+    assert kwargs["timeout"] == 60.0
+    assert any("releases/tags/v3.6.22" in value for value in run.call_args_list[0].args[0])
 
 
 def test_publisher_redacts_subprocess_output_and_raises_for_nonzero_exit(tmp_path):
@@ -117,11 +121,37 @@ def test_publisher_redacts_subprocess_output_and_raises_for_nonzero_exit(tmp_pat
 
 
 def test_publisher_converts_subprocess_timeout_to_generic_publish_error(tmp_path):
-    run = Mock(side_effect=subprocess.TimeoutExpired("gh", 30, output="token=secret"))
-    publisher = make_publisher(run)
+    lines = []
+    run = Mock(
+        side_effect=subprocess.TimeoutExpired(
+            "gh",
+            30,
+            output=b"-----BEGIN PRIVATE KEY-----\nsecret-key\n-----END PRIVATE KEY-----",
+            stderr=b"Authorization: Bearer ghp_timeoutsecret",
+        )
+    )
+    publisher = make_publisher(run, output=lines.append)
 
-    with pytest.raises(PublishError, match="^GitHub command failed$"):
+    with pytest.raises(PublishError, match="^GitHub command failed$") as caught:
         publisher.ensure_release("v3.6.22", "Release", write_notes(tmp_path / "notes.md"), repair=False)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret-key" not in "\n".join(lines)
+    assert "timeoutsecret" not in "\n".join(lines)
+
+
+def test_invalid_json_does_not_retain_raw_response_exception():
+    lines = []
+    run = Mock(return_value=completed([], stdout='HTTP/2 200 OK\r\n\r\n{"token":"ghp_jsonsecret"'))
+    publisher = make_publisher(run, output=lines.append)
+
+    with pytest.raises(PublishError) as caught:
+        publisher.verify_assets("v3.6.22", [])
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "jsonsecret" not in "\n".join(lines)
 
 
 def test_upload_skips_remote_asset_with_same_name_size_and_hash(tmp_path):
@@ -164,6 +194,7 @@ def test_upload_repairs_mismatched_asset_with_explicit_clobber(tmp_path):
     upload = run.call_args_list[1].args[0]
     assert "--clobber" in upload
     assert upload.index("--clobber") < upload.index("--")
+    assert run.call_args_list[1].kwargs["timeout"] == 7200.0
 
 
 def test_upload_requires_repair_when_remote_digest_is_unavailable(tmp_path):
@@ -263,7 +294,10 @@ def test_ensure_tag_requires_a_canonical_full_commit_sha():
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("tag", ("-v3", "v..3", "v@{3", "v\\3", "v3.", "v3.lock", "v/3"))
+@pytest.mark.parametrize(
+    "tag",
+    ("-v3", "v..3", "v@{3", "v\\3", "v3.", "v3.lock", "v/3", "v3.6.22#x", "v3.6.22%2f", "v{3}"),
+)
 def test_ensure_tag_rejects_unsafe_refs(tag):
     run = Mock()
     publisher = make_publisher(run)
@@ -272,6 +306,17 @@ def test_ensure_tag_rejects_unsafe_refs(tag):
         publisher.ensure_tag(tag, "a" * 40)
 
     run.assert_not_called()
+
+
+def test_version_tag_is_normalized_and_percent_encoded_in_api_paths():
+    tag = {"ref": "refs/tags/v3.6.22", "object": {"type": "commit", "sha": "a" * 40}}
+    run = Mock(return_value=tags_response(tag))
+    publisher = make_publisher(run)
+
+    publisher.ensure_tag("v3.6.22", "a" * 40)
+
+    endpoint = run.call_args.args[0][run.call_args.args[0].index("GET") + 1]
+    assert endpoint.endswith("tags/v3.6.22")
 
 
 @pytest.mark.parametrize("repository", ("owner", "owner/repo/extra", "./repo", "owner/..", "-owner/repo"))
@@ -337,6 +382,51 @@ def test_upload_requires_regular_absolute_assets_and_uses_boundary(tmp_path):
     upload = run.call_args_list[1].args[0]
     assert upload[upload.index("--") + 2] == str(asset.resolve())
     assert "--repo" in upload
+
+
+def test_upload_rechecks_asset_snapshot_before_invoking_cli(tmp_path):
+    asset = write_asset(tmp_path / "installer.exe", b"same")
+
+    def release_read(*_args, **_kwargs):
+        asset.write_bytes(b"mutated before upload")
+        return releases_response(release_payload())
+
+    run = Mock(side_effect=release_read)
+    publisher = make_publisher(run)
+
+    with pytest.raises(ValueError, match="changed before upload"):
+        publisher.upload_assets("v3.6.22", [asset], repair=False)
+
+    assert run.call_count == 1
+
+
+def test_upload_rechecks_asset_snapshot_after_cli_returns(tmp_path):
+    asset = write_asset(tmp_path / "installer.exe", b"same")
+
+    def upload(*_args, **_kwargs):
+        asset.write_bytes(b"mutated after upload")
+        return completed([])
+
+    calls = 0
+
+    def run_process(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return releases_response(release_payload())
+        return upload(*args, **kwargs)
+
+    run = Mock(side_effect=run_process)
+    publisher = make_publisher(run)
+
+    with pytest.raises(ValueError, match="changed after upload"):
+        publisher.upload_assets("v3.6.22", [asset], repair=False)
+
+
+@pytest.mark.parametrize("keyword", ("metadata_timeout_seconds", "upload_timeout_seconds"))
+def test_publisher_rejects_invalid_operation_timeout(keyword):
+    with pytest.raises(ValueError, match="timeout"):
+        make_publisher(Mock(), **{keyword: float("inf")})
 
 
 @pytest.mark.parametrize("name", ("installer#label.exe", "directory"))
