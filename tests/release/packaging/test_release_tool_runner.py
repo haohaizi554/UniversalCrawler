@@ -50,11 +50,13 @@ class RecordingHooks:
         *,
         on_build_portable=None,
         build_installer_error: BaseException | None = None,
+        smoke_error: BaseException | None = None,
         cleanup=None,
     ) -> None:
         self.calls: list[str] = []
         self.on_build_portable = on_build_portable
         self.build_installer_error = build_installer_error
+        self.smoke_error = smoke_error
         self.on_cleanup = cleanup
         self.version_after_failure = ""
         self._version = "3.6.21"
@@ -85,6 +87,8 @@ class RecordingHooks:
 
     def run_smoke_tests(self) -> None:
         self.calls.append("smoke_test")
+        if self.smoke_error:
+            raise self.smoke_error
 
     def sign_manifest(self, request: BuildRequest) -> tuple[Path, ...]:
         self.calls.append("sign_manifest")
@@ -155,7 +159,7 @@ def test_local_debug_runs_only_version_and_selected_build_stages():
         ReleaseStage.VERSION_SYNC,
         ReleaseStage.BUILDING_PORTABLE,
         ReleaseStage.BUILDING_INSTALLER,
-        ReleaseStage.VERIFYING,
+        ReleaseStage.SMOKE_TESTING,
         ReleaseStage.SUCCEEDED,
     ]
     assert "sign_manifest" not in hooks.calls
@@ -221,6 +225,89 @@ def test_system_exit_from_cleanup_is_a_redacted_failure():
     assert [event["kind"] for event in events.events].count("result") == 1
 
 
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, GeneratorExit])
+def test_interruption_propagates_after_cleanup_without_cleanup_override(interruption):
+    def cleanup_error() -> None:
+        raise RuntimeError("cleanup must not replace interruption")
+
+    hooks = RecordingHooks(build_installer_error=interruption(), cleanup=cleanup_error)
+
+    with pytest.raises(interruption):
+        run_release_request(
+            local_debug_request(), hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken()
+        )
+
+    assert hooks.calls.count("cleanup") == 1
+
+
+def test_new_release_defers_remote_release_until_after_signed_smoke():
+    hooks = RecordingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(request, hooks.as_pipeline_hooks(), events, CancellationToken())
+
+    assert result.succeeded
+    assert hooks.calls == [
+        "apply_version",
+        "commit_version_changes",
+        "push_main",
+        "ensure_tag",
+        "build_portable",
+        "build_installer",
+        "sign_manifest",
+        "smoke_test",
+        "ensure_release",
+        "upload_assets",
+        "verify_remote_assets",
+    ]
+    assert events.stages == [
+        ReleaseStage.PREFLIGHT,
+        ReleaseStage.VERSION_SYNC,
+        ReleaseStage.SOURCE_IDENTITY,
+        ReleaseStage.BUILDING_PORTABLE,
+        ReleaseStage.BUILDING_INSTALLER,
+        ReleaseStage.SIGNING,
+        ReleaseStage.SMOKE_TESTING,
+        ReleaseStage.PUBLISHING,
+        ReleaseStage.UPLOADING,
+        ReleaseStage.VERIFYING,
+        ReleaseStage.SUCCEEDED,
+    ]
+
+
+def test_new_release_smoke_failure_does_not_create_a_remote_release():
+    hooks = RecordingHooks(smoke_error=RuntimeError("smoke failed"))
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+    )
+
+    result = run_release_request(request, hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken())
+
+    assert result.failed_stage is ReleaseStage.SMOKE_TESTING
+    assert "ensure_release" not in hooks.calls
+
+
 def test_dry_run_plans_version_and_skips_every_side_effect():
     hooks = RecordingHooks()
     events = RecordingEmitter()
@@ -232,10 +319,12 @@ def test_dry_run_plans_version_and_skips_every_side_effect():
     assert hooks.calls == ["plan_version"]
     assert ReleaseStage.VERSION_SYNC in events.stages
     assert events.skipped_stages == [
-        ReleaseStage.GIT,
+        ReleaseStage.SOURCE_IDENTITY,
         ReleaseStage.BUILDING_PORTABLE,
         ReleaseStage.BUILDING_INSTALLER,
         ReleaseStage.SIGNING,
+        ReleaseStage.SMOKE_TESTING,
+        ReleaseStage.PUBLISHING,
         ReleaseStage.UPLOADING,
         ReleaseStage.VERIFYING,
     ]
@@ -269,6 +358,7 @@ def test_valid_full_dry_run_still_calls_only_plan_hook():
         dry_run=True,
         sign_manifest=True,
         private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        release_notes_path="notes.md",
         commit_version_changes=True,
         push_main=True,
         create_or_reuse_tag=True,

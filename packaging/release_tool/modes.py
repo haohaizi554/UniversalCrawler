@@ -83,6 +83,9 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     if request.same_release_repair and mode is not ReleaseMode.SAME_RELEASE_REPAIR:
         errors.append("same release repair requires target version to equal remote version")
 
+    if request.create_or_update_release and not request.release_notes_path.strip():
+        errors.append("creating or updating a release requires release notes")
+
     if request.upload_release_assets:
         if not request.sign_manifest:
             errors.append("upload release assets requires signing the manifest")
@@ -105,6 +108,15 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
             errors.append("new release signing requires committing applied version changes")
         if not request.create_or_reuse_tag:
             errors.append("new release signing requires creating or reusing the release tag")
+
+    if (
+        mode is ReleaseMode.NEW_RELEASE
+        and request.apply_version
+        and request.commit_version_changes
+        and request.create_or_reuse_tag
+        and not request.push_main
+    ):
+        errors.append("new release tag for an applied version commit requires pushing main")
 
     if mode in {
         ReleaseMode.LOCAL_DEBUG,

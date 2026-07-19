@@ -250,17 +250,19 @@ def test_local_pipeline_build_stages_share_one_request_lock():
     validate_release_state.assert_not_called()
 
 
-def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_path):
+def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke(tmp_path):
     tool = _load_tool()
     request = BuildRequest(
         target_version="3.6.22",
         remote=RemoteReleaseInfo.available("3.6.21"),
-        run_smoke_tests=False,
+        run_smoke_tests=True,
         sign_manifest=True,
         private_key_path=str(tmp_path / "private.pem"),
+        release_notes_path=str(tmp_path / "notes.md"),
         commit_version_changes=True,
         push_main=True,
         create_or_reuse_tag=True,
+        create_or_update_release=True,
     )
     source_commit = "b" * 40
     snapshot_root = tmp_path / "snapshot"
@@ -284,6 +286,13 @@ def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_pa
             assert tag == "v3.6.22"
             assert commit == source_commit
             calls.append("remote_tag")
+
+        def ensure_release(self, tag, title, notes_path, *, repair):
+            assert tag == "v3.6.22"
+            assert title == "UniversalCrawler 3.6.22"
+            assert Path(notes_path) == tmp_path / "notes.md"
+            assert repair is False
+            calls.append("remote_release")
 
     def fake_git(argv):
         nonlocal identity_ready, tag_ready
@@ -318,7 +327,14 @@ def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_pa
         yield snapshot_root
 
     def fake_build(*_args, **kwargs):
-        calls.append("installer" if kwargs["build_installer"] else "portable")
+        if kwargs["build_portable"]:
+            portable_root = snapshot_root / "dist" / "UniversalCrawlerPro"
+            portable_root.mkdir(parents=True, exist_ok=True)
+            (portable_root / "UCrawlCLI.exe").write_bytes(b"MZ")
+            (portable_root / "BUILD_INFO.txt").write_text("build", encoding="utf-8")
+            calls.append("portable")
+        if kwargs["build_installer"]:
+            calls.append("installer")
 
     def fake_prepare(**kwargs):
         assert kwargs["source_commit"] == source_commit
@@ -326,8 +342,13 @@ def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_pa
         calls.append("manifest")
         return release_dir
 
+    def fake_smoke(*args, **_kwargs):
+        calls.append("smoke")
+        return subprocess.CompletedProcess(args[0], 0, stdout="usage", stderr="")
+
     version_plan = VersionUpdatePlan(tool.PROJECT_ROOT, "3.6.21", "3.6.22", ())
     version_result = VersionUpdateResult("3.6.21", "3.6.22", (tool.PROJECT_ROOT / "shared/version.py",))
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
     with (
         patch.object(tool, "GitHubReleasePublisher", FakePublisher),
         patch.object(tool, "plan_version_update", return_value=version_plan),
@@ -341,6 +362,11 @@ def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_pa
         patch.object(tool, "_build_binaries", side_effect=fake_build),
         patch.object(tool, "_private_key_path", return_value=tmp_path / "private.pem"),
         patch.object(tool, "_prepare_release_assets", side_effect=fake_prepare),
+        patch.object(
+            tool.subprocess,
+            "run",
+            side_effect=fake_smoke,
+        ) as smoke_run,
     ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
         result = run_release_request(request, hooks, Mock(), CancellationToken())
@@ -350,6 +376,8 @@ def test_new_release_persists_commit_and_tag_before_snapshot_and_manifest(tmp_pa
     assert calls.index("git:tag") < calls.index("validate_identity")
     assert calls.index("validate_identity") < calls.index("snapshot")
     assert calls.index("snapshot") < calls.index("manifest")
+    assert calls.index("manifest") < calls.index("smoke") < calls.index("remote_release")
+    assert smoke_run.call_args.args[0][1:] == ["--mode", "cli", "--help"]
 
 
 def test_portable_only_signed_build_does_not_validate_an_unbuilt_installer(tmp_path):
@@ -530,7 +558,7 @@ def test_pipeline_smoke_failure_blocks_success(tmp_path):
         result = run_release_request(request, hooks, Mock(), CancellationToken())
 
     assert not result.succeeded
-    assert result.failed_stage is tool.ReleaseStage.VERIFYING
+    assert result.failed_stage is tool.ReleaseStage.SMOKE_TESTING
 
 
 def test_run_build_passes_the_snapshot_project_root_to_each_build_script(tmp_path):

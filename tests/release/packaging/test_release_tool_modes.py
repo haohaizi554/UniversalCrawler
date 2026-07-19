@@ -176,13 +176,41 @@ def test_upload_release_assets_accepts_the_complete_upload_bundle():
         build_installer=True,
         sign_manifest=True,
         private_key_path="private.pem",
+        release_notes_path="notes.md",
         commit_version_changes=True,
+        push_main=True,
         create_or_reuse_tag=True,
         create_or_update_release=True,
         verify_remote_assets=True,
     )
 
     assert validate_build_request(request) == ()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_creating_or_updating_a_release_requires_notes_in_every_execution_mode(dry_run):
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        dry_run=dry_run,
+        create_or_update_release=True,
+    )
+
+    assert "creating or updating a release requires release notes" in validate_build_request(request)
+
+
+def test_new_release_tag_for_an_applied_version_commit_requires_pushing_main():
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=True,
+        commit_version_changes=True,
+        create_or_reuse_tag=True,
+    )
+
+    assert validate_build_request(request) == (
+        "new release tag for an applied version commit requires pushing main",
+    )
 
 
 def test_models_normalize_versions_and_are_frozen():
@@ -220,6 +248,7 @@ def test_dry_run_rejects_every_side_effecting_option():
         upload_release_assets=True,
         upload_public_key=True,
         private_key_path="private.pem",
+        release_notes_path="notes.md",
         verify_remote_assets=True,
     )
 

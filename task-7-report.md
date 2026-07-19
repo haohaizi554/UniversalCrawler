@@ -46,11 +46,28 @@ Implemented the cancellable release orchestration state machine.
   smoke prerequisites, and source identity requirements, while invoking only the
   version planning hook.
 
+## Third Review Fixes
+
+- Split source identity from publication. `SOURCE_IDENTITY` now establishes an
+  applied-version commit, required main push, and release tag before the immutable
+  source snapshot. The remote Release itself runs only in `PUBLISHING`, after
+  local builds, manifest signing, and the explicit `SMOKE_TESTING` stage.
+- Added preflight validation that release creation or repair always includes
+  release notes, including dry-run plan validation. A new release that applies
+  and commits a version before tagging must also push main, so the remote tag
+  cannot point at an unreachable commit.
+- `KeyboardInterrupt` and `GeneratorExit` now propagate unchanged after exactly
+  one cleanup attempt. Cleanup failures are suppressed on that interruption path,
+  preserving the original interruption while releasing request-scoped resources.
+- Added runner and real hook integration coverage for the source identity,
+  signed artifact, smoke, publication order; smoke failure prevents remote Release
+  creation. Added preflight and interruption probes.
+
 Verification:
 
 `python -m pytest tests/release/packaging/test_release_tool_runner.py tests/release/packaging/test_release_pipeline.py tests/release/packaging/test_release_tool_modes.py tests/release/packaging/test_release_tool_events.py tests/release/packaging/test_release_tool_publisher.py -q`
 
-Result: 310 passed.
+Result: 317 passed.
 
 `git diff --check`
 

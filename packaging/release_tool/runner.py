@@ -79,10 +79,13 @@ _T = TypeVar("_T")
 _PROGRESS = {
     ReleaseStage.PREFLIGHT: 0,
     ReleaseStage.VERSION_SYNC: 10,
-    ReleaseStage.GIT: 20,
+    ReleaseStage.SOURCE_IDENTITY: 20,
     ReleaseStage.BUILDING_PORTABLE: 30,
     ReleaseStage.BUILDING_INSTALLER: 50,
     ReleaseStage.SIGNING: 65,
+    ReleaseStage.SMOKE_TESTING: 70,
+    ReleaseStage.GIT: 75,
+    ReleaseStage.PUBLISHING: 75,
     ReleaseStage.UPLOADING: 85,
     ReleaseStage.VERIFYING: 95,
     ReleaseStage.SUCCEEDED: 100,
@@ -160,15 +163,18 @@ def run_release_request(
         cleaned_up = True
         hooks.cleanup()
 
+    interrupted = False
     try:
         mode = run_stage(ReleaseStage.PREFLIGHT, lambda: _preflight(request))
         if request.dry_run:
             run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.plan_version(request.target_version))
             for stage in (
-                ReleaseStage.GIT,
+                ReleaseStage.SOURCE_IDENTITY,
                 ReleaseStage.BUILDING_PORTABLE,
                 ReleaseStage.BUILDING_INSTALLER,
                 ReleaseStage.SIGNING,
+                ReleaseStage.SMOKE_TESTING,
+                ReleaseStage.PUBLISHING,
                 ReleaseStage.UPLOADING,
                 ReleaseStage.VERIFYING,
             ):
@@ -176,10 +182,10 @@ def run_release_request(
         else:
             if request.apply_version:
                 run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.apply_version(request.target_version))
-            if _needs_git_stage(request):
+            if _needs_source_identity_stage(request):
                 commit = ""
 
-                def publish_git() -> None:
+                def establish_source_identity() -> None:
                     nonlocal commit
                     if request.commit_version_changes:
                         commit = hooks.commit_version_changes(request)
@@ -187,10 +193,8 @@ def run_release_request(
                         hooks.push_main(request)
                     if request.create_or_reuse_tag:
                         hooks.ensure_tag(request, commit)
-                    if request.create_or_update_release:
-                        hooks.ensure_release(request)
 
-                run_stage(ReleaseStage.GIT, publish_git)
+                run_stage(ReleaseStage.SOURCE_IDENTITY, establish_source_identity)
             if request.build_portable:
                 run_stage(ReleaseStage.BUILDING_PORTABLE, hooks.build_portable)
             if request.build_installer:
@@ -202,20 +206,24 @@ def run_release_request(
                     return hooks.sign_manifest(request) if request.sign_manifest else ()
 
                 artifacts = run_stage(ReleaseStage.SIGNING, sign)
+            if request.run_smoke_tests:
+                run_stage(ReleaseStage.SMOKE_TESTING, hooks.run_smoke_tests)
+            if request.create_or_update_release:
+                run_stage(ReleaseStage.PUBLISHING, lambda: hooks.ensure_release(request))
             if request.upload_release_assets or request.upload_public_key:
                 run_stage(ReleaseStage.UPLOADING, lambda: hooks.upload_assets(request, artifacts))
-            if request.run_smoke_tests or request.verify_remote_assets:
-                def verify() -> None:
-                    if request.run_smoke_tests:
-                        hooks.run_smoke_tests()
-                    if request.verify_remote_assets:
-                        hooks.verify_remote_assets(request, artifacts)
-
-                run_stage(ReleaseStage.VERIFYING, verify)
+            if request.verify_remote_assets:
+                run_stage(
+                    ReleaseStage.VERIFYING,
+                    lambda: hooks.verify_remote_assets(request, artifacts),
+                )
         cancel_token.raise_if_cancelled()
         cleanup_once()
         cancel_token.raise_if_cancelled()
         cancel_token.mark_completed()
+    except (KeyboardInterrupt, GeneratorExit):
+        interrupted = True
+        raise
     except PipelineCancelled:
         _cleanup_once_safely(cleanup_once)
         emit("stage", ReleaseStage.CANCELLED)
@@ -235,6 +243,9 @@ def run_release_request(
             failed_stage=current_stage,
             error=message,
         )
+    finally:
+        if interrupted:
+            _cleanup_after_interruption(cleanup_once)
 
     emit("stage", ReleaseStage.SUCCEEDED)
     emit("result", ReleaseStage.SUCCEEDED, data={"status": "succeeded"})
@@ -362,14 +373,13 @@ def _fallback_mode(request: BuildRequest) -> ReleaseMode:
         return ReleaseMode.OFFLINE_DEBUG if request.offline_debug else ReleaseMode.LOCAL_DEBUG
 
 
-def _needs_git_stage(request: BuildRequest) -> bool:
+def _needs_source_identity_stage(request: BuildRequest) -> bool:
     return any(
         getattr(request, field)
         for field in (
             "commit_version_changes",
             "push_main",
             "create_or_reuse_tag",
-            "create_or_update_release",
         )
     )
 
@@ -378,6 +388,13 @@ def _cleanup_once_safely(cleanup: Callable[[], None]) -> None:
     try:
         cleanup()
     except (Exception, SystemExit):
+        pass
+
+
+def _cleanup_after_interruption(cleanup: Callable[[], None]) -> None:
+    try:
+        cleanup()
+    except BaseException:
         pass
 
 
