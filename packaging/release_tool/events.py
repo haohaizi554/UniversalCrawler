@@ -41,7 +41,9 @@ _GITHUB_TOKEN = re.compile(
     r"(?i)(?<![a-z0-9_])(?:gh[pours]_[a-z0-9_]+|github_pat_[a-z0-9_]+)(?![a-z0-9_])"
 )
 _URL_SCHEME = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://")
-_PROXY_ENDPOINT = re.compile(r"(?i)\b(?:https?_|all_)?proxy(?:_url)?\s*=\s*")
+_PROXY_ENDPOINT = re.compile(
+    r"(?i)\b(?:ucrawl_(?:https?|all)_proxy|(?:https?_|all_)?proxy(?:_url)?)\s*=\s*"
+)
 _KEY_VALUE_PAIR = re.compile(
     r'''(?x)
     (?P<prefix>[?&;]|(?<![A-Za-z0-9_]))

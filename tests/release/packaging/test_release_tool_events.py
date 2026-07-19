@@ -914,3 +914,46 @@ def test_emitter_and_log_writer_do_not_raise_for_huge_json_exponents(tmp_path: P
 
     assert event.message == expected
     assert path.read_text(encoding="utf-8") == f"{expected}\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    (
+        (
+            "UCRAWL_HTTP_PROXY=alice:password@host:8080",
+            "alice:password",
+            "UCRAWL_HTTP_PROXY=[REDACTED]@host:8080",
+        ),
+        (
+            'ucrawl_https_proxy="alice:password@host:8080"',
+            "alice:password",
+            'ucrawl_https_proxy="[REDACTED]@host:8080"',
+        ),
+        (
+            "UCRAWL_ALL_PROXY='alice:password@host:8080'",
+            "alice:password",
+            "UCRAWL_ALL_PROXY='[REDACTED]@host:8080'",
+        ),
+        (
+            "ucrawl_all_proxy=alice:password@host:8080",
+            "alice:password",
+            "ucrawl_all_proxy=[REDACTED]@host:8080",
+        ),
+        (
+            "UCRAWL_HTTP_PROXY=git@github.com",
+            "",
+            "UCRAWL_HTTP_PROXY=git@github.com",
+        ),
+        (
+            "OTHER_HTTP_PROXY=alice:password@host:8080",
+            "",
+            "OTHER_HTTP_PROXY=alice:password@host:8080",
+        ),
+    ),
+)
+def test_release_text_redacts_only_exact_ucrawl_proxy_environment_aliases(text, secret, expected):
+    redacted = redact_release_text(text)
+
+    assert redacted == expected
+    if secret:
+        assert secret not in redacted
