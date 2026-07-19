@@ -45,6 +45,10 @@ datas = []
 datas += optional_tree(project_root / APP_ICON_NAME, ".")
 datas += optional_tree(project_root / WEBUI_ICON_NAME, ".")
 datas += optional_tree(project_root / REPORT_ICON_NAME, ".")
+datas += optional_tree(
+    project_root / "packaging" / "release_tool" / "assets" / "release-builder.ico",
+    "packaging/release_tool/assets",
+)
 datas += optional_tree(project_root / "ffmpeg.exe", ".")
 datas += optional_tree(project_root / "ffprobe.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")

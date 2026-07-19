@@ -484,6 +484,20 @@ class SpecDataFilesTests(unittest.TestCase):
         datas = self._spec_globals["datas"]
         self.assertTrue(any(d[1] == "UI/icon" for d in datas), "UI/icon not packaged")
 
+    def test_datas_includes_release_builder_icon_at_frozen_path(self):
+        """维护工具图标必须落到其冻结态解析路径。"""
+        datas = self._spec_globals["datas"]
+        expected = (RELEASE_BUILDER_ASSETS / "release-builder.ico").resolve()
+        packaged_icons = [
+            (Path(source).resolve(), target)
+            for source, target in datas
+            if target == "packaging/release_tool/assets"
+        ]
+        self.assertEqual(
+            packaged_icons,
+            [(expected, "packaging/release_tool/assets")],
+        )
+
     def test_datas_includes_anti_detection_stealth_script(self):
         """浏览器反检测脚本必须进入 _internal 的运行时资源目录。"""
         datas = self._spec_globals["datas"]
