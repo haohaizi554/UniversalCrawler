@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import Mock
 
+import pytest
+
 from tests.support.paths import PROJECT_ROOT
 
 
@@ -75,3 +77,61 @@ def test_fetch_latest_release_downgrades_malformed_remote_payload_to_unknown(mon
 
     assert info.is_available is False
     assert info.error
+
+
+@pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
+def test_fetch_latest_release_rejects_non_finite_or_non_positive_timeouts(monkeypatch, timeout):
+    open_json = Mock()
+    monkeypatch.setattr(remote, "_open_json", open_json)
+
+    info = fetch_latest_release("haohaizi554/UniversalCrawler", environment={}, timeout_seconds=timeout)
+
+    assert info.is_available is False
+    open_json.assert_not_called()
+
+
+def test_proxy_configuration_uses_only_supplied_environment(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient.example:8080")
+    monkeypatch.setenv("NO_PROXY", "*")
+
+    assert remote._proxy_settings({}) == {}
+    assert remote._proxy_settings({"HTTPS_PROXY": "http://supplied.example:8080"}) == {
+        "https": "http://supplied.example:8080"
+    }
+    assert remote._proxy_settings(
+        {"HTTPS_PROXY": "http://supplied.example:8080", "NO_PROXY": "api.github.com"}
+    ) == {}
+
+
+def test_no_proxy_matching_supports_exact_and_suffix_names_only():
+    assert remote._matches_no_proxy("api.github.com", "github.com")
+    assert remote._matches_no_proxy("api.github.com", ".github.com")
+    assert remote._matches_no_proxy("api.github.com", "*")
+    assert not remote._matches_no_proxy("api.github.com", "notgithub.com")
+
+
+def test_open_json_rejects_responses_larger_than_the_bound(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            assert size == remote.MAX_RESPONSE_BYTES + 1
+            return b"x" * size
+
+    class Opener:
+        def open(self, _request, *, timeout):
+            assert timeout == 2
+            return Response()
+
+    monkeypatch.setattr(remote, "build_opener", lambda _handler: Opener())
+
+    with pytest.raises(ValueError, match="response exceeds"):
+        remote._open_json(
+            remote.Request("https://api.github.com/repos/owner/repo/releases/latest"),
+            environment={},
+            timeout_seconds=2,
+        )

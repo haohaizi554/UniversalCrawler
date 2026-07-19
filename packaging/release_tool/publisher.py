@@ -1,21 +1,25 @@
-"""Idempotent GitHub CLI operations for release assets."""
+"""Idempotent, pinned GitHub CLI operations for release assets."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import stat
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .events import redact_release_text
 
 
-_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+GITHUB_HOST = "github.com"
+DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 60.0
+_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class PublishError(RuntimeError):
@@ -36,19 +40,24 @@ class ReleaseAssetInfo:
         if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size < 0:
             raise ValueError("release asset size must be a non-negative integer")
         if self.digest:
-            digest = _normalise_digest(self.digest)
-            object.__setattr__(self, "digest", digest)
+            object.__setattr__(self, "digest", _normalise_digest(self.digest))
 
     @classmethod
     def from_path(cls, path: str | Path) -> "ReleaseAssetInfo":
-        asset_path = Path(path)
+        asset_path = _resolved_regular_file(path, label="release asset")
+        before = _file_snapshot(asset_path)
         hasher = hashlib.sha256()
-        with asset_path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                hasher.update(chunk)
+        try:
+            with asset_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+        except OSError as error:
+            raise ValueError("release asset is not readable") from error
+        if before != _file_snapshot(asset_path):
+            raise ValueError("release asset changed while hashing")
         return cls(
             name=asset_path.name,
-            size=asset_path.stat().st_size,
+            size=before[2],
             digest=f"sha256:{hasher.hexdigest()}",
         )
 
@@ -68,7 +77,7 @@ class ReleaseAssetInfo:
 
 
 class GitHubReleasePublisher:
-    """Publish a prebuilt release through ``gh`` without exposing credentials."""
+    """Publish prebuilt artifacts through GitHub.com without leaking credentials."""
 
     def __init__(
         self,
@@ -78,93 +87,69 @@ class GitHubReleasePublisher:
         *,
         run_process: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         project_root: str | Path | None = None,
+        subprocess_timeout_seconds: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     ) -> None:
-        if not _REPOSITORY_PATTERN.fullmatch(str(repository)):
-            raise ValueError("invalid GitHub repository")
-        self.repository = str(repository)
-        self.environment = dict(environment)
+        owner, name = _repository_components(repository)
+        timeout = float(subprocess_timeout_seconds)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("subprocess timeout must be finite and positive")
+        self._repository_path = f"{owner}/{name}"
+        self.repository = f"{GITHUB_HOST}/{self._repository_path}"
+        self.environment = {
+            str(key): str(value)
+            for key, value in environment.items()
+            if str(key).casefold() != "gh_host"
+        }
         self.output = output
         self._run_process = run_process or subprocess.run
-        self.project_root = Path(project_root) if project_root is not None else Path.cwd()
+        self.project_root = (Path(project_root) if project_root is not None else Path.cwd()).resolve()
+        self._timeout_seconds = timeout
         self.executed_uploads: list[tuple[str, ...]] = []
 
     def ensure_tag(self, tag: str, commit: str) -> None:
-        """Create a lightweight tag once, rejecting a conflicting remote tag."""
+        """Create a lightweight tag once, accepting only the requested commit."""
 
         checked_tag = _checked_tag(tag)
         checked_commit = _checked_commit(commit)
-        existing = self._execute(
-            [
-                "gh",
-                "api",
-                f"repos/{self.repository}/git/ref/tags/{checked_tag}",
-                "--method",
-                "GET",
-                "--jq",
-                ".object.sha",
-            ]
-        )
-        if existing.returncode == 0:
-            remote_commit = existing.stdout.strip()
-            if remote_commit != checked_commit:
-                raise PublishError("existing tag points to a different commit")
+        existing = self._read_tag(checked_tag)
+        if existing is not None:
+            if self._tag_commit(existing) != checked_commit:
+                raise PublishError("GitHub command failed")
             return
-        if not _is_not_found(existing):
-            _raise_for_failure(existing)
-        self._run(
-            [
-                "gh",
-                "api",
-                f"repos/{self.repository}/git/refs",
-                "--method",
+
+        self._execute(
+            self._api_command(
                 "POST",
+                f"repos/{self._repository_path}/git/refs",
                 "-f",
                 f"ref=refs/tags/{checked_tag}",
                 "-f",
                 f"sha={checked_commit}",
-            ]
+            )
         )
+        created = self._read_tag(checked_tag)
+        if created is None or self._tag_commit(created) != checked_commit:
+            raise PublishError("GitHub command failed")
 
     def ensure_release(self, tag: str, title: str, notes_path: str | Path, *, repair: bool) -> None:
-        """Create a release, or explicitly update its metadata during repair."""
+        """Create a release only for an existing tag, or repair existing metadata."""
 
         checked_tag = _checked_tag(tag)
-        command = "edit" if repair else "create"
-        completed = self._execute(
-            [
-                "gh",
-                "release",
-                command,
-                checked_tag,
-                "--repo",
-                self.repository,
-                "--title",
-                str(title),
-                "--notes-file",
-                str(Path(notes_path)),
-            ]
-        )
-        if completed.returncode == 0:
+        resolved_notes = _resolved_regular_file(notes_path, label="release notes", reject_dash=True)
+        existing = self._read_release(checked_tag)
+        if existing is not None:
+            if not repair:
+                return
+            completed = self._execute(self._release_command("edit", checked_tag, title, resolved_notes))
+            if completed.returncode:
+                raise PublishError("GitHub command failed")
+            if self._read_release(checked_tag) is None:
+                raise PublishError("GitHub command failed")
             return
-        if not repair and _is_already_exists(completed):
-            return
-        if repair and _is_not_found(completed):
-            self._run(
-                [
-                    "gh",
-                    "release",
-                    "create",
-                    checked_tag,
-                    "--repo",
-                    self.repository,
-                    "--title",
-                    str(title),
-                    "--notes-file",
-                    str(Path(notes_path)),
-                ]
-            )
-            return
-        _raise_for_failure(completed)
+
+        self._execute(self._release_command("create", checked_tag, title, resolved_notes))
+        if self._read_release(checked_tag) is None:
+            raise PublishError("GitHub command failed")
 
     def upload_assets(
         self,
@@ -177,7 +162,7 @@ class GitHubReleasePublisher:
 
         checked_tag = _checked_tag(tag)
         local_assets = _local_assets(assets)
-        remote_assets = {asset.name: asset for asset in self._release_assets(checked_tag)}
+        remote_assets = _assets_by_name(self._release_assets(checked_tag))
         normal_uploads: list[Path] = []
         repair_uploads: list[Path] = []
 
@@ -206,7 +191,7 @@ class GitHubReleasePublisher:
     ) -> tuple[ReleaseAssetInfo, ...]:
         """Read back each expected remote asset and verify size plus SHA-256 digest."""
 
-        remote_assets = {asset.name: asset for asset in self._release_assets(_checked_tag(tag))}
+        remote_assets = _assets_by_name(self._release_assets(_checked_tag(tag)))
         verified: list[ReleaseAssetInfo] = []
         for _, local in _local_assets(expected):
             remote = remote_assets.get(local.name)
@@ -221,62 +206,142 @@ class GitHubReleasePublisher:
             verified.append(remote)
         return tuple(verified)
 
-    def _release_assets(self, tag: str) -> tuple[ReleaseAssetInfo, ...]:
-        completed = self._run(
-            [
-                "gh",
-                "release",
-                "view",
-                tag,
-                "--repo",
-                self.repository,
-                "--json",
-                "assets",
-            ]
+    def _read_tag(self, tag: str) -> Mapping[str, object] | None:
+        payload = self._api_json(
+            "GET",
+            f"repos/{self._repository_path}/git/matching-refs/tags/{tag}",
         )
+        if not isinstance(payload, list):
+            raise PublishError("invalid GitHub response")
+        matching = [
+            item
+            for item in payload
+            if isinstance(item, Mapping) and item.get("ref") == f"refs/tags/{tag}"
+        ]
+        if len(matching) > 1:
+            raise PublishError("invalid GitHub response")
+        return matching[0] if matching else None
+
+    def _tag_commit(self, reference: Mapping[str, object]) -> str:
+        current: Mapping[str, object] = reference
+        seen: set[str] = set()
+        for _ in range(8):
+            object_data = current.get("object")
+            if not isinstance(object_data, Mapping):
+                raise PublishError("invalid GitHub response")
+            object_type = object_data.get("type")
+            sha = _checked_commit_response(object_data.get("sha"))
+            if object_type == "commit":
+                return sha
+            if object_type != "tag" or sha in seen:
+                raise PublishError("invalid GitHub response")
+            seen.add(sha)
+            payload = self._api_json("GET", f"repos/{self._repository_path}/git/tags/{sha}")
+            if not isinstance(payload, Mapping):
+                raise PublishError("invalid GitHub response")
+            current = payload
+        raise PublishError("invalid GitHub response")
+
+    def _read_release(self, tag: str) -> Mapping[str, object] | None:
+        payload = self._api_json(
+            "GET",
+            f"repos/{self._repository_path}/releases?per_page=100",
+            "--paginate",
+            "--slurp",
+        )
+        releases = _flatten_release_pages(payload)
+        matching = [release for release in releases if release.get("tag_name") == tag]
+        if len(matching) > 1:
+            raise PublishError("invalid GitHub response")
+        return matching[0] if matching else None
+
+    def _release_assets(self, tag: str) -> tuple[ReleaseAssetInfo, ...]:
         try:
-            payload = json.loads(completed.stdout)
-            assets = payload["assets"]
+            release = self._read_release(tag)
+            if release is None:
+                raise ValueError("release is missing")
+            assets = release.get("assets")
             if not isinstance(assets, list):
                 raise ValueError("assets is not a list")
-            parsed_assets = []
+            parsed = []
             for asset in assets:
                 if not isinstance(asset, Mapping):
                     raise ValueError("release asset is not an object")
-                parsed_assets.append(ReleaseAssetInfo.from_json(asset))
-            return tuple(parsed_assets)
-        except (TypeError, ValueError, json.JSONDecodeError, KeyError) as error:
+                parsed.append(ReleaseAssetInfo.from_json(asset))
+            return tuple(parsed)
+        except (TypeError, ValueError, json.JSONDecodeError, KeyError, PublishError) as error:
             raise PublishError("invalid release asset response") from error
 
     def _upload(self, tag: str, assets: Sequence[Path], *, clobber: bool) -> None:
         if not assets:
             return
-        argv = ["gh", "release", "upload", tag, *(str(path) for path in assets), "--repo", self.repository]
+        argv = ["gh", "release", "upload", "--repo", self.repository]
         if clobber:
             argv.append("--clobber")
+        argv.extend(["--", tag, *(str(path) for path in assets)])
         self._run(argv)
         self.executed_uploads.append(tuple(str(path) for path in assets))
+
+    def _release_command(self, command: str, tag: str, title: str, notes_path: Path) -> list[str]:
+        argv = [
+            "gh",
+            "release",
+            command,
+            "--repo",
+            self.repository,
+            "--title",
+            str(title),
+            "--notes-file",
+            str(notes_path),
+        ]
+        if command == "create":
+            argv.append("--verify-tag")
+        argv.extend(["--", tag])
+        return argv
+
+    def _api_json(self, method: str, endpoint: str, *extra: str) -> object:
+        completed = self._run(self._api_command(method, endpoint, *extra))
+        try:
+            return json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise PublishError("invalid GitHub response") from error
+
+    def _api_command(self, method: str, endpoint: str, *extra: str) -> list[str]:
+        return [
+            "gh",
+            "api",
+            "--hostname",
+            GITHUB_HOST,
+            "--method",
+            method,
+            endpoint,
+            *extra,
+        ]
 
     def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         completed = self._execute(argv)
         if completed.returncode:
-            _raise_for_failure(completed)
+            raise PublishError("GitHub command failed")
         return completed
 
     def _execute(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        completed = self._run_process(
-            list(argv),
-            cwd=str(Path(self.project_root)),
-            env=dict(self.environment),
-            capture_output=True,
-            text=True,
-            shell=False,
-            check=False,
-        )
-        for line in str(completed.stdout or "").splitlines():
-            self.output(redact_release_text(line))
-        for line in str(completed.stderr or "").splitlines():
-            self.output(redact_release_text(line))
+        try:
+            completed = self._run_process(
+                list(argv),
+                cwd=str(Path(self.project_root)),
+                env=dict(self.environment),
+                capture_output=True,
+                text=True,
+                shell=False,
+                check=False,
+                timeout=self._timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise PublishError("GitHub command failed") from error
+        for stream in (completed.stdout, completed.stderr):
+            redacted = redact_release_text(str(stream or ""))
+            for line in redacted.splitlines():
+                self.output(line)
         return completed
 
 
@@ -295,7 +360,9 @@ def _local_assets(
     for asset in assets:
         if isinstance(asset, ReleaseAssetInfo):
             raise ValueError("release asset paths are required for upload and verification")
-        path = Path(asset)
+        if "#" in str(asset):
+            raise ValueError("release asset path cannot contain #")
+        path = _resolved_regular_file(asset, label="release asset")
         info = ReleaseAssetInfo.from_path(path)
         if info.name in names:
             raise ValueError(f"duplicate release asset name: {info.name}")
@@ -304,32 +371,97 @@ def _local_assets(
     return tuple(resolved)
 
 
+def _assets_by_name(assets: Sequence[ReleaseAssetInfo]) -> dict[str, ReleaseAssetInfo]:
+    result: dict[str, ReleaseAssetInfo] = {}
+    for asset in assets:
+        if asset.name in result:
+            raise PublishError("duplicate release asset name")
+        result[asset.name] = asset
+    return result
+
+
+def _resolved_regular_file(path: str | Path, *, label: str, reject_dash: bool = False) -> Path:
+    value = str(path)
+    if reject_dash and value == "-":
+        raise ValueError(f"{label} cannot be -")
+    try:
+        resolved = Path(path).resolve(strict=True)
+        _file_snapshot(resolved)
+        with resolved.open("rb"):
+            pass
+        return resolved
+    except OSError as error:
+        raise ValueError(f"{label} must be an existing readable regular file") from error
+
+
+def _file_snapshot(path: Path) -> tuple[int, int, int, int]:
+    result = path.stat()
+    if not stat.S_ISREG(result.st_mode):
+        raise ValueError("release asset must be a regular file")
+    return result.st_dev, result.st_ino, result.st_size, result.st_mtime_ns
+
+
 def _checked_tag(tag: str) -> str:
     value = str(tag).strip()
-    if not value or any(character.isspace() or character in "~^:?*[\\" for character in value):
+    invalid = (
+        not value
+        or value.startswith("-")
+        or value.startswith(".")
+        or "/" in value
+        or ".." in value
+        or "@{" in value
+        or value == "@"
+        or value.endswith((".", ".lock"))
+        or any(ord(character) < 32 or character in " \\~^:?*[" for character in value)
+    )
+    if invalid:
         raise ValueError("invalid release tag")
     return value
 
 
 def _checked_commit(commit: str) -> str:
     value = str(commit).strip().casefold()
-    if not re.fullmatch(r"[0-9a-f]{7,64}", value):
-        raise ValueError("invalid commit SHA")
+    if not _SHA_PATTERN.fullmatch(value):
+        raise ValueError("full commit SHA is required")
     return value
 
 
-def _is_not_found(completed: subprocess.CompletedProcess[str]) -> bool:
-    text = f"{completed.stdout or ''}\n{completed.stderr or ''}".casefold()
-    return "404" in text or "not found" in text
+def _checked_commit_response(value: object) -> str:
+    if not isinstance(value, str):
+        raise PublishError("invalid GitHub response")
+    try:
+        return _checked_commit(value)
+    except ValueError as error:
+        raise PublishError("invalid GitHub response") from error
 
 
-def _is_already_exists(completed: subprocess.CompletedProcess[str]) -> bool:
-    text = f"{completed.stdout or ''}\n{completed.stderr or ''}".casefold()
-    return "already exists" in text or "already_exists" in text
+def _flatten_release_pages(payload: object) -> tuple[Mapping[str, object], ...]:
+    pages = payload if isinstance(payload, list) else None
+    if pages is None:
+        raise PublishError("invalid GitHub response")
+    if pages and all(isinstance(page, list) for page in pages):
+        entries = [entry for page in pages for entry in page]
+    else:
+        entries = pages
+    if not all(isinstance(entry, Mapping) for entry in entries):
+        raise PublishError("invalid GitHub response")
+    return tuple(entries)
 
 
-def _raise_for_failure(completed: subprocess.CompletedProcess[Any]) -> None:
-    raise PublishError(f"command failed with exit code {completed.returncode}")
+def _repository_components(repository: str) -> tuple[str, str]:
+    parts = str(repository).split("/")
+    if len(parts) != 2 or not all(_is_safe_component(part) for part in parts):
+        raise ValueError("invalid GitHub repository")
+    return parts[0], parts[1]
+
+
+def _is_safe_component(value: str) -> bool:
+    return bool(
+        _COMPONENT_PATTERN.fullmatch(value)
+        and value not in {".", ".."}
+        and not value.startswith("-")
+        and not value.endswith(".")
+    )
 
 
 __all__ = ["GitHubReleasePublisher", "PublishError", "ReleaseAssetInfo"]
