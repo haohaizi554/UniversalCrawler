@@ -15,6 +15,7 @@ from app.web.rest_router import build_rest_router
 from app.web.session_runtime import configured_allowed_origins
 from app.web.ws_router import build_ws_router
 from shared.runtime_adapters import run_cli_search
+from shared.version import __version__
 
 # 仅为旧导入提供默认会话，实际请求必须从 session_context 取控制器。
 controller = None
@@ -39,7 +40,8 @@ def _configured_index_html(index_path, config_manager) -> str:
     if theme not in {"light", "dark"}:
         theme = "light"
     html = index_path.read_text(encoding="utf-8")
-    return html.replace('data-theme="light"', f'data-theme="{theme}"', 1)
+    html = html.replace('data-theme="light"', f'data-theme="{theme}"', 1)
+    return html.replace("__UCRAWL_VERSION__", f"v{__version__}")
 
 
 def _apply_no_cache_headers(response):
@@ -68,7 +70,7 @@ mimetypes.init()
 
 def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
-    app = FastAPI(title="Universal Crawler Pro", version="3.6.21", lifespan=lifespan)
+    app = FastAPI(title="Universal Crawler Pro", version=__version__, lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,

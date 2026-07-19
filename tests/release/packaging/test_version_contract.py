@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from app.web.server import _configured_index_html
+from shared.version import __version__
 from tests.support.paths import PROJECT_ROOT
 
 
@@ -93,6 +96,44 @@ def test_project_meta_imports_the_canonical_version():
     assert "from shared.version import __version__" in source
     assert "PACKAGE_VERSION = __version__" in source
     assert '_project_field("version")' not in source
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "app/web/server.py",
+        "app/web/static/index.html",
+        "app/web/static/app.js",
+        "app/ui/main_window.py",
+        "app/ui/layout/status_bar.py",
+        "app/services/frontend_state_service.py",
+        "app/services/frontend_mock_snapshot.py",
+    ],
+)
+def test_runtime_version_consumers_do_not_embed_product_versions(relative_path):
+    source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert re.search(r"\bv?3\.\d+\.\d+\b", source) is None
+
+
+class FakeConfig:
+    def __init__(self, theme: str):
+        self.theme = theme
+
+    def get(self, section: str, key: str, default: str) -> str:
+        assert (section, key, default) == ("common", "theme", "light")
+        return self.theme
+
+
+def test_server_injects_canonical_version_into_first_frame_html(tmp_path):
+    index = tmp_path / "index.html"
+    index.write_text('<html data-theme="light">__UCRAWL_VERSION__</html>', encoding="utf-8")
+
+    html = _configured_index_html(index, FakeConfig(theme="dark"))
+
+    assert 'data-theme="dark"' in html
+    assert "__UCRAWL_VERSION__" not in html
+    assert f"v{__version__}" in html
 
 
 def test_inno_setup_requires_an_injected_app_version():

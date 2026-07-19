@@ -35,13 +35,13 @@ function buildInitialState() {
     toolbox_items: [],
     toolbox_recent_items: [],
     app_status: {
-      running_state: "加载中",
+      running_state: "空闲中",
       download_speed: "0 B/s",
       queue_count: 0,
       active_count: 0,
       completed_count: 0,
       failed_count: 0,
-      version: "v3.6.17",
+      version: "",
     },
   };
 }
@@ -785,7 +785,7 @@ function buildMockState() {
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.17" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "" },
   };
 }
 
@@ -1199,7 +1199,8 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  byId("statusVersion").textContent = status.version || "v3.6.17";
+  const version = String(status.version || "").trim();
+  if (version) byId("statusVersion").textContent = version;
 }
 
 let updateCheckSequence = 0;
