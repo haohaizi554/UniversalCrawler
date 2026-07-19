@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import TextIO, TypeAlias
 
 from .models import ReleaseStage
@@ -21,8 +23,9 @@ JSONPrimitive: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONPrimitive | Mapping[str, "JSONValue"] | Sequence["JSONValue"]
 
 _PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----.*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
-    re.DOTALL,
+    r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*?"
+    r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
+    re.DOTALL | re.IGNORECASE,
 )
 _SENSITIVE_HEADER = re.compile(
     r"(?im)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*[^\r\n]+"
@@ -30,13 +33,13 @@ _SENSITIVE_HEADER = re.compile(
 _BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
 _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _SENSITIVE_QUERY_VALUE = re.compile(
-    r"(?i)([?&;](?:access[_-]?)?(?:token|api[_-]?key|password|passwd|secret|key|authorization|cookie)\s*=)[^&#\s]*"
+    r"(?i)([?&;][^=&\s]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^=&\s]*\s*=)[^&#\s]*"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:access[_-]?)?(?:token|api[_-]?key|password|passwd|secret|private[_-]?key|authorization|cookie)\s*=\s*[^\s,;]+"
+    r"(?i)\b[^\s=,;]*(?:token|key|password|passwd|secret|authorization|cookie|credential)[^\s=,;]*\s*=\s*[^\s,;#&]+"
 )
 _SENSITIVE_DATA_KEY = re.compile(
-    r"(?i)(?:token|api[_-]?key|password|passwd|secret|private[_-]?key|authorization|cookie|credential)"
+    r"(?i)(?:token|key|password|passwd|secret|authorization|cookie|credential)"
 )
 
 
@@ -57,7 +60,11 @@ def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
         return REDACTED
     if isinstance(value, str):
         return redact_release_text(value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("release event data must contain only finite floats")
         return value
     if isinstance(value, Mapping):
         return {
@@ -67,6 +74,26 @@ def _redact_event_data(value: object, *, key: str = "") -> JSONValue:
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
         return [_redact_event_data(item) for item in value]
     return REDACTED
+
+
+def _freeze_json_value(value: JSONValue) -> JSONValue:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_json_value(item) for key, item in value.items()})
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _mutable_json_value(value: JSONValue) -> JSONValue:
+    if isinstance(value, Mapping):
+        return {str(key): _mutable_json_value(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return [_mutable_json_value(item) for item in value]
+    return value
+
+
+def _reject_non_standard_json_constant(value: str) -> None:
+    raise ValueError(f"release event payload contains non-standard JSON constant {value!r}")
 
 
 def _timestamp_text(value: datetime) -> str:
@@ -91,6 +118,15 @@ class ReleaseEvent:
     message: str = ""
     data: Mapping[str, JSONValue] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.data, Mapping):
+            raise ValueError("release event data must be a mapping")
+        data = _redact_event_data(self.data)
+        if not isinstance(data, Mapping):  # Defensive guard for the declared event contract.
+            raise ValueError("release event data must be a mapping")
+        object.__setattr__(self, "message", redact_release_text(self.message))
+        object.__setattr__(self, "data", _freeze_json_value(data))
+
     def to_payload(self) -> dict[str, object]:
         return {
             "kind": self.kind,
@@ -99,7 +135,7 @@ class ReleaseEvent:
             "stage": self.stage.value,
             "progress": self.progress,
             "message": self.message,
-            "data": dict(self.data),
+            "data": _mutable_json_value(self.data),
         }
 
     @classmethod
@@ -173,14 +209,22 @@ class ReleaseEventEmitter:
                 stage=stage,
                 progress=progress,
                 message=redact_release_text(message),
-                data=_redact_event_data({} if data is None else data),
+                data={} if data is None else data,
             )
-            self._stream.write(
-                f"{EVENT_PREFIX}{json.dumps(event.to_payload(), ensure_ascii=False, sort_keys=True)}\n"
-            )
-            self._stream.flush()
             self._sequence = event.sequence
             self._last_progress = event.progress
+            payload = json.dumps(
+                event.to_payload(),
+                allow_nan=False,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            line = f"{EVENT_PREFIX}{payload}\n"
+            try:
+                self._stream.write(line)
+                self._stream.flush()
+            except Exception:
+                raise RuntimeError("failed to emit release event") from None
             return event
 
 
@@ -188,7 +232,10 @@ def parse_event_line(line: str) -> ReleaseEvent | None:
     text = str(line).rstrip("\r\n")
     if not text.startswith(EVENT_PREFIX):
         return None
-    payload = json.loads(text[len(EVENT_PREFIX) :])
+    payload = json.loads(
+        text[len(EVENT_PREFIX) :],
+        parse_constant=_reject_non_standard_json_constant,
+    )
     if not isinstance(payload, Mapping):
         raise ValueError("release event payload must be a JSON object")
     return ReleaseEvent.from_payload(payload)

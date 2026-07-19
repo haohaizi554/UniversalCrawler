@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -125,6 +127,148 @@ def test_emitter_recursively_redacts_hostile_message_and_data(capsys):
     assert "[REDACTED]" in line
     assert emitted.data["token"] == "[REDACTED]"
     assert emitted.data["nested"]["proxy"] == "https://[REDACTED]@127.0.0.1:7890"
+
+
+def test_emitter_redacts_nested_plain_sensitive_mapping_keys():
+    secret = "never-emit-this"
+    emitter = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC)
+
+    event = emitter.emit(
+        "warning",
+        stage=ReleaseStage.PREFLIGHT,
+        progress=10,
+        data={
+            "key": secret,
+            "private_key": secret,
+            "publication": {
+                "credentials": secret,
+                "api_key": secret,
+                "token": secret,
+                "password": secret,
+                "secret": secret,
+                "cookie": secret,
+                "authorization": secret,
+            },
+        },
+    )
+
+    assert secret not in json.dumps(event.to_payload())
+    assert event.data["key"] == "[REDACTED]"
+    assert event.data["private_key"] == "[REDACTED]"
+    assert all(value == "[REDACTED]" for value in event.data["publication"].values())
+
+
+@pytest.mark.parametrize(
+    "private_key_block",
+    [
+        "-----BEGIN RSA PRIVATE KEY-----\nprivate\n-----END RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\nprivate\n-----END PGP PRIVATE KEY BLOCK-----",
+    ],
+)
+def test_release_logs_redact_common_private_key_armors(private_key_block):
+    redacted = redact_release_text(private_key_block)
+
+    assert private_key_block not in redacted
+    assert redacted == "[REDACTED]"
+
+
+@pytest.mark.parametrize("non_finite", (math.nan, math.inf, -math.inf))
+def test_emitter_rejects_nested_non_finite_float_data(non_finite):
+    emitter = ReleaseEventEmitter(stream=io.StringIO(), clock=lambda: FIXED_UTC)
+
+    with pytest.raises(ValueError, match="finite"):
+        emitter.emit(
+            "progress",
+            stage=ReleaseStage.PREFLIGHT,
+            progress=10,
+            data={"nested": [{"value": non_finite}]},
+        )
+
+
+def test_parser_rejects_non_standard_json_constants():
+    line = (
+        f'{EVENT_PREFIX}'
+        '{"kind":"progress","sequence":1,"timestamp":"2026-07-19T04:05:06Z",'
+        '"stage":"preflight","progress":10,"data":{"value":NaN}}'
+    )
+
+    with pytest.raises(ValueError, match="standard JSON"):
+        parse_event_line(line)
+
+
+class _FailingWriteStream:
+    def __init__(self, secret: str) -> None:
+        self.lines: list[str] = []
+        self._secret = secret
+        self._failed = False
+
+    def write(self, text: str) -> int:
+        self.lines.append(text)
+        if not self._failed:
+            self._failed = True
+            raise OSError(self._secret)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+class _FailingFlushStream:
+    def __init__(self, secret: str) -> None:
+        self.lines: list[str] = []
+        self._secret = secret
+        self._failed = False
+
+    def write(self, text: str) -> int:
+        self.lines.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        if not self._failed:
+            self._failed = True
+            raise OSError(self._secret)
+
+
+@pytest.mark.parametrize("stream_type", (_FailingWriteStream, _FailingFlushStream))
+def test_emitter_reserves_sequence_after_stream_failure_without_leaking_error(stream_type):
+    secret = "Authorization: Bearer do-not-leak"
+    stream = stream_type(secret)
+    emitter = ReleaseEventEmitter(stream=stream, clock=lambda: FIXED_UTC)
+
+    with pytest.raises(RuntimeError, match="release event") as failure:
+        emitter.emit("progress", stage=ReleaseStage.PREFLIGHT, progress=10)
+
+    retry = emitter.emit("progress", stage=ReleaseStage.PREFLIGHT, progress=10)
+    assert secret not in str(failure.value)
+    assert failure.value.__cause__ is None
+    assert parse_event_line(stream.lines[0]).sequence == 1
+    assert retry.sequence == 2
+    assert parse_event_line(stream.lines[-1]).sequence == 2
+
+
+def test_emitted_and_parsed_event_data_are_deeply_immutable():
+    source = {"nested": {"items": [{"safe": "value"}]}}
+    stream = io.StringIO()
+    emitter = ReleaseEventEmitter(stream=stream, clock=lambda: FIXED_UTC)
+
+    emitted = emitter.emit("progress", stage=ReleaseStage.PREFLIGHT, progress=10, data=source)
+    parsed = parse_event_line(stream.getvalue())
+    source["nested"]["items"][0]["safe"] = "mutated-source"
+
+    for event in (emitted, parsed):
+        assert event.data["nested"]["items"][0]["safe"] == "value"
+        with pytest.raises(TypeError):
+            event.data["nested"]["items"][0]["safe"] = "mutated-event"
+        with pytest.raises(AttributeError):
+            event.data["nested"]["items"].append("mutated-event")
+
+        payload = event.to_payload()
+        assert isinstance(payload["data"], dict)
+        assert isinstance(payload["data"]["nested"]["items"], list)
+        payload["data"]["nested"]["items"][0]["safe"] = "mutated-payload"
+        assert event.data["nested"]["items"][0]["safe"] == "value"
+        json.dumps(payload, allow_nan=False)
 
 
 def test_log_writer_appends_redacted_utf8_lines(tmp_path: Path):
