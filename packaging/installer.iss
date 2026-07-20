@@ -55,6 +55,9 @@
 #ifndef OutputBaseFilename
   #define OutputBaseFilename "UniversalCrawlerPro_Setup"
 #endif
+#ifndef OutputDir
+  #define OutputDir "..\dist\installer"
+#endif
 
 [Setup]
 AppId={{5A1DA9B4-0842-45D5-A4FA-E0E55E8A8C48}
@@ -72,7 +75,7 @@ AlwaysShowDirOnReadyPage=yes
 AllowRootDirectory=no
 DirExistsWarning=yes
 PrivilegesRequired=lowest
-OutputDir=..\dist\installer
+OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma2/normal
 SolidCompression=no

@@ -54,6 +54,10 @@ from app.ui.styles import (
     resolve_is_dark_theme,
     theme_colors,
 )
+from app.utils.qt_runtime import (
+    RELEASE_BUILDER_APP_USER_MODEL_ID,
+    ensure_windows_app_user_model_id,
+)
 from scripts.update_bootstrap import default_manifest_private_key_path
 
 from .events import redact_release_text
@@ -1635,13 +1639,15 @@ _LAUNCHED_WINDOWS: dict[int, QWidget] = {}
 def launch_release_builder_panel() -> int:
     """启动独立的发布构建工具。"""
 
+    # Windows resolves taskbar grouping before the first top-level HWND is
+    # created. Rebind even when the launcher already owns QApplication.
+    ensure_windows_app_user_model_id(RELEASE_BUILDER_APP_USER_MODEL_ID)
     app = QApplication.instance()
     owns_application = app is None
     if app is None:
         app = QApplication(sys.argv)
     icon = QIcon(str(release_builder_icon_path()))
-    if owns_application:
-        app.setWindowIcon(icon)
+    app.setWindowIcon(icon)
     window = ReleaseBuilderWindow()
     window.show()
     if owns_application:

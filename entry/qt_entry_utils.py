@@ -6,6 +6,7 @@ entry 层。
 
 from app.utils.qt_runtime import (
     MAIN_APP_USER_MODEL_ID,
+    RELEASE_BUILDER_APP_USER_MODEL_ID,
     WEB_APP_USER_MODEL_ID,
     ensure_windows_app_user_model_id,
     load_qt_icon,
@@ -14,6 +15,7 @@ from app.utils.qt_runtime import (
 
 __all__ = [
     "MAIN_APP_USER_MODEL_ID",
+    "RELEASE_BUILDER_APP_USER_MODEL_ID",
     "WEB_APP_USER_MODEL_ID",
     "ensure_windows_app_user_model_id",
     "load_qt_icon",

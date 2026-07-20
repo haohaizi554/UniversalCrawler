@@ -1338,6 +1338,9 @@ def test_initial_geometry_is_centered_and_constrained(available, expected):
 
 def test_launch_does_not_reenter_an_existing_qapplication(qapp, monkeypatch):
     class ExistingApplication:
+        def setWindowIcon(self, icon) -> None:
+            self.window_icon = icon
+
         def exec(self):
             raise AssertionError("existing QApplication event loop must not be re-entered")
 
@@ -1371,6 +1374,7 @@ def test_launch_does_not_reenter_an_existing_qapplication(qapp, monkeypatch):
     monkeypatch.setattr(panel_module, "ReleaseBuilderWindow", lambda: fake_window)
 
     assert panel_module.launch_release_builder_panel() == 0
+    assert existing.window_icon.isNull() is False
     assert fake_window.shown is True
     assert fake_window.delete_on_close is True
     assert panel_module._LAUNCHED_WINDOWS[id(fake_window)] is fake_window

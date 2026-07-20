@@ -133,6 +133,8 @@ python packaging/build_installer.py
 
 - 安装器脚本位于 `packaging/installer.iss`
 - `build_installer.py` 会把项目版本、发布者、展示名、EXE 名称、图标名称、安装目录、输出文件名和 AppUserModelID 注入安装器
+- Inno Setup 必须先在 `dist/installer/.inno-build-*` 唯一工作区生成安装器，成功后再通过同卷原子替换发布到正式文件名；不得提前删除上一份有效安装包或直接在固定最终路径上原地编译
+- Windows 安全扫描可能在 `Updating icons (Setup.exe)` 阶段短暂占用新建 PE。构建器只对同时包含 `Resource update error` 与 `EndUpdateResource failed` 的明确资源写入竞态进行有限重试，每次重试必须使用新工作区；普通脚本、资源或语法错误必须立即失败
 - 安装包文件名默认形如：
 
 ```text
@@ -291,3 +293,9 @@ playwright install chromium
 
 不要手改 `installer.iss` 里的版本号。
 当前正确做法是修改根目录 `pyproject.toml` 中的 `[project].version`，再重新运行构建脚本。
+
+### `EndUpdateResource failed (110)`
+
+错误码 `110` 表示 Windows 暂时无法打开 Inno Setup 正在更新资源的 PE 文件，常见于安全扫描或文件索引恰好占用新建的 `Setup.exe`。构建器会在新的隔离工作区进行有限重试，并在新安装包完整生成前保留上一份有效产物。
+
+如果多次隔离重试后仍失败，应检查实时防护记录、关闭正在运行的同名安装器，并确认 `dist/installer` 位于可写的本地磁盘。不要通过删除图标、关闭所有资源校验或无条件重试任意 Inno 错误来掩盖问题。

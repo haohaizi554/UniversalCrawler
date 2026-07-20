@@ -270,6 +270,21 @@ version = "x.y.z"
 
 如果这些文件缺失，应先重新运行 `python packaging/build_portable.py`，不要直接复用旧 dist 目录生成安装包。
 
+## 安装器原子发布与资源锁竞态
+
+`build_installer.py` 不得直接在
+`dist/installer/UniversalCrawlerPro_Setup_<version>.exe` 上原地编译。每次 Inno
+尝试必须使用独立的 `dist/installer/.inno-build-*` 目录；仅当暂存安装包存在、
+时间戳属于本次构建且 Inno 成功退出后，才能同卷原子替换正式产物。构建失败时，
+上一份有效安装包必须继续保留。
+
+Windows 的安全扫描或文件索引可能在 Inno 输出
+`Updating icons (Setup.exe)` 时短暂持有新 PE，随后报
+`Resource update error: EndUpdateResource failed (110)`。这是可识别的资源写入
+竞态：允许在新工作区做有限退避重试。其他编译错误不得套用该重试，也不得建议
+用户长期关闭安全软件作为默认构建流程。相关回归测试位于
+`tests/release/packaging/test_assets.py`。
+
 ## 发布后人工验收
 
 建议至少人工验证以下项目：

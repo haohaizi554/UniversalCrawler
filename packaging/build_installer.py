@@ -1,11 +1,14 @@
 """构建 Inno Setup 安装器，并在可选签名后校验发布产物。"""
 
 from __future__ import annotations
+
 import argparse
+import locale
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -65,6 +68,8 @@ WIZARD_IMAGE = PROJECT_ROOT / "packaging" / "wizard_image.bmp"
 WIZARD_SMALL_IMAGE = PROJECT_ROOT / "packaging" / "wizard_small_image.bmp"
 APP_ICON = PROJECT_ROOT / APP_ICON_NAME
 WEBUI_ICON = PROJECT_ROOT / WEBUI_ICON_NAME
+INNO_RESOURCE_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+INSTALLER_PROMOTION_RETRY_DELAYS_SECONDS = (0.25, 0.75, 1.5)
 # 安装器直接消费便携版目录；若旧 dist 缺少 GUI/WebUI 共用资源，应在编译前失败。
 REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / LAUNCHER_EXE_NAME,
@@ -112,6 +117,7 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
 
 def get_setup_exe_path() -> Path:
     return OUTPUT_DIR / f"{INSTALLER_BASENAME}.exe"
+
 
 def _resolve_iscc_from_registry() -> str | None:
     if sys.platform != "win32":
@@ -254,14 +260,8 @@ def _validate_project_root(project_root: str | Path) -> Path:
     return root
 
 
-def _build_installer() -> None:
-    iscc = ensure_prerequisites()
-    setup_exe = get_setup_exe_path()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if setup_exe.exists():
-        setup_exe.unlink()
-    build_started_at = time.time()
-    command = [
+def _build_iscc_command(iscc: str, *, output_dir: Path) -> list[str]:
+    return [
         iscc,
         f"/DAppName={APP_DISPLAY_NAME}",
         f"/DAppVersion={PACKAGE_VERSION}",
@@ -280,14 +280,145 @@ def _build_installer() -> None:
         f"/DWebUIUserModelID={WEBUI_USER_MODEL_ID}",
         f"/DDistDir=..\\dist\\{DIST_DIR_NAME}",
         f"/DInstallDirName={INSTALL_DIR_NAME}",
+        f"/DOutputDir={output_dir}",
         f"/DOutputBaseFilename={INSTALLER_BASENAME}",
         str(ISS_FILE),
     ]
-    subprocess.run(command, cwd=PROJECT_ROOT / "packaging", check=True)
-    if not setup_exe.exists():
-        raise SystemExit(f"安装包构建失败，未找到输出文件: {setup_exe}")
-    if setup_exe.stat().st_mtime < build_started_at:
-        raise SystemExit(f"安装包未被重新生成，输出文件时间异常: {setup_exe}")
+
+
+def _terminate_child_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _stream_iscc(
+    command: list[str],
+    *,
+    cwd: Path,
+) -> tuple[int, str]:
+    """运行 ISCC 并在保留可分类输出的同时实时转发构建日志。"""
+
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding=locale.getpreferredencoding(False),
+        errors="replace",
+        bufsize=1,
+        shell=False,
+    )
+    if process.stdout is None:
+        _terminate_child_process(process)
+        raise RuntimeError("无法读取 Inno Setup 编译器输出")
+
+    output: list[str] = []
+    try:
+        for line in process.stdout:
+            output.append(line)
+            print(line, end="", flush=True)
+        return_code = process.wait()
+    except BaseException:
+        _terminate_child_process(process)
+        raise
+    finally:
+        process.stdout.close()
+    return return_code, "".join(output)
+
+
+def _is_transient_inno_resource_error(output: str) -> bool:
+    normalized = str(output or "").casefold()
+    return (
+        "resource update error" in normalized
+        and "endupdateresource failed" in normalized
+    )
+
+
+def _promote_installer(staged_installer: Path, setup_exe: Path) -> None:
+    """在同一卷内原子发布安装包，并容忍安全扫描造成的短暂句柄占用。"""
+
+    delays = INSTALLER_PROMOTION_RETRY_DELAYS_SECONDS
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(staged_installer, setup_exe)
+            return
+        except OSError as error:
+            if attempt >= len(delays):
+                raise SystemExit(
+                    "安装包已构建完成，但无法替换正式产物。"
+                    "请关闭正在运行的安装器或占用该文件的程序后重试："
+                    f"{setup_exe} ({error})"
+                ) from error
+            time.sleep(delays[attempt])
+
+
+def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
+    """在唯一工作区编译；仅对 Windows 资源写入竞态做有限重试。"""
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    delays = INNO_RESOURCE_RETRY_DELAYS_SECONDS
+    for attempt in range(len(delays) + 1):
+        workspace = Path(
+            tempfile.mkdtemp(
+                prefix=".inno-build-",
+                dir=OUTPUT_DIR,
+            )
+        )
+        staged_installer = workspace / setup_exe.name
+        build_started_at = time.time()
+        command = _build_iscc_command(iscc, output_dir=workspace)
+        try:
+            return_code, output = _stream_iscc(
+                command,
+                cwd=PROJECT_ROOT / "packaging",
+            )
+            if return_code == 0:
+                if not staged_installer.is_file():
+                    raise SystemExit(
+                        "安装包构建失败，Inno Setup 未生成暂存产物："
+                        f"{staged_installer}"
+                    )
+                if staged_installer.stat().st_mtime < build_started_at:
+                    raise SystemExit(
+                        "安装包暂存产物时间异常，拒绝覆盖上一份有效安装包："
+                        f"{staged_installer}"
+                    )
+                _promote_installer(staged_installer, setup_exe)
+                return
+
+            can_retry = (
+                attempt < len(delays)
+                and _is_transient_inno_resource_error(output)
+            )
+            if not can_retry:
+                raise subprocess.CalledProcessError(
+                    return_code,
+                    command,
+                    output=output,
+                )
+            delay = delays[attempt]
+            print(
+                "检测到 Windows 暂时占用 Inno Setup 的 PE 资源文件，"
+                f"{delay:g} 秒后在新工作区重试 "
+                f"({attempt + 2}/{len(delays) + 1})。",
+                flush=True,
+            )
+            time.sleep(delay)
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _build_installer() -> None:
+    iscc = ensure_prerequisites()
+    setup_exe = get_setup_exe_path()
+    _compile_installer_with_retry(iscc, setup_exe)
     maybe_sign_windows_installer(setup_exe)
     print(f"安装包构建完成: {setup_exe}")
 

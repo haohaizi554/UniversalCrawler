@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 MAIN_APP_USER_MODEL_ID = "ucrawl.universalcrawlerpro.main"
 WEB_APP_USER_MODEL_ID = "ucrawl.universalcrawlerpro.web"
+RELEASE_BUILDER_APP_USER_MODEL_ID = "ucrawl.universalcrawlerpro.releasebuilder"
 
 def _icon_search_roots() -> list[Path]:
     roots: list[Path] = []
