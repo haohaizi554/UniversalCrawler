@@ -2134,8 +2134,8 @@ class MainWindowTests(unittest.TestCase):
     def _make_close_event_window(self):
         window = self._make_window()
         window._connections = Mock()
-        window._remove_frameless_resize_event_filter = Mock()
-        window._remove_windows_native_frame_filter = Mock()
+        chrome_controller = Mock()
+        window._chrome_controller = Mock(return_value=chrome_controller)
         window.cleanup_media = Mock()
         window._ui_update_scheduler = Mock()
         window.event_bus = Mock()
@@ -2163,8 +2163,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertIsNotNone(save_done)
         self.assertTrue(save_done.wait(timeout=1.0))
 
-        window._remove_frameless_resize_event_filter.assert_called_once()
-        window._remove_windows_native_frame_filter.assert_called_once()
+        window._chrome_controller.return_value.uninstall.assert_called_once()
         self.assertTrue(window._update_check_worker.shutdown_called)
         self.assertTrue(window._update_download_shutdown)
         self.assertEqual(window._update_download_sequence, 8)
@@ -2317,7 +2316,7 @@ class MainWindowTests(unittest.TestCase):
         with patch("app.ui.layout.window_chrome_controller.sys.platform", "win32"), patch(
             "app.ui.layout.window_chrome_controller.QTimer.singleShot"
         ):
-            controller._toggle_maximized()
+            controller.toggle_maximized()
 
         controller.set_hwnd_maximized.assert_called_once_with(1001, True)
         host.showMaximized.assert_not_called()

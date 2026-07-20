@@ -54,6 +54,18 @@ python packaging/build_release.py --headless --dry-run --version 3.6.21 --build-
 - 私钥输入框默认显示仓库外规范路径 `~/.ucrawl/release-secrets/update_manifest_ed25519_private.pem`，
   并从路径开头展示；维护者通常无需手动寻找私钥目录。
 
+### 窗口 chrome 契约
+
+发布构建器没有自己的最大化状态机。它与主 GUI、测试入口和所有应用弹窗一样，只通过
+`FramelessWindowChromeController.bind_title_bar_controls()` 接收标题栏操作。不得在面板中
+重新定义 `_toggle_maximized()`，不得直接连接 `maximize_restore_requested`，也不得使用
+`isMaximized()` 决定最大化/还原图标。Windows 下图标真值来自 `IsZoomed(hwnd)`，动作由共享
+控制器转为 `ShowWindow(SW_MAXIMIZE/SW_RESTORE)`。
+
+新增任何顶层窗口都必须遵守
+[`Windows 自绘标题栏与原生窗口行为`](../engineering/windows-native-chrome-hit-test.md)；
+`tests/architecture/test_window_chrome_contract.py` 会在 CI 中阻止局部实现和裸 `QDialog()`。
+
 ## 本地调试边界
 
 本地调试和本地重构建：

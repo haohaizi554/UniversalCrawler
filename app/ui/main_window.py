@@ -371,6 +371,7 @@ class MainWindow(QMainWindow):
             maximizable=True,
         )
         self._window_chrome_controller.set_window_flags()
+        self._window_chrome_controller.bind_title_bar_controls()
         self.setCentralWidget(self.window_root)
 
     def _chrome_controller(self) -> FramelessWindowChromeController:
@@ -460,9 +461,6 @@ class MainWindow(QMainWindow):
 
     def _bind_component_signals(self) -> None:
         self._connections.connect(self.windowTitleChanged, self.window_title_bar.set_title)
-        self._connections.connect(self.window_title_bar.minimize_requested, self.showMinimized)
-        self._connections.connect(self.window_title_bar.maximize_restore_requested, self._toggle_maximized)
-        self._connections.connect(self.window_title_bar.close_requested, self.close)
         self._connections.connect(self.combo_source.currentIndexChanged, self.on_source_changed)
         self._connections.connect(self.btn_start.clicked, self.on_btn_start_clicked)
         self._connections.connect(self.inp_search.returnPressed, self.on_btn_start_clicked)
@@ -2188,8 +2186,7 @@ class MainWindow(QMainWindow):
             if callable(shutdown_app_state):
                 shutdown_app_state()
         self._connections.disconnect_all()
-        self._remove_frameless_resize_event_filter()
-        self._remove_windows_native_frame_filter()
+        self._chrome_controller().uninstall()
         app_shell = self.__dict__.get("app_shell")
         shutdown_shell = getattr(app_shell, "shutdown", None)
         if callable(shutdown_shell):

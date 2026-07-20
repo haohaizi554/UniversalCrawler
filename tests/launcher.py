@@ -1041,9 +1041,6 @@ if _PYQT6_AVAILABLE:
                 is_dark_theme=self.is_dark_theme,
             )
             self.window_title_bar = self.window_chrome.title_bar
-            self.window_title_bar.minimize_requested.connect(self.showMinimized)
-            self.window_title_bar.maximize_restore_requested.connect(self._toggle_maximized)
-            self.window_title_bar.close_requested.connect(self.close)
             self._window_chrome_controller = FramelessWindowChromeController(
                 self,
                 title_bar_getter=lambda: self.window_title_bar,
@@ -1052,6 +1049,7 @@ if _PYQT6_AVAILABLE:
                 maximizable=True,
             )
             self._window_chrome_controller.set_window_flags()
+            self._window_chrome_controller.bind_title_bar_controls()
             self.setCentralWidget(self.window_chrome)
             root = self.window_chrome.body_layout
             root.setContentsMargins(18, 18, 18, 12)
@@ -1585,13 +1583,6 @@ if _PYQT6_AVAILABLE:
 
         def _theme_color(self, key: str) -> str:
             return self._theme_colors.get(key, _launcher_runtime_colors(self.is_dark_theme).get(key, TEXT))
-
-        def _toggle_maximized(self):
-            if self.isMaximized():
-                self.showNormal()
-            else:
-                self.showMaximized()
-            self._window_chrome_controller.sync_title_bar_state()
 
         def showEvent(self, event):
             super().showEvent(event)

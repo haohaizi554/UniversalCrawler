@@ -48,7 +48,6 @@ class ChromedDialog(QDialog):
         )
         self.window_title_bar = self.chrome_frame.title_bar
         self.content_layout = self.chrome_frame.body_layout
-        self.window_title_bar.close_requested.connect(self.reject)
         self._window_chrome_controller = FramelessWindowChromeController(
             self,
             title_bar_getter=lambda: self.window_title_bar,
@@ -57,6 +56,9 @@ class ChromedDialog(QDialog):
             maximizable=False,
         )
         self._window_chrome_controller.set_window_flags()
+        self._window_chrome_controller.bind_title_bar_controls(
+            close_requested=self.reject,
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

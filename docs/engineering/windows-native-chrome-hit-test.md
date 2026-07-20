@@ -38,7 +38,10 @@ nativeEvent / QAbstractNativeEventFilter
 - 共享窗口框架：`app/ui/layout/window_chrome.py`
 - 共享窗口控制器：`app/ui/layout/window_chrome_controller.py`
 - 启动模式选择器：`entry/mode_selection_ui.py`
+- Web 端口冲突弹窗：`entry/web_port_dialog.py`
+- 发布构建器：`packaging/release_tool/panel.py`
 - 回归测试：`tests/unit/app/ui/test_main_window.py`
+- 架构守卫：`tests/architecture/test_window_chrome_contract.py`
 
 相关对象和方法：
 
@@ -52,6 +55,61 @@ nativeEvent / QAbstractNativeEventFilter
 - `ChromedDialog`
 - `WindowChromeFrame`
 - `FramelessWindowChromeController`
+
+## 所有顶层窗口的统一接入契约
+
+本节不是只针对主 GUI 或发布构建器。所有现有和未来由应用拥有的顶层窗口都必须遵守同一套
+窗口 chrome 契约：
+
+- 普通弹窗继承 `ChromedDialog`，不得直接构造裸 `QDialog()`。
+- 独立 `QMainWindow` / 顶层 `QWidget` 使用 `WindowChromeFrame` 时，必须同时创建
+  `FramelessWindowChromeController`。
+- 标题栏最小化、最大化/还原和关闭信号只能由
+  `FramelessWindowChromeController.bind_title_bar_controls()` 绑定；宿主窗口不得直接
+  `.connect()` 这些信号。
+- 特殊窗口可以把关闭动作传为 `reject`，或把主 GUI 的“媒体全屏退出”逻辑作为
+  `toggle_maximized` 回调注入控制器，但标题栏仍只能连接到控制器，不能绕过控制器直连回调。
+- `showEvent` 调用 `install()` 和 `on_show_event()`；关闭/销毁路径调用 `uninstall()`；
+  `nativeEvent`、`mousePressEvent` 和 `eventFilter` 分别转发给控制器。
+- 真正无标题栏的媒体全屏画布和操作系统原生文件选择器不属于窗口 chrome 宿主，不伪造
+  最大化/还原按钮。
+
+独立窗口的标准接入形态如下：
+
+```python
+self.chrome_frame = WindowChromeFrame(...)
+self.window_title_bar = self.chrome_frame.title_bar
+self._window_chrome_controller = FramelessWindowChromeController(
+    self,
+    title_bar_getter=lambda: self.window_title_bar,
+    resizable=True,
+    minimizable=True,
+    maximizable=True,
+)
+self._window_chrome_controller.set_window_flags()
+self._window_chrome_controller.bind_title_bar_controls()
+```
+
+禁止以下写法：
+
+```python
+self.window_title_bar.maximize_restore_requested.connect(self._toggle_maximized)
+
+def _toggle_maximized(self):
+    if self.isMaximized():
+        self.showNormal()
+    else:
+        self.showMaximized()
+```
+
+禁止原因是：无边框窗口在 Windows 最大化、Snap、还原动画和打包运行环境中，Qt 的
+`WindowMaximized` / `isMaximized()` 可能晚于真实 HWND 状态。直接连接会绕过控制器的
+`IsZoomed(hwnd)` 真值和 `ShowWindow(SW_MAXIMIZE/SW_RESTORE)` 动作，导致功能看似正常，
+但最大化/还原图标显示相反。
+
+`tests/architecture/test_window_chrome_contract.py` 会扫描生产窗口：遗漏完整控制器生命周期、
+手工连接标题栏信号或直接构造裸 `QDialog()` 都会使 CI 失败。该守卫是未来新增窗口的强制
+门禁，不得为新窗口添加路径白名单来规避。
 
 ## 启动阶段与独立弹窗的标题栏契约
 
@@ -156,7 +214,8 @@ entry.dispatcher._prompt_mode_with_qt()
 最大化按钮区域返回 `HTMAXBUTTON` 后，Windows 有机会显示 Snap Layout。点击时需要兜底处理：
 
 - `WM_NCLBUTTONDOWN + HTMAXBUTTON`：直接吞掉，避免 Windows 绘制原生按下态。
-- `WM_NCLBUTTONUP + HTMAXBUTTON`：调用 `showMaximized()` / `showNormal()`。
+- `WM_NCLBUTTONUP + HTMAXBUTTON`：进入控制器统一切换入口；Windows 下调用
+  `ShowWindow(hwnd, SW_MAXIMIZE/SW_RESTORE)`。
 
 最小化和关闭不暴露 `HTMINBUTTON` / `HTCLOSE`，仍由 Qt 信号处理。
 
@@ -198,6 +257,8 @@ setGeometry(screen.availableGeometry())
 ## 不要做的事
 
 - 不要让 Windows 原生标题栏和 Qt 自绘标题栏同时绘制。
+- 不要让任何宿主窗口直接连接共享标题栏的最小化、最大化/还原或关闭信号。
+- 不要在应用代码中直接构造裸 `QDialog()`；普通弹窗统一继承 `ChromedDialog`。
 - 不要让启动弹窗或独立工具窗口绕过 `ChromedDialog` 后再用硬编码 QSS 模拟应用主题。
 - 不要把主窗口最大化做成 `showFullScreen()`。
 - 不要用 `setGeometry()` 模拟最大化。
@@ -234,8 +295,13 @@ setGeometry(screen.availableGeometry())
 
 ```powershell
 python -m py_compile app\ui\main_window.py app\ui\layout\window_title_bar.py
+python -m pytest tests/architecture/test_window_chrome_contract.py -q
 python -m pytest tests/unit/app/ui/test_main_window.py -q
+python -m pytest tests/release/packaging/test_release_builder_panel.py -q
 python -m pytest tests/contract/frontend/test_unified_frontend.py -q
 ```
 
-手工验收必须在真实 Windows 桌面环境执行，因为 Snap Layout、任务栏自动隐藏和 DWM 动画都不是普通单元测试能完整模拟的。
+测试不得只修改按钮内部 `_maximized` 布尔值后断言图标。至少要验证
+“标题栏信号 -> 共享控制器 -> Win32 动作 -> `IsZoomed` 真值 -> 图标”的完整链路。
+手工验收必须在真实 Windows 桌面环境执行，因为 Snap Layout、任务栏自动隐藏和 DWM 动画
+都不是普通单元测试能完整模拟的。

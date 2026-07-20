@@ -1231,21 +1231,24 @@ Expected: FAIL with missing panel/batch API。
 
 - [ ] **Step 5: 实现独立窗口 chrome**
 
-`ReleaseBuilderWindow` 是顶层 `QWidget`，设置 `FramelessWindowHint`，中央布局只有 `WindowChromeFrame`。连接：
+`ReleaseBuilderWindow` 是顶层 `QWidget`，设置 `FramelessWindowHint`，中央布局只有
+`WindowChromeFrame`。标题栏操作必须由共享控制器统一绑定，不能在窗口中维护第二套最大化状态：
 
 ```python
-self.window_title_bar.minimize_requested.connect(self.showMinimized)
-self.window_title_bar.maximize_restore_requested.connect(self._toggle_maximized)
-self.window_title_bar.close_requested.connect(self.close)
 self._window_chrome_controller = FramelessWindowChromeController(
     self,
     title_bar_getter=lambda: self.window_title_bar,
-    toggle_maximized=self._toggle_maximized,
     resizable=True,
     minimizable=True,
     maximizable=True,
 )
+self._window_chrome_controller.set_window_flags()
+self._window_chrome_controller.bind_title_bar_controls()
 ```
+
+窗口显示时调用 `install()` / `on_show_event()`，关闭时调用 `uninstall()`，原生事件和鼠标事件
+继续转发给控制器。Windows 最大化/还原图标只能使用 `IsZoomed(hwnd)` 真值，不能使用面板自己的
+`isMaximized()` 或 `_maximized` 缓存。
 
 `showEvent` 安装 controller；`closeEvent` 在运行中先请求取消，否则卸载 controller。`nativeEvent`、`mousePressEvent` 和 `eventFilter` 转发给 controller，与主窗口一致。
 

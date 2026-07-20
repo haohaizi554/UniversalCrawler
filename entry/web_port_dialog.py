@@ -34,6 +34,7 @@ def resolve_port_with_dialog(
         QSpinBox,
         QVBoxLayout,
     )
+    from app.ui.dialogs.chromed_dialog import ChromedDialog
 
     app = QApplication.instance()
     if app is None:
@@ -59,9 +60,12 @@ def resolve_port_with_dialog(
         if not is_port_in_use("0.0.0.0", port):  # nosec B104
             return port
 
-        dialog = QDialog()
-        dialog.setWindowTitle("端口已被占用 · UCrawl")
-        dialog.setModal(True)
+        dialog = ChromedDialog(
+            title="端口已被占用 · UCrawl",
+            object_name="WebPortConflictDialog",
+            body_margins=(0, 0, 0, 0),
+            body_spacing=0,
+        )
         dialog.setMinimumSize(QSize(600, 340))
         dialog.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if icon is not None:
@@ -190,7 +194,7 @@ def resolve_port_with_dialog(
             """
         )
 
-        root = QVBoxLayout(dialog)
+        root = dialog.content_layout
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 

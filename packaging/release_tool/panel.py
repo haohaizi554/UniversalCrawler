@@ -9,7 +9,6 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from PyQt6.QtCore import (
-    QEvent,
     QObject,
     QRect,
     QSignalBlocker,
@@ -407,20 +406,15 @@ class ReleaseBuilderWindow(QWidget):
             parent=self,
         )
         self.window_title_bar = self.chrome_frame.title_bar
-        self.window_title_bar.minimize_requested.connect(self.showMinimized)
-        self.window_title_bar.maximize_restore_requested.connect(
-            self._toggle_maximized
-        )
-        self.window_title_bar.close_requested.connect(self.close)
         self._window_chrome_controller = FramelessWindowChromeController(
             self,
             title_bar_getter=lambda: self.window_title_bar,
-            toggle_maximized=self._toggle_maximized,
             resizable=True,
             minimizable=True,
             maximizable=True,
         )
         self._window_chrome_controller.set_window_flags()
+        self._window_chrome_controller.bind_title_bar_controls()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -720,7 +714,6 @@ class ReleaseBuilderWindow(QWidget):
         super().showEvent(event)
         self._window_chrome_controller.install()
         self._window_chrome_controller.on_show_event()
-        self._sync_window_title_bar_state()
         if self._sync_release_option_columns():
             self._stabilize_configuration_sections()
 
@@ -728,21 +721,6 @@ class ReleaseBuilderWindow(QWidget):
         super().resizeEvent(event)
         if self._sync_release_option_columns():
             self._stabilize_configuration_sections()
-
-    def changeEvent(self, event) -> None:  # noqa: N802
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            self._sync_window_title_bar_state()
-
-    def _sync_window_title_bar_state(self) -> None:
-        chrome_frame = self.__dict__.get("chrome_frame")
-        if chrome_frame is None:
-            return
-        maximized = (
-            bool(self.windowState() & Qt.WindowState.WindowMaximized)
-            or self.isMaximized()
-        )
-        chrome_frame.set_maximized(maximized)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._close_pending = True
@@ -1650,14 +1628,6 @@ class ReleaseBuilderWindow(QWidget):
         if request.upload_public_key:
             assets.append("manifest-public-key.pem")
         return tuple(assets)
-
-    def _toggle_maximized(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
-        self._sync_window_title_bar_state()
-
 
 _LAUNCHED_WINDOWS: dict[int, QWidget] = {}
 

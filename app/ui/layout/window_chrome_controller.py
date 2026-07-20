@@ -159,8 +159,10 @@ class FramelessWindowChromeController:
         self._windows_native_frame_filter_installed = False
         self._frameless_resize_event_filter_installed = False
         self._frameless_resize_override_cursor_active = False
+        self._title_bar_controls_bound = False
 
     def install(self) -> None:
+        self.bind_title_bar_controls()
         if self._uses_windows_native_resize():
             self.install_windows_native_frame_filter()
         else:
@@ -177,6 +179,31 @@ class FramelessWindowChromeController:
     def set_window_flags(self) -> None:
         flags = self.host.windowFlags() | Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
         self.host.setWindowFlags(flags)
+
+    def bind_title_bar_controls(
+        self,
+        *,
+        minimize_requested: Callable[[], None] | None = None,
+        close_requested: Callable[[], None] | None = None,
+    ) -> None:
+        """Bind one title bar to the controller-owned window action contract."""
+
+        if self._title_bar_controls_bound:
+            return
+        title_bar = self._title_bar()
+        if title_bar is None:
+            return
+        minimize_signal = getattr(title_bar, "minimize_requested", None)
+        maximize_signal = getattr(title_bar, "maximize_restore_requested", None)
+        close_signal = getattr(title_bar, "close_requested", None)
+        if minimize_signal is None or maximize_signal is None or close_signal is None:
+            raise TypeError("title bar does not expose the shared window-control signals")
+        minimize_handler = minimize_requested or self.host.showMinimized
+        close_handler = close_requested or self.host.close
+        minimize_signal.connect(minimize_handler)
+        maximize_signal.connect(self.toggle_maximized)
+        close_signal.connect(close_handler)
+        self._title_bar_controls_bound = True
 
     def sync_title_bar_state(self) -> None:
         title_bar = self._title_bar()
@@ -208,10 +235,10 @@ class FramelessWindowChromeController:
         if message_id == self.WM_NCLBUTTONDOWN and int(msg.wParam) == self.HTMAXBUTTON:
             return 0
         if message_id == self.WM_NCLBUTTONUP and int(msg.wParam) == self.HTMAXBUTTON:
-            self._toggle_maximized()
+            self.toggle_maximized()
             return 0
         if message_id == self.WM_NCLBUTTONDBLCLK and int(msg.wParam) == self.HTCAPTION:
-            self._toggle_maximized()
+            self.toggle_maximized()
             return 0
         return None
 
@@ -450,7 +477,7 @@ class FramelessWindowChromeController:
         except RuntimeError:
             return False
 
-    def _toggle_maximized(self) -> None:
+    def toggle_maximized(self) -> None:
         if not self.maximizable:
             return
         if self._toggle_maximized_callback is not None:
@@ -471,6 +498,11 @@ class FramelessWindowChromeController:
         else:
             self.host.showNormal()
         self.sync_title_bar_state()
+
+    def _toggle_maximized(self) -> None:
+        """Compatibility alias for older callers; new hosts bind the public slot."""
+
+        self.toggle_maximized()
 
     def _uses_windows_native_resize(self) -> bool:
         return self.resizable and sys.platform.startswith("win")

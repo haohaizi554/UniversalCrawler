@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 from PyQt6.QtCore import QObject, QProcess, QRect, Qt, pyqtSignal
@@ -252,23 +253,39 @@ def test_panel_reuses_project_chrome_theme_root_and_safe_defaults(qapp):
         window.shutdown()
 
 
-def test_window_state_change_synchronizes_maximize_restore_icon(qapp):
+def test_title_bar_maximize_action_uses_shared_native_controller_truth(qapp):
     window = make_panel(qapp)
     try:
         window.show()
         qapp.processEvents()
+        controller = window._window_chrome_controller
+        hwnd = int(window.winId())
+        controller._windows_hwnd = hwnd
+        controller._is_hwnd_maximized = Mock(side_effect=[False, True])
+        controller.set_hwnd_maximized = Mock(return_value=True)
 
-        window._toggle_maximized()
-        qapp.processEvents()
+        assert controller._toggle_maximized_callback is None
+        assert not hasattr(window, "_toggle_maximized")
 
-        assert window.isMaximized() is True
+        with patch(
+            "app.ui.layout.window_chrome_controller.sys.platform",
+            "win32",
+        ), patch("app.ui.layout.window_chrome_controller.QTimer.singleShot"):
+            window.window_title_bar.maximize_restore_requested.emit()
+
+        controller.set_hwnd_maximized.assert_called_once_with(hwnd, True)
         assert window.window_title_bar.btn_maximize._maximized is True
         assert window.window_title_bar.btn_maximize.toolTip() == "还原"
 
-        window._toggle_maximized()
-        qapp.processEvents()
+        controller._is_hwnd_maximized = Mock(side_effect=[True, False])
+        controller.set_hwnd_maximized.reset_mock()
+        with patch(
+            "app.ui.layout.window_chrome_controller.sys.platform",
+            "win32",
+        ), patch("app.ui.layout.window_chrome_controller.QTimer.singleShot"):
+            window.window_title_bar.maximize_restore_requested.emit()
 
-        assert window.isMaximized() is False
+        controller.set_hwnd_maximized.assert_called_once_with(hwnd, False)
         assert window.window_title_bar.btn_maximize._maximized is False
         assert window.window_title_bar.btn_maximize.toolTip() == "最大化"
     finally:
