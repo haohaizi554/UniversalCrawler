@@ -328,6 +328,12 @@ node --check app/web/static/app.js
 
 自动化用例不得使用固定 3.5 秒等待兜底；WebUI 优先等待 `#app-shell`、行数、选中 ID、详情文本和按钮状态等可观测状态，GUI/Qt 测试可以短轮询处理事件，但每轮都必须检查目标状态，不能只靠时间推进。
 
+WebUI 启动完成必须以实际前端状态契约为准：先等待 `#app-shell` 可见，再等待
+`window.__ucrawlFrontendStateLoaded === true`。`__ucrawlFrontendStateSettled` 只表示 REST
+首次请求已经结束，不代表页面已经获得可渲染状态；WebSocket 可能先于 REST 返回完整状态，
+REST 也可能仍在 pending 或失败。测试夹具不得以 REST settled 作为唯一就绪门，否则会把已可用
+页面误判为超时。
+
 ### 当前验证基线
 
 - 2026-07-10 focused：`python -m pytest tests/architecture/test_web_static_module_boundaries.py tests/contract/web/test_fastapi_endpoints.py tests/e2e/web/test_browser_journeys.py tests/contract/frontend/test_unified_frontend.py tests/release/packaging/test_assets.py -q`：`469 passed in 193.76s (0:03:13)`，`0 skipped`，`0 warnings`。
@@ -337,7 +343,10 @@ node --check app/web/static/app.js
 - 2026-07-12 GUI/Web/CLI/TUI/SDK/Skill 对齐收口后 full：`python -m pytest -q`：`2579 passed, 3 skipped, 2 warnings in 251.89s (0:04:11)`，完整收集为 `2582`。完整浏览器套件为 `150 passed in 55.46s`；GUI/Web 运行态压力组为 `155 passed in 7.32s`。本轮新增共享本地化边界、Web 更新链路、安全目录授权、键盘所有权、设置事务、同快照视觉矩阵和快速导航/日志洪峰回归。两条 warning 均来自既有的 app/UI 大文件报告型架构检查，没有新增运行时或收集 warning。
 - 2026-07-14 异步选择反馈、应用级服务就绪和静态模块一致性收口后 full：`python -X faulthandler -m pytest -q --timeout=90 --timeout-method=thread --session-timeout=1500`：`2613 passed, 3 skipped, 2 warnings in 343.22s (0:05:43)`，完整收集为 `2616`。完整浏览器套件为 `153 passed in 59.09s`；新增延迟 worker 回归证明失败列表的选中 ID、DOM 高亮和详情面板无需等待分页 worker 即可同步一致，并补充 Skill 仓库外启动与小红书快捷入口契约。两条 warning 仍仅来自既有的大文件报告型架构检查，没有新增运行时、收集或线程 warning。
 - 2026-07-14 shared/CI 最终收口采用与 GitHub Actions 相同的进程隔离分层：核心组 `2368 passed, 3 skipped in 183.96s (0:03:03)`，Qt 统一前端契约 `149 passed`，浏览器 `153 passed in 56.27s`，性能预算 `4 passed in 4.42s`；四组互不重叠，合计 `2674 passed, 3 skipped`。分层不是缩减测试范围，而是让每 12 个 Qt 契约节点重建一次 QApplication/native 资源，避免单进程长期积累延迟销毁对象。覆盖率门为 `73%`，wheel 隔离安装自检 `9/9`，且安装包不含 `tests/` 或已删除的 shared 旧运行时；独立运行时 venv 的 `pip-audit --strict` 为 `No known vulnerabilities found`。
-- skip 数量与 Task 8 前基线同为 3；当前 2 条 warning 均为既有文件尺寸报告。2026-07-10 基线中的另外 5 条 pytest collection warning 已随测试辅助类治理消除，没有新增 warning 类型。
+- 2026-07-19 Release Builder、WebUI 就绪契约和 Qt 生命周期收口后完整收集为 `3696`。按互不重叠的原生资源隔离分区运行：architecture + contract `460 passed, 2 skipped in 96.25s`，release `764 passed in 97.04s`，unit `1886 passed, 1 skipped in 56.52s`，integration + performance + testkit `391 passed in 47.52s`，e2e `192 passed in 156.91s`；合计 `3693 passed, 3 skipped`。分区执行覆盖完整收集集合，避免把所有 Qt C++ 对象、Chromium 和 ASGI 生命周期塞入同一长进程，并验证 WebSocket 已载入状态时 REST pending 不再阻塞浏览器就绪。
+- skip 数量与 Task 8 前基线同为 3。2026-07-14 的 2 条 warning 均为既有文件尺寸报告；
+  2026-07-19 的隔离分区输出未出现 warning。2026-07-10 基线中的另外 5 条 pytest
+  collection warning 已随测试辅助类治理消除，没有新增 warning 类型。
 - 七个职责模块与 `app.js` 均通过 `node --check`；`app.js` 为 `57,118` bytes，满足 `<= 100,000` bytes 的组合根上限。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
 - 性能预算失败不能在一次高负载整轮中直接通过放宽阈值“修复”。本轮 EventBus 吞吐基准在宿主抖动时曾超预算，独立复跑通过后，第二次全量也通过；正确流程是先排除遗留进程和宿主负载、独立复跑，再以完整套件复核，只有可稳定复现时才修改生产代码或预算。
@@ -370,6 +379,8 @@ node --check app/web/static/app.js
 - 异步 worker 完成回调不得在宿主页面或窗口可能销毁后打开原生模态 `QMessageBox`。Windows 原生对话框与 Qt 父链析构并发时可能造成 `0xc0000374` 堆损坏，而不是普通 Python 异常。成功反馈必须优先使用按钮短暂文案、状态条或页面内提示；确需展示失败弹窗时必须先确认宿主仍存活，并为关闭期增加回归测试。
 - 新增 GUI 后台任务时优先复用这两个 worker；只有需要独立调度协议、独立队列背压或跨进程执行时才允许新增专用线程结构。
 - 非常驻 GUI 后台任务必须按需创建，不得在主窗口构造期预启动；否则测试和页面重建会堆积空闲线程，增加 Qt 退出和重建时的崩溃风险。检查更新、诊断、文件关联注册等低频动作应在用户触发后创建或提交到既有 worker，并在 `closeEvent` 中回收。
+- 不得从 `QObject.destroyed` 信号回调进入 Python 执行 worker `shutdown()`、`join()` 或媒体清理。该信号位于 Qt C++ 析构边界，Python 回调即使看似幂等，也可能在 Windows 上触发 `0xc0000005` 原生访问冲突，无法由 `try/except` 捕获。
+- 拥有 worker 的页面必须提供幂等 `shutdown()`，并在自身 `deleteLater()` 调用 Qt 延迟销毁前先执行；`AppShell.shutdown()` 先关闭全部子页面 worker，再清理媒体资源，`MainWindow.closeEvent()` 在窗口析构前调用 shell shutdown。纯 Python 的弱引用 finalizer 只能作为 wrapper 被回收时的降级保护，不能替代显式生命周期。
 
 ## Shared 唯一实现边界
 

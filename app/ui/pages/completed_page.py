@@ -29,7 +29,7 @@ from app.ui.viewmodels.list_page_worker import (
     remove_list_item_optimistically,
 )
 from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
-from app.utils.qt_lifecycle import connect_destroyed_cleanup
+from app.utils.qt_lifecycle import ShutdownResourceSlot
 
 class CompletedPage(PageFrame):
     _page_result_ready = pyqtSignal(object)
@@ -141,9 +141,8 @@ class CompletedPage(PageFrame):
         self._detail_signature: tuple | None = None
         self._cleanup_done = False
         self._page_sequence = 0
-        self._page_worker: ListPageWorker | None = None
+        self._page_worker_slot = ShutdownResourceSlot[ListPageWorker]()
         self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
-        connect_destroyed_cleanup(self, self._cleanup_before_destroy)
         self.table.selectionModel().currentChanged.connect(lambda *_args: self._render_selected_detail())
         self.table.action_requested.connect(self._on_table_action)
         self.media_panel.sig_media_metadata_detected.connect(self._on_media_metadata_detected)
@@ -529,16 +528,20 @@ class CompletedPage(PageFrame):
         self.media_panel.cleanup()
 
     def _shutdown_page_worker(self) -> None:
-        worker = self._page_worker
-        self._page_worker = None
-        if worker is not None:
-            worker.shutdown()
+        self._page_worker_slot.shutdown()
+
+    def shutdown(self) -> None:
+        self._shutdown_page_worker()
 
     def deleteLater(self) -> None:
-        self._shutdown_page_worker()
+        self.shutdown()
         self.cleanup()
         super().deleteLater()
 
-    def _cleanup_before_destroy(self) -> None:
-        self._shutdown_page_worker()
-        self.cleanup()
+    @property
+    def _page_worker(self) -> ListPageWorker | None:
+        return self._page_worker_slot.value
+
+    @_page_worker.setter
+    def _page_worker(self, worker: ListPageWorker | None) -> None:
+        self._page_worker_slot.value = worker

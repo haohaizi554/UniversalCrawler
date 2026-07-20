@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 from app.services.icon_registry import ui_icon_path
 from shared.icon_contract import action_icon_file
 from shared.localization import normalize_language, tr
+from shared.version import __version__
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 
@@ -92,7 +93,7 @@ class StatusBarWidget(QFrame):
 
         layout.addStretch(1)
 
-        self.lbl_version = QPushButton("v3.6.21")
+        self.lbl_version = QPushButton(f"v{__version__}")
         self.lbl_version.setObjectName("StatusVersionButton")
         self.lbl_version.setToolTip("检查更新")
         self.lbl_version.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -190,4 +191,4 @@ class StatusBarWidget(QFrame):
         self.lbl_download.setText(str(merged.get("download_speed") or "0 B/s"))
         self.lbl_completed.setText(str(int(merged.get("completed_count", 0) or 0)))
         self.lbl_failed.setText(str(failed_count))
-        self.lbl_version.setText(str(merged.get("version") or "v3.6.21"))
+        self.lbl_version.setText(str(merged.get("version") or f"v{__version__}"))

@@ -48,12 +48,6 @@ from shared.localization import normalize_language, tr
 from shared.log_contract import LOG_CATEGORY_LABELS
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from shared.log_pipeline_rules import (
-    is_crawl_pipeline_log,
-    is_download_boundary_log,
-    is_download_component_source,
-    is_platform_root_crawl_log,
-)
 from shared.log_platforms import PlatformUiMeta
 from app.ui.viewmodels.log_platforms import load_builtin_platform_metas, load_platform_options
 from app.ui.viewmodels.log_query_worker import (
@@ -71,6 +65,7 @@ from app.ui.viewmodels.log_detail_worker import (
     LogDetailWorker,
 )
 from app.ui.viewmodels.pagination_state import parse_page_size
+from app.utils.qt_lifecycle import ShutdownResourceSlot
 from app.utils.safe_slot import safe_slot
 
 
@@ -182,9 +177,9 @@ class LogCenterPage(PageFrame):
         self._log_detail_export_worker = LogDetailExportWorker(
             lambda result: self._log_detail_export_finished.emit(result)
         )
-        self.destroyed.connect(lambda *_args: self._log_query_worker.shutdown())
-        self.destroyed.connect(lambda *_args: self._log_detail_worker.shutdown())
-        self.destroyed.connect(lambda *_args: self._log_detail_export_worker.shutdown())
+        self._log_query_worker_slot = ShutdownResourceSlot(self._log_query_worker)
+        self._log_detail_worker_slot = ShutdownResourceSlot(self._log_detail_worker)
+        self._log_detail_export_worker_slot = ShutdownResourceSlot(self._log_detail_export_worker)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("LogCenterSplitter")
@@ -204,6 +199,15 @@ class LogCenterPage(PageFrame):
         set_cache_service = getattr(self._log_detail_worker, "set_cache_service", None)
         if callable(set_cache_service):
             set_cache_service(cache_service)
+
+    def shutdown(self) -> None:
+        self._log_query_worker_slot.shutdown()
+        self._log_detail_worker_slot.shutdown()
+        self._log_detail_export_worker_slot.shutdown()
+
+    def deleteLater(self) -> None:
+        self.shutdown()
+        super().deleteLater()
 
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)
@@ -1199,18 +1203,6 @@ class LogCenterPage(PageFrame):
             bottom_right,
             [Qt.ItemDataRole.DecorationRole, Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
         )
-
-    def _is_download_component_source(self, source: str) -> bool:
-        return is_download_component_source(source)
-
-    def _is_download_boundary_log(self, item: dict[str, Any]) -> bool:
-        return is_download_boundary_log(item)
-
-    def _is_platform_root_crawl_log(self, item: dict[str, Any]) -> bool:
-        return is_platform_root_crawl_log(item)
-
-    def _is_crawl_pipeline_log(self, item: dict[str, Any]) -> bool:
-        return is_crawl_pipeline_log(item)
 
     @staticmethod
     def _direct_trace_id_from_item(item: dict[str, Any] | None) -> str:

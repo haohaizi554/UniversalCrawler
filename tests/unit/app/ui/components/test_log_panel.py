@@ -26,5 +26,13 @@ class LogPanelTests(unittest.TestCase):
         self.assertEqual(panel.blockCount(), 3)
         self.assertEqual(panel.toPlainText().splitlines(), ["line-2", "line-3", "line-4"])
 
+    def test_append_logs_batches_lines_and_keeps_block_limit(self):
+        panel = LogPanel()
+        panel.setMaximumBlockCount(3)
+
+        panel.append_logs(["one", "two", "three", "four"])
+
+        self.assertEqual(panel.toPlainText().splitlines(), ["two", "three", "four"])
+
 if __name__ == "__main__":
     unittest.main()

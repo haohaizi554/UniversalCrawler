@@ -644,7 +644,7 @@ python -m pytest tests
 | :-- | :-- | :-- |
 | **便携版** | 解压即用，内含 Playwright Chromium | `packaging/build_portable.py` |
 | **安装包** | Inno Setup 安装器，支持开始菜单与桌面快捷方式 | `packaging/build_installer.py` |
-| **一键发布** | 依次构建便携版 + 安装包 | `packaging/build_release.py` |
+| **发布构建器** | 主题化面板或无界面流水线，统一版本、构建、签名与发布 | `packaging/build_release.py` |
 
 ### 便携版包含什么
 
@@ -668,7 +668,8 @@ python -m pytest tests
 
 - [`packaging/build_portable.py`](packaging/build_portable.py) — 便携版构建
 - [`packaging/build_installer.py`](packaging/build_installer.py) — 安装包构建
-- [`packaging/build_release.py`](packaging/build_release.py) — 一键发布
+- [`packaging/build_release.py`](packaging/build_release.py) — 发布构建面板与无界面流水线
+- [`docs/guides/release-builder.md`](docs/guides/release-builder.md) — 发布面板、版本模式、签名与信任锚维护指南
 - [`packaging/portable.spec`](packaging/portable.spec) — PyInstaller 打包规格
 - [`packaging/installer.iss`](packaging/installer.iss) — Inno Setup 安装脚本
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — 运行时初始化钩子
@@ -694,7 +695,8 @@ python -m pytest tests
 - 是否确认不把用户态配置和 Cookie 打入产物
 - 是否确认开发态继续写入项目根 `user_data/`，打包态切换到 `%LOCALAPPDATA%`
 
-详细说明见：[打包与发布指南](docs/guides/packaging.md) 与 [打包脚本说明](packaging/README.md)
+详细说明见：[发布构建器维护指南](docs/guides/release-builder.md)、
+[打包与发布指南](docs/guides/packaging.md) 与 [打包脚本说明](packaging/README.md)。
 
 ---
 

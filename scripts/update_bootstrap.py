@@ -18,10 +18,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 # ``Crypto`` 来自仍在维护的 PyCryptodome 包，而非已废弃的 PyCrypto。
 from Crypto.PublicKey import ECC  # nosec B413
@@ -46,6 +47,85 @@ class ManifestKeyResult:
     public_key_path: Path
     public_key_fingerprint_sha256: str
     rotated_private_key_path: Path | None = None
+    rotated_public_key_path: Path | None = None
+
+
+class ManifestKeyTransaction:
+    """Hold rollback material until the release source identity is committed."""
+
+    def __init__(
+        self,
+        result: ManifestKeyResult,
+        *,
+        private_key_path: Path,
+        public_key_path: Path,
+        config_path: Path | None,
+        previous_private: bytes | None,
+        previous_public: bytes | None,
+        previous_config: bytes | None,
+    ) -> None:
+        self.result = result
+        self._private_key_path = Path(private_key_path)
+        self._public_key_path = Path(public_key_path)
+        self._config_path = Path(config_path) if config_path is not None else None
+        self._previous_private = previous_private
+        self._previous_public = previous_public
+        self._previous_config = previous_config
+        self._rollback_cleanup_paths = tuple(
+            Path(path)
+            for path in (
+                result.rotated_private_key_path,
+                result.rotated_public_key_path,
+            )
+            if path is not None
+        )
+        self._active = True
+
+    def commit(self) -> None:
+        """Forget rollback bytes after a verified release commit exists."""
+
+        self._active = False
+        self._clear_snapshots()
+
+    def rollback(self) -> None:
+        """Restore all participating files or fail without hiding the problem."""
+
+        if not self._active:
+            return
+        results = [
+            _restore_file(
+                self._private_key_path,
+                self._previous_private,
+                mode=0o600,
+            ),
+            _restore_file(
+                self._public_key_path,
+                self._previous_public,
+                mode=None,
+            ),
+        ]
+        if self._config_path is not None:
+            results.append(
+                _restore_file(
+                    self._config_path,
+                    self._previous_config,
+                    mode=None,
+                )
+            )
+        results.extend(
+            _remove_file(path)
+            for path in self._rollback_cleanup_paths
+        )
+        if not all(results):
+            raise BootstrapError("manifest signing material rollback failed")
+        self._active = False
+        self._clear_snapshots()
+
+    def _clear_snapshots(self) -> None:
+        self._previous_private = None
+        self._previous_public = None
+        self._previous_config = None
+        self._rollback_cleanup_paths = ()
 
 
 @dataclass(frozen=True)
@@ -116,6 +196,125 @@ def _public_key_fingerprint(public_pem: str) -> str:
     return hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
 
 
+def _atomic_write_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    mode: int | None = None,
+) -> None:
+    target = Path(path)
+    descriptor = -1
+    temporary_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(
+            descriptor,
+            "wb",
+        ) as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            try:
+                temporary_path.chmod(mode)
+            except OSError:
+                pass
+        os.replace(temporary_path, target)
+        temporary_path = None
+    except (OSError, UnicodeError) as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise BootstrapError(
+            f"could not atomically write {target.name}"
+        ) from error
+
+
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    mode: int | None = None,
+) -> None:
+    try:
+        payload = content.encode("utf-8")
+    except UnicodeError as error:
+        raise BootstrapError(f"could not encode {Path(path).name}") from error
+    _atomic_write_bytes(path, payload, mode=mode)
+
+
+def _read_optional_bytes(path: Path, *, description: str) -> bytes | None:
+    try:
+        return Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise BootstrapError(f"{description} is unavailable") from error
+
+
+def _restore_file(path: Path, previous: bytes | None, *, mode: int | None) -> bool:
+    try:
+        if previous is None:
+            Path(path).unlink(missing_ok=True)
+        else:
+            _atomic_write_bytes(path, previous, mode=mode)
+    except (OSError, BootstrapError):
+        return False
+    return True
+
+
+def _remove_file(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+def ensure_manifest_public_key(
+    *,
+    private_key_path: Path,
+    public_key_path: Path,
+) -> ManifestKeyResult:
+    """Derive and atomically repair the public PEM for an existing private key."""
+
+    private_path = Path(private_key_path)
+    public_path = Path(public_key_path)
+    try:
+        key = ECC.import_key(private_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError) as error:
+        raise BootstrapError("existing manifest private key is invalid") from error
+    if not key.has_private() or key.curve != "Ed25519":
+        raise BootstrapError("existing manifest private key is invalid")
+    public_pem = key.public_key().export_key(format="PEM")
+    expected = public_pem.encode("utf-8")
+    current = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    if current != expected:
+        _atomic_write_text(public_path, public_pem)
+    return ManifestKeyResult(
+        private_path,
+        public_path,
+        _public_key_fingerprint(public_pem),
+    )
+
+
 def generate_manifest_key(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -133,34 +332,153 @@ def generate_manifest_key(
     private_path = secret_root / DEFAULT_PRIVATE_KEY_NAME
     public_path = secret_root / DEFAULT_PUBLIC_KEY_NAME
     rotated_private: Path | None = None
+    rotated_public: Path | None = None
 
-    if private_path.exists() and rotate:
-        suffix = time.strftime("%Y%m%d-%H%M%S")
-        rotated_private = private_path.with_name(f"{private_path.stem}.{suffix}.bak{private_path.suffix}")
-        private_path.replace(rotated_private)
-        if public_path.exists():
-            public_path.replace(public_path.with_name(f"{public_path.stem}.{suffix}.bak{public_path.suffix}"))
-    elif private_path.exists() and not rotate:
-        key = ECC.import_key(private_path.read_text(encoding="utf-8"))
+    previous_private_bytes = _read_optional_bytes(
+        private_path,
+        description="existing manifest private key",
+    )
+    previous_public_bytes = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    previous_config_bytes = (
+        _read_optional_bytes(
+            Path(config_path),
+            description="update trust config",
+        )
+        if write_public_key_to_config
+        else None
+    )
+    previous_private: str | None = None
+    if previous_private_bytes is not None:
+        try:
+            previous_private = previous_private_bytes.decode("utf-8")
+        except UnicodeError as error:
+            raise BootstrapError("existing manifest private key is invalid") from error
+
+    try:
+        if previous_private is not None and rotate:
+            suffix = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
+            rotated_private = private_path.with_name(
+                f"{private_path.stem}.{suffix}.bak{private_path.suffix}"
+            )
+            _atomic_write_bytes(
+                rotated_private,
+                previous_private_bytes,
+                mode=0o600,
+            )
+            if previous_public_bytes is not None:
+                rotated_public = public_path.with_name(
+                    f"{public_path.stem}.{suffix}.bak{public_path.suffix}"
+                )
+                _atomic_write_bytes(
+                    rotated_public,
+                    previous_public_bytes,
+                )
+        elif previous_private is not None:
+            result = ensure_manifest_public_key(
+                private_key_path=private_path,
+                public_key_path=public_path,
+            )
+            if write_public_key_to_config:
+                inject_public_key(
+                    public_key_path=public_path,
+                    config_path=config_path,
+                )
+            return result
+
+        key = ECC.generate(curve="Ed25519")
+        private_pem = key.export_key(format="PEM")
         public_pem = key.public_key().export_key(format="PEM")
-        if not public_path.exists():
-            public_path.write_text(public_pem, encoding="utf-8")
+        _atomic_write_text(private_path, private_pem, mode=0o600)
+        _atomic_write_text(public_path, public_pem)
         if write_public_key_to_config:
             inject_public_key(public_key_path=public_path, config_path=config_path)
-        return ManifestKeyResult(private_path, public_path, _public_key_fingerprint(public_pem))
+        return ManifestKeyResult(
+            private_path,
+            public_path,
+            _public_key_fingerprint(public_pem),
+            rotated_private,
+            rotated_public,
+        )
+    except BaseException as error:
+        restore_results = [
+            _restore_file(
+                private_path,
+                previous_private_bytes,
+                mode=0o600,
+            ),
+            _restore_file(
+                public_path,
+                previous_public_bytes,
+                mode=None,
+            ),
+        ]
+        if write_public_key_to_config:
+            restore_results.append(
+                _restore_file(
+                    Path(config_path),
+                    previous_config_bytes,
+                    mode=None,
+                )
+            )
+        restore_results.extend(
+            _remove_file(path)
+            for path in (rotated_private, rotated_public)
+            if path is not None
+        )
+        if not all(restore_results):
+            raise BootstrapError(
+                "manifest key update failed and previous material could not be restored"
+            ) from error
+        raise
 
-    key = ECC.generate(curve="Ed25519")
-    private_pem = key.export_key(format="PEM")
-    public_pem = key.public_key().export_key(format="PEM")
-    private_path.write_text(private_pem, encoding="utf-8")
-    public_path.write_text(public_pem, encoding="utf-8")
-    try:
-        private_path.chmod(0o600)
-    except OSError:
-        pass
-    if write_public_key_to_config:
-        inject_public_key(public_key_path=public_path, config_path=config_path)
-    return ManifestKeyResult(private_path, public_path, _public_key_fingerprint(public_pem), rotated_private)
+
+def begin_manifest_key_transaction(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    rotate: bool,
+    write_public_key_to_config: bool = False,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> ManifestKeyTransaction:
+    """Mutate signing material now, but retain rollback bytes until committed."""
+
+    secret_root = release_secrets_dir(project_root=project_root)
+    private_path = secret_root / DEFAULT_PRIVATE_KEY_NAME
+    public_path = secret_root / DEFAULT_PUBLIC_KEY_NAME
+    config = Path(config_path) if write_public_key_to_config else None
+    previous_private = _read_optional_bytes(
+        private_path,
+        description="existing manifest private key",
+    )
+    previous_public = _read_optional_bytes(
+        public_path,
+        description="existing manifest public key",
+    )
+    previous_config = (
+        _read_optional_bytes(
+            config,
+            description="update trust config",
+        )
+        if config is not None
+        else None
+    )
+    result = generate_manifest_key(
+        project_root=project_root,
+        rotate=rotate,
+        write_public_key_to_config=write_public_key_to_config,
+        config_path=config_path,
+    )
+    return ManifestKeyTransaction(
+        result,
+        private_key_path=private_path,
+        public_key_path=public_path,
+        config_path=config,
+        previous_private=previous_private,
+        previous_public=previous_public,
+        previous_config=previous_config,
+    )
 
 
 def _replace_top_level_assignment(source: str, name: str, replacement: str) -> str:
@@ -204,6 +522,10 @@ def _compile_python_file(path: Path) -> None:
 
 def _assert_update_trust_config_safe(path: Path) -> None:
     source = Path(path).read_text(encoding="utf-8")
+    _assert_update_trust_source_safe(source)
+
+
+def _assert_update_trust_source_safe(source: str) -> None:
     if re.search(r"BEGIN\s+(?:EC\s+|RSA\s+|ENCRYPTED\s+)?PRIVATE\s+KEY", source):
         raise BootstrapError("update trust config contains a private key marker")
     forbidden = (".pfx", ".p12", "UCRAWL_SIGN_PFX_PASSWORD")
@@ -215,15 +537,34 @@ def _assert_update_trust_config_safe(path: Path) -> None:
 def inject_public_key(*, public_key_path: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> None:
     """只把 Ed25519 公钥写入生产信任配置。"""
 
-    public_pem = Path(public_key_path).read_text(encoding="utf-8").strip()
+    try:
+        public_pem = Path(public_key_path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as error:
+        raise BootstrapError("manifest public key is unavailable") from error
     if "BEGIN PUBLIC KEY" not in public_pem or "PRIVATE KEY" in public_pem:
         raise BootstrapError("expected a PEM public key, not private signing material")
     config = Path(config_path)
-    source = config.read_text(encoding="utf-8")
+    try:
+        original = config.read_bytes()
+        source = original.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise BootstrapError("update trust config is unavailable") from error
     source = _replace_top_level_assignment(source, "UPDATE_PUBLIC_KEY_PEM", _format_pem_assignment("UPDATE_PUBLIC_KEY_PEM", public_pem))
-    config.write_text(source, encoding="utf-8")
-    _compile_python_file(config)
-    _assert_update_trust_config_safe(config)
+    try:
+        compile(source, config.name, "exec")
+    except (SyntaxError, ValueError, TypeError) as error:
+        raise BootstrapError("updated trust config is not valid Python") from error
+    _assert_update_trust_source_safe(source)
+    _atomic_write_text(config, source)
+    try:
+        _assert_update_trust_config_safe(config)
+    except (BootstrapError, OSError, UnicodeError) as error:
+        if not _restore_file(config, original, mode=None):
+            raise BootstrapError(
+                "update trust config validation failed and previous content "
+                "could not be restored"
+            ) from error
+        raise
 
 
 def normalize_fingerprint(value: Any) -> str:
@@ -539,7 +880,17 @@ def inject_windows_trust(
     return info
 
 
-_PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+(?:EC\s+|RSA\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE\s+KEY", re.IGNORECASE)
+_PRIVATE_KEY_PATTERN = re.compile(
+    r"-----BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?-----",
+    re.IGNORECASE,
+)
+_PRIVATE_KEY_BLOCK_PATTERN = re.compile(
+    r"-----BEGIN\s+(?P<label>(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?)-----"
+    r"(?P<body>.*?)"
+    r"-----END\s+(?P=label)-----",
+    re.DOTALL | re.IGNORECASE,
+)
+_PRIVATE_KEY_PAYLOAD_LINE = re.compile(r"[A-Za-z0-9+/=]{24,}")
 _PFX_ENV_ASSIGNMENT_PATTERN = re.compile(r"UCRAWL_SIGN_PFX_PASSWORD\s*=\s*\S+", re.IGNORECASE)
 _PFX_PASSPHRASE_PATTERN = re.compile(r"PFX\s+pass(?:word|phrase)\s*[:=]\s*\S+", re.IGNORECASE)
 _DANGEROUS_SUFFIXES = (
@@ -595,9 +946,53 @@ def _read_small_text(path: Path) -> str:
         return ""
 
 
-def _scan_text_for_sensitive_markers(text: str, *, label: str) -> list[SecretFinding]:
+def _allows_synthetic_private_key_fixture(path_label: str) -> bool:
+    normalized = path_label.replace("\\", "/").lower()
+    return normalized.startswith("tests/") or normalized.startswith(
+        "docs/superpowers/plans/"
+    )
+
+
+def _private_key_payload_length(lines: Iterable[str]) -> int:
+    payload_length = 0
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("+"):
+            line = line[1:].strip()
+        if not line:
+            continue
+        if ":" in line and payload_length == 0:
+            continue
+        if not _PRIVATE_KEY_PAYLOAD_LINE.fullmatch(line):
+            break
+        payload_length += len(line)
+    return payload_length
+
+
+def _contains_realistic_private_key_payload(text: str) -> bool:
+    for match in _PRIVATE_KEY_BLOCK_PATTERN.finditer(text):
+        if _private_key_payload_length(match.group("body").splitlines()) >= 64:
+            return True
+
+    for marker in _PRIVATE_KEY_PATTERN.finditer(text):
+        payload_lines = text[marker.end() : marker.end() + 8192].splitlines()
+        if _private_key_payload_length(payload_lines) >= 64:
+            return True
+    return False
+
+
+def _scan_text_for_sensitive_markers(
+    text: str,
+    *,
+    label: str,
+    allow_synthetic_private_keys: bool = False,
+) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
-    if _PRIVATE_KEY_PATTERN.search(text):
+    private_key_marker = _PRIVATE_KEY_PATTERN.search(text)
+    if private_key_marker and (
+        not allow_synthetic_private_keys
+        or _contains_realistic_private_key_payload(text)
+    ):
         findings.append(SecretFinding(label, "private key PEM marker"))
     if _PFX_ENV_ASSIGNMENT_PATTERN.search(text):
         findings.append(SecretFinding(label, "PFX passphrase environment assignment"))
@@ -629,22 +1024,55 @@ def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[Se
             findings.append(SecretFinding(rel, "release secret directory is tracked"))
         if _is_dangerous_secret_path(path):
             findings.append(SecretFinding(rel, "dangerous signing file is tracked"))
-        findings.extend(_scan_text_for_sensitive_markers(_read_small_text(path), label=rel))
+        findings.extend(
+            _scan_text_for_sensitive_markers(
+                _read_small_text(path),
+                label=rel,
+                allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                    rel
+                ),
+            )
+        )
 
     for label, diff_args, name_args in (
         ("staged diff", ["diff", "--cached", "--no-ext-diff", "--unified=0"], ["diff", "--cached", "--name-only", "-z"]),
         ("working tree diff", ["diff", "--no-ext-diff", "--unified=0"], ["diff", "--name-only", "-z"]),
     ):
-        diff = _git_stdout(diff_args, project_root=project_root)
-        findings.extend(_scan_text_for_sensitive_markers(_added_diff_text(diff), label=label))
         for path in _git_paths(name_args, project_root=project_root):
+            rel = path.relative_to(project_root).as_posix()
+            diff_text = _git_stdout(
+                [*diff_args, "--", rel],
+                project_root=project_root,
+            )
+            findings.extend(
+                _scan_text_for_sensitive_markers(
+                    _added_diff_text(diff_text),
+                    label=f"{label}: {rel}",
+                    allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                        rel
+                    ),
+                )
+            )
             if _is_dangerous_secret_path(path):
-                findings.append(SecretFinding(path.relative_to(project_root).as_posix(), f"dangerous signing file in {label}"))
+                findings.append(
+                    SecretFinding(rel, f"dangerous signing file in {label}")
+                )
 
     for path in _git_paths(["ls-files", "--others", "--exclude-standard", "-z"], project_root=project_root):
+        rel = path.relative_to(project_root).as_posix()
         if _is_dangerous_secret_path(path):
-            findings.append(SecretFinding(path.relative_to(project_root).as_posix(), "dangerous untracked signing file"))
-        findings.extend(_scan_text_for_sensitive_markers(_read_small_text(path), label=path.relative_to(project_root).as_posix()))
+            findings.append(
+                SecretFinding(rel, "dangerous untracked signing file")
+            )
+        findings.extend(
+            _scan_text_for_sensitive_markers(
+                _read_small_text(path),
+                label=rel,
+                allow_synthetic_private_keys=_allows_synthetic_private_key_fixture(
+                    rel
+                ),
+            )
+        )
 
     try:
         secret_root = release_secrets_dir(project_root=project_root, create=False)

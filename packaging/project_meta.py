@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_FILE = PROJECT_ROOT / "pyproject.toml"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.version import __version__
 
 APP_NAME = "UniversalCrawlerPro"
 WEBUI_NAME = "CrawlerWebPortal"
@@ -54,7 +60,7 @@ def _project_field(field_name: str) -> str:
     return match.group(1).strip()
 
 PACKAGE_NAME = _project_field("name")
-PACKAGE_VERSION = _project_field("version")
+PACKAGE_VERSION = __version__
 
 def sanitize_for_filename(value: str) -> str:
     """将版本号等字段转为适合文件名的安全片段。"""

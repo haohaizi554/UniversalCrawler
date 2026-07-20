@@ -71,8 +71,8 @@ def _proxy_port_hint(text: str) -> str:
     return ""
 
 
-def build_missav_proxy_url(proxy_str: str) -> str:
-    """把代理预设标签或自定义主机端口规范化为 URL。"""
+def normalize_proxy_url(proxy_str: str) -> str:
+    """Normalize a proxy preset label or custom host and port into a URL."""
     normalized = str(proxy_str or "").strip().strip("\"'")
     if normalized in PROXY_PRESET_URLS:
         return PROXY_PRESET_URLS[normalized]
@@ -92,3 +92,8 @@ def build_missav_proxy_url(proxy_str: str) -> str:
             return ""
         return f"http://{normalized}"
     return "http://127.0.0.1:7890"
+
+
+def build_missav_proxy_url(proxy_str: str) -> str:
+    """Preserve the legacy MissAV proxy URL normalization entry point."""
+    return normalize_proxy_url(proxy_str)

@@ -13,9 +13,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from contextlib import contextmanager
+import threading
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
 from typing import Iterator
+
+from Crypto.PublicKey import ECC
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
@@ -27,18 +32,48 @@ WINDOWS_RELEASE_TOOLS = ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe")
 MIN_WINDOWS_TOOL_BYTES = 1024 * 1024
 RELEASE_TEMP_ROOT_ENV = "UCRAWL_RELEASE_TEMP_ROOT"
 USER_DATA_ROOT_ENV = "UCRAWL_USER_DATA_ROOT"
+RELEASE_SMOKE_TIMEOUT_SECONDS = 60
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
-from scripts.update_bootstrap import default_manifest_private_key_path  # noqa: E402
+from scripts.update_bootstrap import (  # noqa: E402
+    DEFAULT_PRIVATE_KEY_NAME,
+    DEFAULT_PUBLIC_KEY_NAME,
+    begin_manifest_key_transaction,
+    default_manifest_private_key_path,
+    ensure_manifest_public_key,
+    release_secrets_dir,
+)
 from release_lock import (  # noqa: E402
     LOCK_ROOT_ENV,
     LOCK_TOKEN_ENV,
     release_build_lock,
     release_lock_path,
+)
+from release_tool.events import ReleaseEventEmitter  # noqa: E402
+from release_tool.models import (  # noqa: E402
+    BuildRequest,
+    ReleaseMode,
+    ReleaseStage,
+    RemoteReleaseInfo,
+)
+from release_tool.modes import resolve_release_mode  # noqa: E402
+from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
+from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
+from release_tool.runner import (  # noqa: E402
+    CancellationToken,
+    ReleasePipelineHooks,
+    SigningMaterial,
+    load_request_file,
+    run_release_request,
+)
+from release_tool.versioning import (  # noqa: E402
+    apply_version_update,
+    plan_version_update,
+    read_project_version,
 )
 
 
@@ -75,12 +110,19 @@ def _run_build(
 def _run_manifest_tool(argv: list[str], *, project_root: Path) -> None:
     root = Path(project_root).resolve()
     tool = root / "packaging" / "update_manifest.py"
-    subprocess.run(
-        [sys.executable, str(tool), *argv],
-        cwd=root,
-        check=True,
-        shell=False,
-    )
+    try:
+        subprocess.run(
+            [sys.executable, str(tool), *argv],
+            cwd=root,
+            check=True,
+            shell=False,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"manifest tool failed with status {error.returncode}"
+        ) from None
+    except OSError:
+        raise RuntimeError("manifest tool could not start") from None
 
 
 def _run_git(argv: list[str]) -> str:
@@ -423,13 +465,118 @@ def _validate_private_key_path(private_key: Path) -> Path:
     except ValueError:
         pass
     else:
-        raise SystemExit(f"manifest 私钥不得位于 Git 工作区内：{resolved}")
+        raise SystemExit("manifest private key must not be inside the Git working tree")
     if not resolved.is_file():
         raise SystemExit(
             "未找到 update manifest 私钥，请先运行："
             "python scripts/update_bootstrap.py generate-manifest-key"
         )
+    resolved = _require_readable_regular_file(resolved, label="manifest private key")
+    try:
+        key = ECC.import_key(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest private key is invalid") from None
+    if not key.has_private() or key.curve != "Ed25519":
+        raise ValueError("manifest private key is invalid")
     return resolved
+
+
+def _read_only_secret_path(filename: str) -> Path:
+    return release_secrets_dir(project_root=PROJECT_ROOT, create=False) / filename
+
+
+def _read_only_public_key_path() -> Path:
+    return _read_only_secret_path(DEFAULT_PUBLIC_KEY_NAME)
+
+
+def _require_readable_regular_file(path: Path, *, label: str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    if not resolved.is_file():
+        raise ValueError(f"{label} is unavailable")
+    try:
+        with resolved.open("rb") as handle:
+            if not handle.read(1):
+                raise ValueError(f"{label} is unavailable")
+    except OSError as error:
+        raise ValueError(f"{label} is unavailable") from error
+    return resolved
+
+
+def _validate_public_key_path(public_key: Path) -> Path:
+    resolved = _require_readable_regular_file(public_key, label="manifest public key")
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("manifest public key is unavailable") from error
+    if "BEGIN PUBLIC KEY" not in content or "PRIVATE KEY" in content:
+        raise ValueError("manifest public key is invalid")
+    return resolved
+
+
+def _manifest_public_key_from_private(private_key: Path) -> tuple[str, str]:
+    try:
+        key = ECC.import_key(Path(private_key).read_text(encoding="utf-8"))
+        public_pem = key.public_key().export_key(format="PEM")
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest private key is invalid") from None
+    fingerprint = hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
+    return public_pem.strip(), fingerprint
+
+
+def _manifest_public_key_fingerprint(public_key: Path) -> tuple[str, str]:
+    resolved = _validate_public_key_path(public_key)
+    try:
+        public_pem = ECC.import_key(
+            resolved.read_text(encoding="utf-8")
+        ).export_key(format="PEM")
+    except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+        raise ValueError("manifest public key is invalid") from None
+    fingerprint = hashlib.sha256(public_pem.encode("utf-8")).hexdigest().upper()
+    return public_pem.strip(), fingerprint
+
+
+def _relative_release_paths(paths: tuple[Path, ...]) -> tuple[str, ...]:
+    root = PROJECT_ROOT.resolve()
+    relative_paths: list[str] = []
+    for path in paths:
+        try:
+            relative = Path(path).resolve().relative_to(root).as_posix()
+        except ValueError as error:
+            raise SystemExit("version update includes a path outside the repository") from error
+        relative_paths.append(relative)
+    return tuple(sorted(set(relative_paths)))
+
+
+def _git_path_set(argv: list[str]) -> set[str]:
+    output = _run_git(argv)
+    return {line.replace("\\", "/") for line in output.splitlines() if line.strip()}
+
+
+def _validate_release_baseline_clean() -> None:
+    if _run_git(["status", "--porcelain=v1", "--untracked-files=all"]):
+        raise SystemExit("formal release requires a clean Git worktree and index")
+
+
+def _new_release_requires_clean_baseline(request: BuildRequest) -> bool:
+    return any(
+        getattr(request, field)
+        for field in (
+            "apply_version",
+            "build_portable",
+            "build_installer",
+            "commit_version_changes",
+            "push_main",
+            "create_or_reuse_tag",
+        )
+    )
+
+
+def _validate_version_commit(paths: tuple[str, ...], commit: str) -> None:
+    expected = set(paths)
+    committed = _git_path_set(["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+    if committed != expected:
+        raise SystemExit("release version commit includes unexpected files")
+    _validate_release_baseline_clean()
 
 
 def _validate_repository(repository: str) -> str:
@@ -793,35 +940,504 @@ def _build_binaries(
     lock_token: str,
     lock_root: Path,
     enforce_source_immutability: bool = True,
+    build_portable: bool = True,
+    build_installer: bool = True,
 ) -> None:
     root = Path(project_root).resolve()
     source_fingerprints = (
         _snapshot_source_fingerprints(root) if enforce_source_immutability else {}
     )
-    signed_build = os.environ.get("UCRAWL_SIGN_WINDOWS") == "1"
+    signed_build = build_installer and os.environ.get("UCRAWL_SIGN_WINDOWS") == "1"
     trust: dict[str, object] | None = None
     if signed_build:
         trust = _validate_production_trust(
             config_path=root / "app" / "config" / "update_trust.py"
         )
-    _run_build(
-        "build_portable.py",
-        root,
-        lock_token=lock_token,
-        lock_root=lock_root,
-    )
-    _run_build(
-        "build_installer.py",
-        root,
-        lock_token=lock_token,
-        lock_root=lock_root,
-    )
+    if build_portable:
+        _run_build(
+            "build_portable.py",
+            root,
+            lock_token=lock_token,
+            lock_root=lock_root,
+        )
+    if build_installer:
+        _run_build(
+            "build_installer.py",
+            root,
+            lock_token=lock_token,
+            lock_root=lock_root,
+        )
     if enforce_source_immutability:
         _validate_snapshot_source_unchanged(root, source_fingerprints)
     if signed_build and trust is not None:
         _version, installer = _project_release_metadata(root)
         signer = _extract_windows_trust(installer, project_root=root)
         _validate_windows_signer_identity(trust, signer)
+
+
+def _build_pipeline_hooks(
+    request: BuildRequest,
+    environment: Mapping[str, str],
+    emitter: object | None,
+) -> ReleasePipelineHooks:
+    """Adapt the existing release primitives to one request-scoped runner."""
+
+    resources = ExitStack()
+    active_stage_lock = threading.Lock()
+    state: dict[str, object] = {
+        "active_progress": 0,
+        "active_stage": ReleaseStage.IDLE,
+        "assets": (),
+        "uploaded_assets": (),
+        "build_root": None,
+        "child_environment": None,
+        "installer": None,
+        "lock_token": "",
+        "publisher": None,
+        "snapshot_root": None,
+        "source_commit": "",
+        "signing_material": None,
+        "version_plan": None,
+        "version_result": None,
+    }
+    tag = f"v{request.target_version}"
+    formal_build = (
+        request.sign_manifest
+        or request.upload_release_assets
+        or request.create_or_update_release
+        or request.rotate_trust_anchor
+    )
+
+    def activate_stage(stage: ReleaseStage, progress: int) -> None:
+        with active_stage_lock:
+            state["active_stage"] = stage
+            state["active_progress"] = progress
+
+    def emit_log(message: str) -> None:
+        if emitter is None:
+            return
+        emit = getattr(emitter, "emit", None)
+        if callable(emit):
+            with active_stage_lock:
+                stage = state["active_stage"]
+                progress = state["active_progress"]
+            emit("log", stage=stage, progress=progress, message=message)
+
+    def resolve_release_context() -> tuple[dict[str, str], GitHubReleasePublisher]:
+        child_environment = state["child_environment"]
+        publisher = state["publisher"]
+        if isinstance(child_environment, dict) and publisher is not None:
+            return child_environment, publisher
+
+        proxy_label = request.proxy_label.strip()
+        proxy_label_from_environment = proxy_label.startswith("env:")
+        if proxy_label_from_environment:
+            proxy_label = str(environment.get(proxy_label[4:]) or "").strip()
+            if not proxy_label:
+                raise ValueError("proxy selection reference is unavailable")
+        custom_proxy = request.custom_proxy.strip()
+        custom_proxy_from_environment = custom_proxy.startswith("env:")
+        if custom_proxy_from_environment:
+            custom_proxy = str(environment.get(custom_proxy[4:]) or "").strip()
+            if not custom_proxy:
+                raise ValueError("custom proxy reference is unavailable")
+        child_environment = build_proxy_environment(
+            ProxySelection(
+                label=proxy_label,
+                endpoint=custom_proxy,
+                label_from_environment=proxy_label_from_environment,
+                endpoint_from_environment=custom_proxy_from_environment,
+            ),
+            environment,
+        )
+        publisher = GitHubReleasePublisher(
+            request.repository,
+            child_environment,
+            emit_log,
+            project_root=PROJECT_ROOT,
+        )
+        state["child_environment"] = child_environment
+        state["publisher"] = publisher
+        return child_environment, publisher
+
+    def plan_version(target_version: str):
+        plan = plan_version_update(target_version, PROJECT_ROOT)
+        state["version_plan"] = plan
+        return plan
+
+    def apply_version(target_version: str):
+        plan = plan_version(target_version)
+        result = apply_version_update(plan)
+        state["version_result"] = result
+        return result
+
+    def validate_dependencies(_request: BuildRequest) -> None:
+        child_environment, _publisher = resolve_release_context()
+        if request.release_notes_path:
+            _require_readable_regular_file(Path(request.release_notes_path), label="release notes")
+        if (
+            request.sign_manifest or request.upload_release_assets
+        ) and not request.generate_manifest_key:
+            _private_key_path(request, child_environment)
+
+    def ensure_lock() -> str:
+        lock_token = state["lock_token"]
+        if isinstance(lock_token, str) and lock_token:
+            return lock_token
+        lock_token = resources.enter_context(_release_build_lock(PROJECT_ROOT))
+        state["lock_token"] = lock_token
+        return lock_token
+
+    def prepare(_request: BuildRequest, mode: ReleaseMode) -> None:
+        ensure_lock()
+        if (
+            mode is ReleaseMode.NEW_RELEASE
+            and _new_release_requires_clean_baseline(request)
+        ):
+            _validate_release_baseline_clean()
+
+    def resolve_request_signing_material(
+        _request: BuildRequest,
+    ) -> SigningMaterial:
+        child_environment, _publisher = resolve_release_context()
+        if request.generate_manifest_key:
+            existing_private = _read_only_secret_path(DEFAULT_PRIVATE_KEY_NAME)
+            if not request.rotate_trust_anchor and not existing_private.is_file():
+                raise ValueError(
+                    "generating a new manifest key requires explicit trust anchor rotation"
+                )
+            transaction = begin_manifest_key_transaction(
+                project_root=PROJECT_ROOT,
+                rotate=request.rotate_trust_anchor,
+                write_public_key_to_config=request.rotate_trust_anchor,
+                config_path=UPDATE_TRUST_CONFIG,
+            )
+            result = transaction.result
+            material = SigningMaterial(
+                private_key_path=Path(result.private_key_path).resolve(),
+                public_key_path=Path(result.public_key_path).resolve(),
+                fingerprint=str(result.public_key_fingerprint_sha256),
+                trust_anchor_changed=request.rotate_trust_anchor,
+                commit_transaction=transaction.commit,
+                rollback_transaction=transaction.rollback,
+            )
+        else:
+            private_key: Path | None = None
+            public_key: Path | None = None
+            private_public_pem = ""
+            fingerprint = ""
+            if request.sign_manifest or request.upload_release_assets:
+                private_key = _private_key_path(request, child_environment)
+                private_public_pem, fingerprint = _manifest_public_key_from_private(
+                    private_key
+                )
+            if request.upload_public_key:
+                if private_key is None:
+                    default_private = _read_only_secret_path(
+                        DEFAULT_PRIVATE_KEY_NAME
+                    )
+                    if request.private_key_path.strip() or default_private.is_file():
+                        private_key = _private_key_path(request, child_environment)
+                        private_public_pem, fingerprint = (
+                            _manifest_public_key_from_private(private_key)
+                        )
+                if private_key is not None:
+                    repaired = ensure_manifest_public_key(
+                        private_key_path=private_key,
+                        public_key_path=_read_only_public_key_path(),
+                    )
+                    public_key = _validate_public_key_path(
+                        repaired.public_key_path
+                    )
+                    public_pem, public_fingerprint = (
+                        _manifest_public_key_fingerprint(public_key)
+                    )
+                    if public_pem != private_public_pem:
+                        raise ValueError(
+                            "manifest public key repair did not match the selected private key"
+                        )
+                    fingerprint = public_fingerprint
+                else:
+                    public_key = _validate_public_key_path(
+                        _read_only_public_key_path()
+                    )
+                    _public_pem, fingerprint = (
+                        _manifest_public_key_fingerprint(public_key)
+                    )
+            material = SigningMaterial(
+                private_key_path=private_key,
+                public_key_path=public_key,
+                fingerprint=fingerprint,
+                trust_anchor_changed=False,
+            )
+        state["signing_material"] = material
+        filenames = [
+            path.name
+            for path in (material.private_key_path, material.public_key_path)
+            if path is not None
+        ]
+        label = ", ".join(filenames) if filenames else "public trust asset"
+        emit_log(
+            "manifest signing material ready: "
+            f"{label}; public fingerprint={material.fingerprint}"
+        )
+        return material
+
+    def ensure_snapshot() -> tuple[Path, str]:
+        snapshot_root = state["snapshot_root"]
+        source_commit = state["source_commit"]
+        if isinstance(snapshot_root, Path) and isinstance(source_commit, str) and source_commit:
+            return snapshot_root, source_commit
+        source_commit = _validate_git_release_state(tag)
+        lock_token = ensure_lock()
+        if _validate_git_release_state(tag) != source_commit:
+            raise SystemExit("HEAD or release tag changed while waiting for the release build lock")
+        snapshot_root = resources.enter_context(
+            _source_snapshot(source_commit, repository_root=PROJECT_ROOT)
+        )
+        _validate_windows_release_tools(snapshot_root)
+        snapshot_version, installer = _project_release_metadata(snapshot_root)
+        _validate_release_identity(
+            package_version=snapshot_version,
+            version=request.target_version,
+            tag=tag,
+        )
+        state["snapshot_root"] = snapshot_root
+        state["build_root"] = snapshot_root
+        state["source_commit"] = source_commit
+        state["installer"] = installer
+        state["lock_token"] = lock_token
+        return snapshot_root, source_commit
+
+    def build_selected(*, portable: bool, installer: bool) -> None:
+        if not formal_build:
+            lock_token = ensure_lock()
+            state["build_root"] = PROJECT_ROOT
+            _build_binaries(
+                PROJECT_ROOT,
+                lock_token=lock_token,
+                lock_root=PROJECT_ROOT,
+                enforce_source_immutability=False,
+                build_portable=portable,
+                build_installer=installer,
+            )
+            return
+        snapshot_root, _source_commit = ensure_snapshot()
+        lock_token = str(state["lock_token"])
+        _build_binaries(
+            snapshot_root,
+            lock_token=lock_token,
+            lock_root=PROJECT_ROOT,
+            build_portable=portable,
+            build_installer=installer,
+        )
+
+    def sign_manifest(_request: BuildRequest) -> tuple[Path, ...]:
+        _child_environment, _publisher = resolve_release_context()
+        snapshot_root, source_commit = ensure_snapshot()
+        installer = state["installer"]
+        if not isinstance(installer, Path):
+            raise RuntimeError("release installer is unavailable for manifest signing")
+        material = state["signing_material"]
+        if not isinstance(material, SigningMaterial) or material.private_key_path is None:
+            raise RuntimeError("release signing material was not resolved before build")
+        private_key = _validate_private_key_path(material.private_key_path)
+        notes = _release_notes(request.release_notes_path)
+        release_dir = _prepare_release_assets(
+            installer=installer,
+            private_key=private_key,
+            version=request.target_version,
+            tag=tag,
+            source_commit=source_commit,
+            repository=request.repository,
+            output_root=Path(request.output_root) if request.output_root else RELEASE_ASSETS_ROOT,
+            notes=notes,
+            project_root=snapshot_root,
+        )
+        assets = tuple(sorted(release_dir.iterdir()))
+        state["assets"] = assets
+        return assets
+
+    def commit_version_changes(_request: BuildRequest) -> str:
+        result = state["version_result"]
+        paths = list(getattr(result, "changed_files", ()))
+        material = state["signing_material"]
+        if isinstance(material, SigningMaterial) and material.trust_anchor_changed:
+            paths.append(UPDATE_TRUST_CONFIG)
+        if paths:
+            relative_paths = _relative_release_paths(tuple(paths))
+            if _git_path_set(["diff", "--cached", "--name-only"]) or _git_path_set(
+                ["diff", "--name-only"]
+            ) != set(relative_paths):
+                raise SystemExit("version update has unexpected Git changes")
+            _run_git(["add", "--", *relative_paths])
+            if _git_path_set(["diff", "--cached", "--name-only"]) != set(relative_paths):
+                raise SystemExit("version update staged unexpected Git changes")
+            _run_git(
+                [
+                    "commit",
+                    "--only",
+                    "-m",
+                    f"chore: release {request.target_version}",
+                    "--",
+                    *relative_paths,
+                ]
+            )
+            commit = _run_git(["rev-parse", "HEAD"])
+            _validate_version_commit(relative_paths, commit)
+            return commit
+        return _run_git(["rev-parse", "HEAD"])
+
+    def push_main(_request: BuildRequest, commit: str) -> None:
+        verified_commit = str(commit or _run_git(["rev-parse", "HEAD"])).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", verified_commit):
+            raise SystemExit("release push requires a verified full commit SHA")
+        _validate_release_baseline_clean()
+        if _run_git(["rev-parse", "HEAD"]).lower() != verified_commit:
+            raise SystemExit("HEAD changed after the release version commit was verified")
+        _run_git(
+            [
+                "push",
+                "origin",
+                f"{verified_commit}:refs/heads/main",
+            ]
+        )
+        remote_main = _run_git(
+            ["ls-remote", "--exit-code", "origin", "refs/heads/main"]
+        ).split()
+        if not remote_main or remote_main[0].lower() != verified_commit:
+            raise SystemExit("remote main does not match the verified release commit")
+
+    def ensure_tag(_request: BuildRequest, commit: str) -> None:
+        mode = resolve_release_mode(
+            _request.target_version,
+            _request.remote,
+            same_release_repair=_request.same_release_repair,
+            offline_debug=_request.offline_debug,
+        )
+        if mode is ReleaseMode.NEW_RELEASE:
+            source_commit = str(commit or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+                raise SystemExit(
+                    "new release tag requires a verified version commit"
+                )
+        else:
+            source_commit = str(commit or _run_git(["rev-parse", "HEAD"])).strip()
+        _child_environment, publisher = resolve_release_context()
+        if formal_build:
+            _validate_release_baseline_clean()
+        try:
+            existing = _run_git(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
+        except subprocess.CalledProcessError:
+            _run_git(["tag", tag, source_commit])
+        else:
+            if existing.lower() != source_commit.lower():
+                raise SystemExit("release tag points to a different source commit")
+        publisher.ensure_tag(tag, source_commit)
+
+    def ensure_release(_request: BuildRequest) -> None:
+        _child_environment, publisher = resolve_release_context()
+        if not request.release_notes_path:
+            raise ValueError("creating a release requires release_notes_path")
+        publisher.ensure_release(
+            tag,
+            f"UniversalCrawler {request.target_version}",
+            request.release_notes_path,
+            repair=request.same_release_repair,
+        )
+
+    def upload_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        _child_environment, publisher = resolve_release_context()
+        selected = list(assets or state["assets"])
+        if request.upload_public_key:
+            material = state["signing_material"]
+            if (
+                not isinstance(material, SigningMaterial)
+                or material.public_key_path is None
+            ):
+                raise RuntimeError("release public key asset was not resolved")
+            selected.append(_validate_public_key_path(material.public_key_path))
+        uploaded = tuple(selected)
+        state["uploaded_assets"] = uploaded
+        publisher.upload_assets(tag, uploaded, repair=request.same_release_repair)
+
+    def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
+        _child_environment, publisher = resolve_release_context()
+        uploaded = state["uploaded_assets"]
+        expected = uploaded if isinstance(uploaded, tuple) and uploaded else assets or state["assets"]
+        publisher.verify_assets(tag, expected)
+
+    def run_smoke_tests() -> None:
+        child_environment, _publisher = resolve_release_context()
+        build_root = state["build_root"]
+        if not isinstance(build_root, Path):
+            raise RuntimeError("portable build context is unavailable for smoke testing")
+        portable_root = build_root / "dist" / "UniversalCrawlerPro"
+        cli = portable_root / "UCrawlCLI.exe"
+        build_info = portable_root / "BUILD_INFO.txt"
+        if not cli.is_file() or not build_info.is_file():
+            raise RuntimeError("portable smoke test artifacts are incomplete")
+        if request.build_installer:
+            _version, installer = _project_release_metadata(build_root)
+            if not installer.is_file():
+                raise RuntimeError("installer artifact is unavailable for smoke testing")
+        try:
+            completed = subprocess.run(
+                [str(cli.resolve()), "--mode", "cli", "--help"],
+                cwd=portable_root.resolve(),
+                env=dict(child_environment),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                shell=False,
+                timeout=RELEASE_SMOKE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("portable CLI smoke test could not complete") from error
+        if completed.returncode:
+            raise RuntimeError("portable CLI smoke test failed")
+
+    return ReleasePipelineHooks(
+        plan_version=plan_version,
+        apply_version=apply_version,
+        resolve_signing_material=resolve_request_signing_material,
+        build_portable=lambda: build_selected(portable=True, installer=False),
+        build_installer=lambda: build_selected(portable=False, installer=True),
+        run_smoke_tests=run_smoke_tests,
+        sign_manifest=sign_manifest,
+        commit_version_changes=commit_version_changes,
+        push_main=push_main,
+        ensure_tag=ensure_tag,
+        ensure_release=ensure_release,
+        upload_assets=upload_assets,
+        verify_remote_assets=verify_remote_assets,
+        validate_dependencies=validate_dependencies,
+        prepare=prepare,
+        cleanup=resources.close,
+        activate_stage=activate_stage,
+    )
+
+
+def _private_key_path(request: BuildRequest, environment: Mapping[str, str]) -> Path:
+    reference = request.private_key_path.strip()
+    if reference.startswith("env:"):
+        variable = reference[4:]
+        reference = str(environment.get(variable) or "")
+        if not reference:
+            raise ValueError("private key path reference is unavailable")
+    return _validate_private_key_path(
+        Path(reference) if reference else _read_only_secret_path(DEFAULT_PRIVATE_KEY_NAME)
+    )
+
+
+def _release_notes(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("release notes path is unreadable") from error
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -840,8 +1456,136 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_release_request(
+    request: BuildRequest,
+    *,
+    preflight_error: BaseException | None = None,
+) -> int:
+    emitter = ReleaseEventEmitter(stream=sys.stdout)
+    hooks = _build_pipeline_hooks(request, os.environ.copy(), emitter)
+    if preflight_error is not None:
+        def reject_request(_request: BuildRequest) -> None:
+            raise preflight_error from None
+
+        hooks = replace(hooks, validate_dependencies=reject_request)
+    result = run_release_request(request, hooks, emitter, CancellationToken())
+    return 0 if result.succeeded else 1
+
+
+def _run_request_file(request_file: Path) -> int:
+    path = Path(request_file)
+    request: BuildRequest | None = None
+    load_error: BaseException | None = None
+    try:
+        try:
+            request = load_request_file(path)
+        except (Exception, SystemExit) as error:
+            load_error = error
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            load_error = ValueError("release request file could not be deleted")
+    if load_error is not None:
+        return _run_controlled_preflight_failure(load_error)
+    if request is None:
+        return _run_controlled_preflight_failure(
+            ValueError("release request file could not be loaded")
+        )
+    return _run_release_request(request)
+
+
+def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
+    return BuildRequest(
+        target_version=version,
+        remote=RemoteReleaseInfo.available(version),
+        apply_version=False,
+        build_portable=build_only,
+        build_installer=build_only,
+        run_smoke_tests=False,
+        dry_run=True,
+        same_release_repair=False,
+        offline_debug=False,
+        generate_manifest_key=False,
+        rotate_trust_anchor=False,
+        sign_manifest=False,
+        commit_version_changes=False,
+        push_main=False,
+        create_or_reuse_tag=False,
+        create_or_update_release=False,
+        upload_release_assets=False,
+        upload_public_key=False,
+        verify_remote_assets=False,
+    )
+
+
+def _run_controlled_preflight_failure(error: BaseException) -> int:
+    return _run_release_request(
+        _build_dry_run_request(version="0.0.0", build_only=False),
+        preflight_error=error,
+    )
+
+
+def _run_dry_run_request(*, version: str, build_only: bool) -> int:
+    try:
+        request = _build_dry_run_request(version=version, build_only=build_only)
+    except ValueError as error:
+        return _run_controlled_preflight_failure(error)
+    return _run_release_request(request)
+
+
+def _launch_panel() -> int:
+    from release_tool.panel import launch_release_builder_panel
+
+    return launch_release_builder_panel()
+
+
+def build_script_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--request-file", default="")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--version", default="")
+    parser.add_argument("--build-only", action="store_true")
+    return parser
+
+
+def script_main(argv: list[str]) -> int:
+    raw = list(argv)
+    if "--gui" in raw or not raw:
+        return _launch_panel()
+    parser = build_script_parser()
+    args, unknown = parser.parse_known_args(raw)
+    if args.request_file:
+        if (
+            unknown
+            or args.dry_run
+            or args.build_only
+            or any(
+                token == "--version" or token.startswith("--version=")
+                for token in raw
+            )
+        ):
+            parser.error("unsupported arguments for --request-file")
+        return _run_request_file(Path(args.request_file))
+    if args.dry_run:
+        if unknown:
+            parser.error("unsupported arguments for --dry-run")
+        return _run_dry_run_request(
+            version=args.version or read_project_version(PROJECT_ROOT),
+            build_only=bool(args.build_only),
+        )
+    legacy_argv = [token for token in raw if token != "--headless"]
+    return main(legacy_argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args([] if argv is None else argv)
+    return _run_headless_legacy([] if argv is None else argv)
+
+
+def _run_headless_legacy(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
     package_version, _installer = _project_release_metadata()
     version = str(args.version or package_version).strip()
     tag = str(args.tag or f"v{version}").strip()
@@ -908,4 +1652,4 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(script_main(sys.argv[1:]))

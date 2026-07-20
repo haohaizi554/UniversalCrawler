@@ -116,6 +116,11 @@ Never publish the private key. Do not fetch public keys from the network.
 生产启用由 `scripts/update_bootstrap.py` 串起来，目标是让 release 机器或 CI
 自动完成公开 trust anchor 注入，同时把签名材料留在仓库外。
 
+日常维护优先使用 `python packaging/build_release.py` 打开发布构建面板。普通正式发布
+复用仓库外既有私钥，不改生产公钥；只有高于远端版本且显式选择“轮换信任锚”时，面板
+才会在版本提交和构建快照之前事务化生成密钥、注入公开信任锚并强制重建安装器。完整
+操作矩阵见 [发布构建器维护指南](guides/release-builder.md)。
+
 最短路径：
 
 ```powershell
@@ -155,6 +160,8 @@ asset spec。
 - macOS/Linux: `~/.ucrawl/release-secrets`
 
 可以用 `UCRAWL_RELEASE_SECRETS_DIR` 覆盖，但该路径如果落在仓库内，脚本会拒绝执行。
+公开 PEM 可作为独立 GitHub Release 审计资产上传，但不会进入 portable 或 installer；
+客户端只信任构建提交中已经冻结的 `UPDATE_PUBLIC_KEY_PEM`。
 
 会提交到仓库的是公开 trust anchor 和自动化代码：
 

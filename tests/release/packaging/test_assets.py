@@ -36,6 +36,7 @@ UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
 PLAYWRIGHT_BUNDLE_TOOL = PACKAGING_DIR / "playwright_bundle.py"
 BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
 BUILD_INSTALLER_TOOL = PACKAGING_DIR / "build_installer.py"
+RELEASE_BUILDER_ASSETS = PACKAGING_DIR / "release_tool" / "assets"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
 REQUIREMENTS_RUNTIME = PROJECT_ROOT / "requirements.txt"
@@ -483,6 +484,20 @@ class SpecDataFilesTests(unittest.TestCase):
         datas = self._spec_globals["datas"]
         self.assertTrue(any(d[1] == "UI/icon" for d in datas), "UI/icon not packaged")
 
+    def test_datas_includes_release_builder_icon_at_frozen_path(self):
+        """维护工具图标必须落到其冻结态解析路径。"""
+        datas = self._spec_globals["datas"]
+        expected = (RELEASE_BUILDER_ASSETS / "release-builder.ico").resolve()
+        packaged_icons = [
+            (Path(source).resolve(), target)
+            for source, target in datas
+            if target == "packaging/release_tool/assets"
+        ]
+        self.assertEqual(
+            packaged_icons,
+            [(expected, "packaging/release_tool/assets")],
+        )
+
     def test_datas_includes_anti_detection_stealth_script(self):
         """浏览器反检测脚本必须进入 _internal 的运行时资源目录。"""
         datas = self._spec_globals["datas"]
@@ -801,15 +816,17 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("--noconfirm", source)
         self.assertIn("--clean", source)
 
-class PackagingMetadataTests(unittest.TestCase):
+class ProjectMetaTests(unittest.TestCase):
     """project_meta.py 与 pyproject.toml 的一致性。"""
 
     def test_project_meta_exists(self):
         self.assertTrue(PROJECT_META.exists())
 
-    def test_project_meta_reads_package_version(self):
+    def test_project_meta_reads_the_canonical_package_version(self):
         source = PROJECT_META.read_text(encoding="utf-8")
-        self.assertIn('PACKAGE_VERSION = _project_field("version")', source)
+        self.assertIn("from shared.version import __version__", source)
+        self.assertIn("PACKAGE_VERSION = __version__", source)
+        self.assertNotIn('_project_field("version")', source)
         self.assertIn('PACKAGE_NAME = _project_field("name")', source)
 
     def test_installer_basename_uses_version(self):
@@ -1482,6 +1499,14 @@ class ProjectFileExistenceTests(unittest.TestCase):
     def test_report_ico_exists(self):
         """代码统计报告图标必须存在。"""
         self.assertTrue((PROJECT_ROOT / "analytics.ico").exists())
+
+    def test_release_builder_assets_exist_separately_from_application_icons(self):
+        """维护工具图标只归 release builder 使用，不替换应用图标。"""
+        self.assertTrue((RELEASE_BUILDER_ASSETS / "release-builder.png").is_file())
+        self.assertTrue((RELEASE_BUILDER_ASSETS / "release-builder.ico").is_file())
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "favicon.ico")
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "Web.ico")
+        self.assertNotEqual(RELEASE_BUILDER_ASSETS / "release-builder.ico", PROJECT_ROOT / "analytics.ico")
 
     def test_ffmpeg_exists(self):
         self.assertTrue((PROJECT_ROOT / "ffmpeg.exe").exists())

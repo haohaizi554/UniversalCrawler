@@ -53,6 +53,7 @@ from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
 from shared.settings_metadata import GROUP_DESCRIPTIONS, GROUP_HINTS, GROUP_ICONS
 from shared.failed_page_projection import prepare_failed_item_for_display
+from shared.version import __version__
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 UI_TITLE_STAGE_META_KEY = "ui_title_stage"
@@ -2034,11 +2035,6 @@ class FrontendStateService:
         active_downloads: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """构建顶部状态栏摘要；缺少计数时从当前视频桶实时统计。"""
-        try:
-            from cli import __version__
-        except Exception:
-            __version__ = "3.6.21"
-
         if any(value is None for value in (queue_count, active_count, completed_count, failed_count)):
             counts = self._video_bucket_counts()
             if queue_count is None:
@@ -2064,7 +2060,7 @@ class FrontendStateService:
             completed_count=int(completed_count or 0),
             failed_count=int(failed_count or 0),
             active_downloads=active_downloads,
-            version=__version__,
+            version=f"v{__version__}",
         )
 
     def _video_bucket_counts(self) -> dict[str, int]:
