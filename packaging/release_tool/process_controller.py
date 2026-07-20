@@ -45,6 +45,7 @@ WRITER_HARD_CLOSE_TIMEOUT_SECONDS = 30.0
 WRITER_CLOSE_POLL_MS = 50
 TASKKILL_CONFIRMATION_MS = 250
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+_SUPPORTED_EVENT_KINDS = frozenset({"stage", "log", "error", "result"})
 
 
 def _default_stream_factory(path: Path, *args: Any, **kwargs: Any):
@@ -557,12 +558,18 @@ class ReleaseProcessController(QObject):
         if event.progress < self._last_progress:
             self._set_protocol_error("release event progress is out of order")
             return
-        if event.kind not in {"stage", "error", "result"}:
+        if event.kind not in _SUPPORTED_EVENT_KINDS:
             self._set_protocol_error("unknown release event kind")
             return
         self._last_sequence = event.sequence
         self._last_progress = event.progress
         safe_message = redact_release_text(event.message)
+        if event.kind == "log":
+            if safe_message:
+                self._pending_logs.append(safe_message)
+                if not self._log_timer.isActive():
+                    self._log_timer.start()
+            return
         self.stage_changed.emit(
             event.stage.value,
             event.progress,

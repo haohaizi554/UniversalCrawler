@@ -185,6 +185,9 @@ _EXACT_MESSAGE_LABELS = {
     "Release build succeeded": "发布构建成功",
     "Release build failed": "发布构建失败",
     "Waiting for background work to stop": "正在等待后台任务安全停止",
+    "formal release requires a clean Git worktree and index": (
+        "正式发布要求 Git 工作区与暂存区均无未提交变更"
+    ),
 }
 
 

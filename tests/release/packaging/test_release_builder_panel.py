@@ -189,6 +189,23 @@ def stage_event(sequence: int = 1, progress: int = 35) -> str:
     return EVENT_PREFIX + json.dumps(payload)
 
 
+def log_event(
+    sequence: int = 1,
+    progress: int = 35,
+    message: str = "packaging output",
+) -> str:
+    payload = {
+        "kind": "log",
+        "sequence": sequence,
+        "timestamp": "2026-07-19T00:00:00Z",
+        "stage": "building_portable",
+        "progress": progress,
+        "message": message,
+        "data": {},
+    }
+    return EVENT_PREFIX + json.dumps(payload)
+
+
 def error_event(sequence: int = 1, progress: int = 35) -> str:
     payload = {
         "kind": "error",
@@ -893,15 +910,54 @@ def test_partial_lines_are_buffered_flood_is_bounded_and_stage_is_immediate(qapp
     assert all(len(batch) <= 200 for batch in batches)
 
 
+def test_structured_log_event_is_visible_and_does_not_break_terminal_result(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+    batches: list[str] = []
+    controller.log_lines_ready.connect(
+        lambda lines: batches.extend(str(line) for line in lines)
+    )
+
+    controller.feed_stdout(stage_event(sequence=1) + "\n")
+    controller.feed_stdout(log_event(sequence=2) + "\n")
+    controller.feed_stdout(success_event(sequence=3) + "\n")
+    controller.flush_log_batch()
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.succeeded is True
+    assert batches == ["packaging output"]
+
+
 def test_structured_error_event_fails_closed_even_if_success_result_follows(qapp):
     controller = ReleaseProcessController(process=FakeProcess())
 
-    controller.feed_stdout(error_event() + "\n")
-    controller.feed_stdout(success_event(sequence=2) + "\n")
+    controller.feed_stdout(stage_event(sequence=1) + "\n")
+    controller.feed_stdout(log_event(sequence=2) + "\n")
+    controller.feed_stdout(error_event(sequence=3) + "\n")
+    controller.feed_stdout(success_event(sequence=4) + "\n")
     controller.on_finished(0, QProcess.ExitStatus.NormalExit)
 
     assert controller.result.succeeded is False
     assert "portable build failed" in controller.result.error
+    assert "unknown release event kind" not in controller.result.error
+
+
+def test_unknown_structured_event_kind_still_fails_closed(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+    payload = {
+        "kind": "mystery",
+        "sequence": 1,
+        "timestamp": "2026-07-19T00:00:00Z",
+        "stage": "building_portable",
+        "progress": 35,
+        "message": "unexpected",
+        "data": {},
+    }
+
+    controller.feed_stdout(EVENT_PREFIX + json.dumps(payload) + "\n")
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.succeeded is False
+    assert controller.result.error == "unknown release event kind"
 
 
 def test_finished_drains_unread_qprocess_output_before_terminal_judgement(qapp):
