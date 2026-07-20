@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtCore import QObject, QProcess, QRect, Qt, pyqtSignal
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QScrollArea
 
 from tests.support.paths import PROJECT_ROOT
 
@@ -38,6 +38,7 @@ from release_tool.panel import (
     ReleaseBuilderWindow,
     build_confirmation_summary,
 )
+from release_tool.panel_policy import PanelBuildIntent
 from release_tool.process_controller import (
     ReleaseProcessController,
     _BackgroundLogWriter,
@@ -270,7 +271,7 @@ def test_release_builder_user_facing_controls_are_chinese(qapp):
         assert window.check_build_portable.text() == "便携版"
         assert window.check_build_installer.text() == "安装包"
         assert window.check_sign_manifest.text() == "签署更新清单"
-        assert window.check_upload_assets.text() == "上传发布资产"
+        assert window.check_upload_assets.text() == "上传资产"
         assert window.start_button.text() == "开始构建"
         assert window.cancel_button.text() == "取消"
         assert window.copy_log_button.text() == "复制选中内容"
@@ -278,6 +279,116 @@ def test_release_builder_user_facing_controls_are_chinese(qapp):
         assert window.clear_log_button.text() == "清空显示"
         assert window.open_log_directory_button.text() == "打开日志目录"
         assert window.mode_badge.text() == "本地调试"
+    finally:
+        window.shutdown()
+
+
+def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
+    window = make_panel(
+        qapp,
+        project_version="3.6.21",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        assert window.panel_intent is PanelBuildIntent.SAME_RELEASE
+        assert window.mode_same_button.isChecked() is True
+        assert window.check_sign_manifest.isChecked() is True
+        assert window.check_commit_version.isChecked() is False
+        assert window.check_push_main.isChecked() is False
+        assert window.check_create_tag.isChecked() is True
+        assert window.check_create_release.isChecked() is True
+        assert window.check_upload_assets.isChecked() is True
+        assert window.check_upload_public_key.isChecked() is True
+        assert window.check_verify_remote.isChecked() is True
+        assert window.check_generate_key.isChecked() is False
+        assert window.check_rotate_trust_anchor.isChecked() is False
+    finally:
+        window.shutdown()
+
+
+def test_higher_version_recommends_complete_new_release_chain(qapp):
+    window = make_panel(
+        qapp,
+        project_version="3.6.22",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        assert window.panel_intent is PanelBuildIntent.NEW_RELEASE
+        assert window.mode_release_button.isChecked() is True
+        assert window.check_sign_manifest.isChecked() is True
+        assert window.check_commit_version.isChecked() is True
+        assert window.check_push_main.isChecked() is True
+        assert window.check_create_tag.isChecked() is True
+        assert window.check_create_release.isChecked() is True
+        assert window.check_upload_assets.isChecked() is True
+        assert window.check_upload_public_key.isChecked() is True
+        assert window.check_verify_remote.isChecked() is True
+        assert window.check_generate_key.isChecked() is False
+        assert window.check_rotate_trust_anchor.isChecked() is False
+    finally:
+        window.shutdown()
+
+
+def test_mode_state_is_restored_instead_of_reapplying_defaults(qapp):
+    window = make_panel(
+        qapp,
+        project_version="3.6.22",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        window.check_upload_public_key.setChecked(False)
+        window.mode_local_button.click()
+        assert window.panel_intent is PanelBuildIntent.LOCAL
+        assert window.check_upload_public_key.isChecked() is False
+
+        window.mode_release_button.click()
+
+        assert window.panel_intent is PanelBuildIntent.NEW_RELEASE
+        assert window.check_upload_public_key.isChecked() is False
+        assert window.check_upload_assets.isChecked() is True
+    finally:
+        window.shutdown()
+
+
+def test_manual_local_override_on_higher_version_never_writes_remote(qapp):
+    window = make_panel(
+        qapp,
+        project_version="3.6.22",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        window.mode_local_button.click()
+        request = window._request_from_controls()
+
+        assert window.panel_intent is PanelBuildIntent.LOCAL
+        assert request.offline_debug is True
+        assert request.same_release_repair is False
+        assert request.sign_manifest is False
+        assert request.commit_version_changes is False
+        assert request.push_main is False
+        assert request.create_or_reuse_tag is False
+        assert request.create_or_update_release is False
+        assert request.upload_release_assets is False
+        assert request.upload_public_key is False
+        assert request.verify_remote_assets is False
+    finally:
+        window.shutdown()
+
+
+def test_local_override_survives_target_and_remote_form_refreshes(qapp):
+    window = make_panel(
+        qapp,
+        project_version="3.6.22",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        window.mode_local_button.click()
+        window.repository_edit.setText("owner/other")
+        window.target_version_edit.setText("3.6.23")
+        window.refresh_mode()
+
+        assert window.panel_intent is PanelBuildIntent.LOCAL
+        assert window.mode_local_button.isChecked() is True
     finally:
         window.shutdown()
 
@@ -297,20 +408,22 @@ def test_local_debug_mode_projects_disabled_remote_and_signing_controls(qapp):
         window.shutdown()
 
 
-def test_remote_unknown_fails_closed_until_offline_debug_is_explicit(qapp):
+def test_remote_unknown_is_automatically_restricted_to_offline_local_mode(qapp):
     window = make_panel(
         qapp,
         remote_loader=lambda *_args: RemoteReleaseInfo.unavailable("network unavailable"),
     )
     try:
-        assert window.mode_badge.property("releaseMode") == "remote_unknown"
-        assert window.start_button.isEnabled() is False
-
-        window.check_offline_debug.setChecked(True)
-        window.refresh_mode()
-
+        request = window._request_from_controls()
+        assert window.panel_intent is PanelBuildIntent.LOCAL
         assert window.mode_badge.property("releaseMode") == "offline_debug"
-        assert "remote release state is unknown" not in window.validation_label.text()
+        assert window.mode_same_button.isEnabled() is False
+        assert window.mode_release_button.isEnabled() is False
+        assert request.offline_debug is True
+        assert request.same_release_repair is False
+        assert request.sign_manifest is False
+        assert request.push_main is False
+        assert request.upload_release_assets is False
     finally:
         window.shutdown()
 
@@ -318,11 +431,35 @@ def test_remote_unknown_fails_closed_until_offline_debug_is_explicit(qapp):
 def test_custom_proxy_endpoint_tracks_project_proxy_option(qapp):
     window = make_panel(qapp)
     try:
+        window.show()
+        qapp.processEvents()
         assert window.custom_proxy_edit.isEnabled() is False
+        assert window.custom_proxy_edit.isHidden() is True
 
         window.proxy_combo.setCurrentIndex(window.proxy_combo.findData("自定义"))
+        qapp.processEvents()
 
         assert window.custom_proxy_edit.isEnabled() is True
+        assert window.custom_proxy_edit.isHidden() is False
+        assert window.proxy_control.property("customProxySurface") == "split"
+        assert window.proxy_combo.geometry().top() == (
+            window.custom_proxy_edit.geometry().top()
+        )
+        assert window.proxy_combo.geometry().bottom() == (
+            window.custom_proxy_edit.geometry().bottom()
+        )
+    finally:
+        window.shutdown()
+
+
+def test_private_key_field_uses_canonical_default_path(qapp):
+    window = make_panel(qapp)
+    try:
+        key_path = Path(window.private_key_edit.text())
+
+        assert key_path.name == "update_manifest_ed25519_private.pem"
+        assert key_path.is_absolute()
+        assert PROJECT_ROOT not in key_path.parents
     finally:
         window.shutdown()
 
@@ -335,6 +472,171 @@ def test_release_builder_proxy_uses_shared_themed_combo(qapp):
         assert window.proxy_combo.property("comboPopupClampToControl") is True
         assert window.proxy_combo.view().property("comboPopupFullExpand") == "true"
     finally:
+        window.shutdown()
+
+
+def test_release_builder_uses_two_column_workbench_without_outer_scroll(qapp):
+    window = make_panel(qapp)
+    try:
+        assert window.findChild(QScrollArea, "ReleaseBuilderScroll") is None
+        assert window.left_configuration_column is not None
+        assert window.execution_column is not None
+        assert window.section_widgets[:5] == window.configuration_sections
+        assert window.section_widgets[5] is window.execution_section
+        assert len(window.configuration_sections) == 5
+    finally:
+        window.shutdown()
+
+
+def test_mode_selector_and_build_options_have_stable_card_dimensions(qapp):
+    window = make_panel(qapp)
+    try:
+        assert window.mode_local_button.minimumHeight() >= 44
+        assert window.mode_same_button.minimumHeight() >= 44
+        assert window.mode_release_button.minimumHeight() >= 44
+        assert window.check_build_portable.isCheckable()
+        assert window.check_build_portable.minimumHeight() >= 42
+        assert window.check_build_installer.property("releaseOptionCard") is True
+    finally:
+        window.shutdown()
+
+
+def test_remote_refresh_preserves_known_mode_until_new_result_arrives(qapp):
+    refresh_release = threading.Event()
+
+    def delayed_loader(*_args):
+        refresh_release.wait(2)
+        return RemoteReleaseInfo.available("3.6.21")
+
+    window = make_panel(
+        qapp,
+        project_version="3.6.22",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+    )
+    try:
+        assert window.panel_intent is PanelBuildIntent.NEW_RELEASE
+        window._remote_loader = delayed_loader
+        window.start_remote_lookup()
+        qapp.processEvents()
+
+        assert window.panel_intent is PanelBuildIntent.NEW_RELEASE
+        assert window.remote_info == RemoteReleaseInfo.available("3.6.21")
+        assert window.remote_version_label.text().startswith("正在检查")
+        assert window.start_button.isEnabled() is False
+    finally:
+        refresh_release.set()
+        pump_until(qapp, lambda: not window.remote_lookup_active)
+        window.shutdown()
+
+
+def test_mode_and_option_cards_use_semantic_properties(qapp):
+    window = make_panel(qapp)
+    try:
+        assert (
+            window.mode_release_button.property("releaseModeChoice")
+            == "new_release"
+        )
+        assert (
+            window.check_build_installer.property("releaseOptionCard")
+            is True
+        )
+        assert "QPushButton#ReleaseModeChoice" in window.styleSheet()
+        assert "QPushButton#ReleaseOptionCard" in window.styleSheet()
+    finally:
+        window.shutdown()
+
+
+def test_workbench_columns_and_log_panel_do_not_overlap_at_reference_size(qapp):
+    window = make_panel(qapp)
+    try:
+        window.resize(1480, 860)
+        window.show()
+        qapp.processEvents()
+
+        left = window.left_configuration_column.geometry()
+        right = window.execution_column.geometry()
+        assert left.right() < right.left()
+        assert window.execution_section.height() > 600
+        assert window.log_panel.height() > 300
+    finally:
+        window.close()
+        window.shutdown()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (980, 680)])
+def test_configuration_cards_are_not_compressed_or_clipped(qapp, size):
+    window = make_panel(qapp)
+    try:
+        window.resize(*size)
+        window.show()
+        qapp.processEvents()
+
+        for section in window.configuration_sections:
+            assert section.height() >= section.minimumSizeHint().height()
+            assert section.body.geometry().bottom() <= section.contentsRect().bottom()
+
+        mode_parent = window.mode_local_button.parentWidget()
+        for button in (
+            window.mode_local_button,
+            window.mode_same_button,
+            window.mode_release_button,
+        ):
+            assert button.isVisible()
+            assert button.geometry().bottom() <= mode_parent.rect().bottom()
+
+        release_parent = window.check_verify_remote.parentWidget()
+        assert (
+            window.check_verify_remote.geometry().bottom()
+            <= release_parent.rect().bottom()
+        )
+    finally:
+        window.close()
+        window.shutdown()
+
+
+def test_compact_mode_and_release_option_labels_fit_without_clipping(qapp):
+    window = make_panel(qapp)
+    try:
+        window.resize(980, 680)
+        window.show()
+        qapp.processEvents()
+
+        for button in (
+            window.mode_local_button,
+            window.mode_same_button,
+            window.mode_release_button,
+        ):
+            widest_line = max(
+                button.fontMetrics().horizontalAdvance(line)
+                for line in button.text().splitlines()
+            )
+            assert widest_line + 20 <= button.width()
+
+        for control in (
+            window.check_generate_key,
+            window.check_rotate_trust_anchor,
+            window.check_sign_manifest,
+            *window._release_option_controls,
+        ):
+            assert control.sizeHint().width() <= control.width()
+    finally:
+        window.close()
+        window.shutdown()
+
+
+@pytest.mark.parametrize("size", [(1480, 860), (1366, 768), (980, 680)])
+def test_configuration_and_execution_columns_share_the_same_bottom_edge(qapp, size):
+    window = make_panel(qapp)
+    try:
+        window.resize(*size)
+        window.show()
+        qapp.processEvents()
+
+        left_bottom = window.configuration_sections[-1].geometry().bottom()
+        right_bottom = window.execution_section.geometry().bottom()
+        assert abs(left_bottom - right_bottom) <= 1
+    finally:
+        window.close()
         window.shutdown()
 
 
@@ -965,9 +1267,9 @@ def test_confirmation_summary_uses_safe_fields_and_chromed_dialog(qapp):
 @pytest.mark.parametrize(
     ("available", "expected"),
     (
-        (QRect(0, 0, 1920, 1080), QRect(370, 130, 1180, 820)),
+        (QRect(0, 0, 1920, 1080), QRect(220, 110, 1480, 860)),
         (QRect(20, 30, 900, 700), QRect(20, 30, 900, 700)),
-        (QRect(-1600, 10, 1200, 760), QRect(-1590, 10, 1180, 760)),
+        (QRect(-1600, 10, 1200, 760), QRect(-1600, 10, 1200, 760)),
     ),
 )
 def test_initial_geometry_is_centered_and_constrained(available, expected):
