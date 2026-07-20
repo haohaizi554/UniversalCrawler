@@ -72,6 +72,8 @@ from release_tool.runner import (  # noqa: E402
 )
 from release_tool.versioning import (  # noqa: E402
     apply_version_update,
+    format_release_tag,
+    normalize_version,
     plan_version_update,
     read_project_version,
 )
@@ -441,15 +443,25 @@ def _source_snapshot(
 
 
 def _validate_release_identity(*, package_version: str, version: str, tag: str) -> None:
-    normalized_package = str(package_version).strip()
-    normalized_version = str(version).strip()
+    package_text = str(package_version).strip()
+    version_text = str(version).strip()
     normalized_tag = str(tag).strip()
+    try:
+        normalized_package = normalize_version(package_text)
+        normalized_version = normalize_version(version_text)
+    except ValueError as exc:
+        raise SystemExit(f"release version is invalid: {exc}") from exc
+    if package_text != normalized_package:
+        raise SystemExit(
+            "canonical package version must not include a v prefix: "
+            f"{package_text!r}"
+        )
     if normalized_version != normalized_package:
         raise SystemExit(
             "发布版本与实际构建包版本不一致："
             f"package={normalized_package}, release={normalized_version}。"
         )
-    expected_tag = f"v{normalized_version}"
+    expected_tag = format_release_tag(normalized_version)
     if normalized_tag != expected_tag:
         raise SystemExit(
             f"release tag 必须与版本完全一致：expected={expected_tag}, actual={normalized_tag}。"
@@ -1000,7 +1012,7 @@ def _build_pipeline_hooks(
         "version_plan": None,
         "version_result": None,
     }
-    tag = f"v{request.target_version}"
+    tag = format_release_tag(request.target_version)
     formal_build = (
         request.sign_manifest
         or request.upload_release_assets
@@ -1496,6 +1508,7 @@ def _run_request_file(request_file: Path) -> int:
 
 
 def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
+    version = normalize_version(version)
     return BuildRequest(
         target_version=version,
         remote=RemoteReleaseInfo.available(version),
@@ -1587,8 +1600,8 @@ def main(argv: list[str] | None = None) -> int:
 def _run_headless_legacy(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     package_version, _installer = _project_release_metadata()
-    version = str(args.version or package_version).strip()
-    tag = str(args.tag or f"v{version}").strip()
+    version = normalize_version(args.version or package_version)
+    tag = str(args.tag or format_release_tag(version)).strip()
     _validate_release_identity(
         package_version=package_version,
         version=version,

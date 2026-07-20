@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+SEMVER_RE = re.compile(r"^[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _VERSION_ASSIGNMENT_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 VERSION_PROJECTION_PATHS = (
     Path("README.md"),
@@ -67,6 +67,12 @@ def normalize_version(value: str) -> str:
     return ".".join(match.groups())
 
 
+def format_release_tag(value: str) -> str:
+    """Return the canonical Git release tag with exactly one ``v`` prefix."""
+
+    return f"v{normalize_version(value)}"
+
+
 def read_project_version(project_root: Path) -> str:
     version_file = Path(project_root).resolve() / "shared/version.py"
     try:
@@ -79,10 +85,17 @@ def read_project_version(project_root: Path) -> str:
         raise VersionUpdateError(
             f"canonical version file must contain exactly one __version__ assignment: {version_file}"
         )
+    raw_version = matches[0].strip()
     try:
-        return normalize_version(matches[0])
+        normalized = normalize_version(raw_version)
     except ValueError as error:
-        raise VersionUpdateError(f"canonical version is invalid: {matches[0]!r}") from error
+        raise VersionUpdateError(f"canonical version is invalid: {raw_version!r}") from error
+    if raw_version != normalized:
+        raise VersionUpdateError(
+            "canonical version must use MAJOR.MINOR.PATCH without a v prefix: "
+            f"{raw_version!r}"
+        )
+    return normalized
 
 
 def plan_version_update(target_version: str, project_root: Path) -> VersionUpdatePlan:

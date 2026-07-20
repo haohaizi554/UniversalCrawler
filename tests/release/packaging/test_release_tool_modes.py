@@ -352,11 +352,12 @@ def test_upload_public_key_requires_a_release_and_remote_verification():
 
 def test_models_normalize_versions_and_are_frozen():
     remote = RemoteReleaseInfo.available(" v3.6.22 ")
-    request = BuildRequest(target_version="3.6.22", remote=remote)
+    request = BuildRequest(target_version=" v3.6.22 ", remote=remote)
     preflight = PreflightResult(mode=ReleaseMode.NEW_RELEASE)
     result = ReleaseResult(mode=ReleaseMode.NEW_RELEASE, stage=ReleaseStage.SUCCEEDED)
 
     assert remote.version == "3.6.22"
+    assert request.target_version == "3.6.22"
     assert request.remote.version == "3.6.22"
     assert preflight.is_ready
     assert result.succeeded

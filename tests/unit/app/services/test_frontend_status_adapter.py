@@ -42,6 +42,18 @@ def test_build_app_status_derives_running_error_and_idle_payloads():
     assert running["download_speed_bps"] == 2048
     assert running["version"] == "v1.2.3"
 
+    prefixed = status_adapter.build_app_status(
+        running=False,
+        running_state="空闲中",
+        queue_count=0,
+        active_count=0,
+        completed_count=0,
+        failed_count=0,
+        active_downloads=[],
+        version="v1.2.3",
+    )
+    assert prefixed["version"] == "v1.2.3"
+
     failed = status_adapter.build_app_status(
         running=False,
         running_state="空闲中",

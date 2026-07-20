@@ -252,6 +252,49 @@ def test_panel_reuses_project_chrome_theme_root_and_safe_defaults(qapp):
         window.shutdown()
 
 
+def test_window_state_change_synchronizes_maximize_restore_icon(qapp):
+    window = make_panel(qapp)
+    try:
+        window.show()
+        qapp.processEvents()
+
+        window._toggle_maximized()
+        qapp.processEvents()
+
+        assert window.isMaximized() is True
+        assert window.window_title_bar.btn_maximize._maximized is True
+        assert window.window_title_bar.btn_maximize.toolTip() == "还原"
+
+        window._toggle_maximized()
+        qapp.processEvents()
+
+        assert window.isMaximized() is False
+        assert window.window_title_bar.btn_maximize._maximized is False
+        assert window.window_title_bar.btn_maximize.toolTip() == "最大化"
+    finally:
+        window.shutdown()
+
+
+def test_panel_canonicalizes_prefixed_version_before_build(qapp):
+    window = make_panel(qapp)
+    try:
+        window.target_version_edit.setText("v3.1.1")
+
+        request = window._request_from_controls()
+        summary = build_confirmation_summary(
+            request,
+            ReleaseMode.LOCAL_REBUILD,
+            asset_names=(),
+        )
+
+        assert request.target_version == "3.1.1"
+        assert "版本：3.1.1" in summary
+        assert "Git 标签：v3.1.1" in summary
+        assert "vv3.1.1" not in summary
+    finally:
+        window.shutdown()
+
+
 def test_release_builder_user_facing_controls_are_chinese(qapp):
     window = make_panel(qapp)
     try:

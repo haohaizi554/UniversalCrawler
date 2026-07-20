@@ -50,7 +50,7 @@ from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS  # noqa: F401
 from shared.localization import normalize_language, tr
-from shared.version import __version__
+from shared.version import __version__, format_version_label
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
@@ -564,7 +564,7 @@ class MainWindow(QMainWindow):
         text = getattr(label, "text", None)
         if callable(text):
             return str(text())
-        return f"v{__version__}"
+        return format_version_label(__version__)
 
     def _record_update_startup_health(self) -> None:
         try:
@@ -965,10 +965,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _display_version(version: str) -> str:
-        value = str(version or "").strip()
-        if not value:
-            return "v?"
-        return value if value.lower().startswith("v") else f"v{value}"
+        return format_version_label(version)
 
     def set_frontend_state_service(self, service: FrontendStateService) -> None:
         current_service = self.__dict__.get("_frontend_state_service")

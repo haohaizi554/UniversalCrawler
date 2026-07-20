@@ -336,6 +336,17 @@ def test_dry_run_request_sets_every_dependent_action_explicitly():
     assert request.verify_remote_assets is False
 
 
+def test_dry_run_request_canonicalizes_prefixed_version():
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_release_request", return_value=0) as run:
+        assert tool._run_dry_run_request(version="v3.1.1", build_only=True) == 0
+
+    request = run.call_args.args[0]
+    assert request.target_version == "3.1.1"
+    assert tool.format_release_tag(request.target_version) == "v3.1.1"
+
+
 @pytest.mark.parametrize("build_only", [False, True])
 def test_actual_dry_run_is_a_successful_read_only_plan(capsys, build_only):
     tool = _load_tool()
@@ -2214,6 +2225,17 @@ def test_release_identity_requires_tag_to_match_version():
             package_version="3.6.21",
             version="3.6.21",
             tag="v3.6.20",
+        )
+
+
+def test_release_identity_rejects_a_prefixed_package_version():
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="must not include a v prefix"):
+        tool._validate_release_identity(
+            package_version="v3.6.21",
+            version="3.6.21",
+            tag="v3.6.21",
         )
 
 

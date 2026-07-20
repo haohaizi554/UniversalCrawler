@@ -2060,7 +2060,7 @@ class FrontendStateService:
             completed_count=int(completed_count or 0),
             failed_count=int(failed_count or 0),
             active_downloads=active_downloads,
-            version=f"v{__version__}",
+            version=__version__,
         )
 
     def _video_bucket_counts(self) -> dict[str, int]:

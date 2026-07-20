@@ -91,6 +91,13 @@ class BuildRequest:
     custom_proxy: str = ""
     remote: RemoteReleaseInfo = field(default_factory=RemoteReleaseInfo.unknown)
 
+    def __post_init__(self) -> None:
+        try:
+            normalized = normalize_version(self.target_version)
+        except ValueError:
+            return
+        object.__setattr__(self, "target_version", normalized)
+
 
 @dataclass(frozen=True)
 class PreflightResult:

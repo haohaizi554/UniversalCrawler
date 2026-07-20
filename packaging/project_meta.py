@@ -12,7 +12,7 @@ PYPROJECT_FILE = PROJECT_ROOT / "pyproject.toml"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.version import __version__
+from shared.version import __version__  # noqa: E402
 
 APP_NAME = "UniversalCrawlerPro"
 WEBUI_NAME = "CrawlerWebPortal"
@@ -61,6 +61,10 @@ def _project_field(field_name: str) -> str:
 
 PACKAGE_NAME = _project_field("name")
 PACKAGE_VERSION = __version__
+if re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", PACKAGE_VERSION) is None:
+    raise RuntimeError(
+        "shared.version.__version__ must use MAJOR.MINOR.PATCH without a v prefix"
+    )
 
 def sanitize_for_filename(value: str) -> str:
     """将版本号等字段转为适合文件名的安全片段。"""

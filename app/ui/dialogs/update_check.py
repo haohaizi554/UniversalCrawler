@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from shared.localization import normalize_language, tr
+from shared.version import format_version_label
 
 
 class UpdateStatusIcon(QWidget):
@@ -329,10 +330,7 @@ class UpdateCheckDialog(ChromedDialog):
 
     @staticmethod
     def _display_version(version: str) -> str:
-        text = str(version or "").strip()
-        if text and not text.lower().startswith("v"):
-            return f"v{text}"
-        return text or "-"
+        return format_version_label(version, fallback="-")
 
     @classmethod
     def _normalize_candidates(cls, candidates: tuple[Any, ...], *, latest_version: str, release_url: str) -> list[dict[str, str]]:

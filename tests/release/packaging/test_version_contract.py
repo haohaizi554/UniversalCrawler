@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.web.server import _configured_index_html
-from shared.version import __version__
+from shared.version import __version__, format_version_label
 from tests.support.paths import PROJECT_ROOT
 
 
@@ -150,7 +150,20 @@ def test_server_injects_canonical_version_into_first_frame_html(tmp_path):
 
     assert 'data-theme="dark"' in html
     assert "__UCRAWL_VERSION__" not in html
-    assert f"v{__version__}" in html
+    assert format_version_label(__version__) in html
+
+
+@pytest.mark.parametrize(
+    ("value", "fallback", "expected"),
+    (
+        ("3.1.1", "v?", "v3.1.1"),
+        ("v3.1.1", "v?", "v3.1.1"),
+        ("vv3.1.1", "v?", "v3.1.1"),
+        ("", "-", "-"),
+    ),
+)
+def test_runtime_version_label_has_exactly_one_prefix(value, fallback, expected):
+    assert format_version_label(value, fallback=fallback) == expected
 
 
 def test_inno_setup_requires_an_injected_app_version():
@@ -167,6 +180,20 @@ def test_normalize_version_accepts_plain_or_prefixed_semver():
     assert versioning.normalize_version("  v3.6.22 ") == "3.6.22"
 
 
+@pytest.mark.parametrize("value", ("3.1.1", "v3.1.1", " V3.1.1 "))
+def test_release_tag_formatter_adds_exactly_one_prefix(value):
+    versioning = _require_versioning_module()
+
+    assert versioning.format_release_tag(value) == "v3.1.1"
+
+
+def test_release_tag_formatter_rejects_repeated_prefix():
+    versioning = _require_versioning_module()
+
+    with pytest.raises(ValueError, match="MAJOR.MINOR.PATCH"):
+        versioning.format_release_tag("vv3.1.1")
+
+
 @pytest.mark.parametrize("value", ("3.6", "03.6.22", "3.6.22rc1", ""))
 def test_normalize_version_rejects_non_semver_values(value):
     versioning = _require_versioning_module()
@@ -180,6 +207,18 @@ def test_read_project_version_uses_the_canonical_module(tmp_path):
     root = make_version_fixture(tmp_path, current="3.6.21")
 
     assert versioning.read_project_version(root) == "3.6.21"
+
+
+def test_read_project_version_rejects_a_prefixed_canonical_assignment(tmp_path):
+    versioning = _require_versioning_module()
+    root = make_version_fixture(tmp_path, current="3.6.21")
+    (root / "shared/version.py").write_text(
+        '__version__ = "v3.6.21"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(versioning.VersionUpdateError, match="without a v prefix"):
+        versioning.read_project_version(root)
 
 
 def test_version_update_changes_only_the_allowlisted_current_version_projections(tmp_path):

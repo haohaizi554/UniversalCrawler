@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from PyQt6.QtCore import (
+    QEvent,
     QObject,
     QRect,
     QSignalBlocker,
@@ -76,7 +77,7 @@ from .panel_policy import (
 from .process_controller import ReleaseProcessController
 from .proxy import ProxySelection, build_proxy_environment, project_proxy_options
 from .remote import fetch_latest_release
-from .versioning import read_project_version
+from .versioning import format_release_tag, normalize_version, read_project_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -325,10 +326,11 @@ def build_confirmation_summary(
         for name in asset_names
         if str(name).strip()
     )
+    version = normalize_version(request.target_version)
     values = (
-        ("版本", redact_release_text(request.target_version)),
+        ("版本", redact_release_text(version)),
         ("发布模式", _MODE_LABELS.get(mode.value, mode.value)),
-        ("Git 标签", f"v{redact_release_text(request.target_version)}"),
+        ("Git 标签", redact_release_text(format_release_tag(version))),
         ("代码仓库", repository),
         ("代理", redact_release_text(request.proxy_label)),
         ("发布说明", notes_path or "无"),
@@ -718,6 +720,7 @@ class ReleaseBuilderWindow(QWidget):
         super().showEvent(event)
         self._window_chrome_controller.install()
         self._window_chrome_controller.on_show_event()
+        self._sync_window_title_bar_state()
         if self._sync_release_option_columns():
             self._stabilize_configuration_sections()
 
@@ -725,6 +728,21 @@ class ReleaseBuilderWindow(QWidget):
         super().resizeEvent(event)
         if self._sync_release_option_columns():
             self._stabilize_configuration_sections()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_window_title_bar_state()
+
+    def _sync_window_title_bar_state(self) -> None:
+        chrome_frame = self.__dict__.get("chrome_frame")
+        if chrome_frame is None:
+            return
+        maximized = (
+            bool(self.windowState() & Qt.WindowState.WindowMaximized)
+            or self.isMaximized()
+        )
+        chrome_frame.set_maximized(maximized)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._close_pending = True
@@ -1367,10 +1385,15 @@ class ReleaseBuilderWindow(QWidget):
         self.setGeometry(geometry)
 
     def _request_from_controls(self) -> BuildRequest:
+        raw_target_version = self.target_version_edit.text().strip()
+        try:
+            target_version = normalize_version(raw_target_version)
+        except ValueError:
+            target_version = raw_target_version
         try:
             resolution = resolve_panel_intent(
                 self.panel_intent,
-                self.target_version_edit.text().strip(),
+                target_version,
                 self.remote_info,
             )
             same_release_repair = resolution.same_release_repair
@@ -1381,7 +1404,7 @@ class ReleaseBuilderWindow(QWidget):
             )
             offline_debug = self.panel_intent is PanelBuildIntent.LOCAL
         return BuildRequest(
-            target_version=self.target_version_edit.text().strip(),
+            target_version=target_version,
             repository=self.repository_edit.text().strip(),
             release_notes_path=self.notes_edit.text().strip(),
             build_portable=self.check_build_portable.isChecked(),
@@ -1633,7 +1656,7 @@ class ReleaseBuilderWindow(QWidget):
             self.showNormal()
         else:
             self.showMaximized()
-        self.chrome_frame.set_maximized(self.isMaximized())
+        self._sync_window_title_bar_state()
 
 
 _LAUNCHED_WINDOWS: dict[int, QWidget] = {}

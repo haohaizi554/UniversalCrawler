@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from shared.version import format_version_label
+
 
 def format_transfer_speed(bps: int) -> str:
     if bps <= 0:
@@ -90,5 +92,5 @@ def build_app_status(
         "active_count": active_count,
         "completed_count": completed_count,
         "failed_count": failed_count,
-        "version": f"v{version}",
+        "version": format_version_label(version),
     }
