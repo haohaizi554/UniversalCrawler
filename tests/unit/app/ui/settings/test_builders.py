@@ -132,5 +132,24 @@ class SettingsBuildersTests(unittest.TestCase):
             },
         )
 
+    @patch(
+        "app.ui.plugin_settings.get_platform_runtime_defaults",
+        return_value={
+            "individual_only": True,
+            "priority": "无码流出优先",
+            "timeout": 120,
+            "proxy": "http://127.0.0.1:7897",
+        },
+    )
+    def test_read_missav_run_options_uses_saved_runtime_proxy_without_widget(self, runtime_defaults):
+        """主窗口未挂载旧平台控件时，仍应使用配置中心保存的代理。"""
+        result = read_missav_run_options(None)
+
+        self.assertEqual(result["proxy"], "http://127.0.0.1:7897")
+        self.assertTrue(result["individual_only"])
+        self.assertEqual(result["priority"], "无码流出优先")
+        self.assertEqual(result["timeout"], 120)
+        runtime_defaults.assert_called_once_with("missav")
+
 if __name__ == "__main__":
     unittest.main()

@@ -199,7 +199,9 @@ def build_missav_settings_widget(parent=None) -> MissAVSettingsWidget:
 
 def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool | int]:
     if not isinstance(widget, MissAVSettingsWidget):
-        defaults = get_platform_default_values("missav")
+        # 新版主窗口由配置中心统一管理平台参数，不再挂载旧的行内设置控件。
+        # 此分支必须读取持久化运行值，否则每次启动都会悄悄退回 7890 等出厂默认值。
+        defaults = get_platform_runtime_defaults("missav")
         return {
             "individual_only": bool(defaults.get("individual_only", False)),
             "priority": str(defaults.get("priority", "中文字幕优先")),
