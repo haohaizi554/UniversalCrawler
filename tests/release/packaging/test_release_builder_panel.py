@@ -21,6 +21,7 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(RELEASE_TOOL_ROOT))
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
+from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
 from release_tool.events import EVENT_PREFIX
@@ -250,6 +251,37 @@ def test_panel_reuses_project_chrome_theme_root_and_safe_defaults(qapp):
         window.shutdown()
 
 
+def test_release_builder_user_facing_controls_are_chinese(qapp):
+    window = make_panel(qapp)
+    try:
+        assert window.windowTitle() == "UniversalCrawler 发布构建工具"
+        assert window.chrome_frame.title_bar.title_label.text() == (
+            "UniversalCrawler 发布构建工具"
+        )
+        assert [section.title() for section in window.section_widgets] == [
+            "版本信息",
+            "构建选项",
+            "签名与信任",
+            "代码仓库与发布",
+            "网络与代理",
+            "执行进度与日志",
+        ]
+        assert window.refresh_remote_button.text() == "刷新"
+        assert window.check_build_portable.text() == "便携版"
+        assert window.check_build_installer.text() == "安装包"
+        assert window.check_sign_manifest.text() == "签署更新清单"
+        assert window.check_upload_assets.text() == "上传发布资产"
+        assert window.start_button.text() == "开始构建"
+        assert window.cancel_button.text() == "取消"
+        assert window.copy_log_button.text() == "复制选中内容"
+        assert window.export_log_button.text() == "导出日志副本"
+        assert window.clear_log_button.text() == "清空显示"
+        assert window.open_log_directory_button.text() == "打开日志目录"
+        assert window.mode_badge.text() == "本地调试"
+    finally:
+        window.shutdown()
+
+
 def test_local_debug_mode_projects_disabled_remote_and_signing_controls(qapp):
     window = make_panel(qapp, remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"))
     try:
@@ -291,6 +323,17 @@ def test_custom_proxy_endpoint_tracks_project_proxy_option(qapp):
         window.proxy_combo.setCurrentIndex(window.proxy_combo.findData("自定义"))
 
         assert window.custom_proxy_edit.isEnabled() is True
+    finally:
+        window.shutdown()
+
+
+def test_release_builder_proxy_uses_shared_themed_combo(qapp):
+    window = make_panel(qapp)
+    try:
+        assert isinstance(window.proxy_combo, ThemedComboBox)
+        assert window.proxy_combo.property("themedComboManaged") == "true"
+        assert window.proxy_combo.property("comboPopupClampToControl") is True
+        assert window.proxy_combo.view().property("comboPopupFullExpand") == "true"
     finally:
         window.shutdown()
 
@@ -909,6 +952,12 @@ def test_confirmation_summary_uses_safe_fields_and_chromed_dialog(qapp):
         assert "private.pem" not in summary
         assert "token" not in summary.lower()
         assert "UniversalCrawler-Setup.exe" in summary
+        assert "版本：" in summary
+        assert "发布模式：" in summary
+        assert "发布说明：" in summary
+        assert "Version:" not in summary
+        assert "Mode:" not in summary
+        assert "Release notes:" not in summary
     finally:
         window.shutdown()
 

@@ -83,6 +83,7 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(parse_mode_arg(["-m", "gui"]), Mode.GUI)
         self.assertEqual(parse_mode_arg(["--mode=web"]), Mode.WEB)
         self.assertEqual(parse_mode_arg(["--mode=report"]), Mode.REPORT)
+        self.assertEqual(parse_mode_arg(["--mode=release"]), Mode.RELEASE)
         self.assertEqual(parse_mode_arg([]), None)
 
     def test_parse_mode_arg_rejects_invalid_or_missing_values(self):
@@ -109,6 +110,7 @@ class DispatcherTests(unittest.TestCase):
         modes = {mode for _key, _label, mode in items}
         self.assertNotIn(dispatcher.Mode.TEST, modes)
         self.assertNotIn(dispatcher.Mode.REPORT, modes)
+        self.assertNotIn(dispatcher.Mode.RELEASE, modes)
         self.assertTrue(
             {
                 dispatcher.Mode.GUI,
@@ -118,6 +120,27 @@ class DispatcherTests(unittest.TestCase):
                 None,
             }.issubset(modes)
         )
+
+    def test_source_launcher_menu_exposes_release_builder(self):
+        from entry import dispatcher
+
+        with patch.object(dispatcher.sys, "frozen", False, create=True):
+            items = dispatcher._runtime_menu_items()
+
+        matching = [
+            (key, label)
+            for key, label, mode in items
+            if mode is dispatcher.Mode.RELEASE
+        ]
+        self.assertEqual(matching, [("7", "发布构建工具  (安装包与热更新发布)")])
+
+    def test_release_builder_adapter_preserves_explicit_empty_argv(self):
+        from entry import dispatcher
+
+        with patch("entry.release_builder_entry.main", return_value=0) as main:
+            self.assertEqual(dispatcher.run_release_builder([]), 0)
+
+        main.assert_called_once_with([])
 
     def test_detect_mode_no_args_no_tty_defaults_to_cli(self):
         """无参 + 非 TTY → CLI。"""

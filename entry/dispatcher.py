@@ -1,7 +1,8 @@
 """UCrawl 运行模式检测与派发入口。
 
 ``run()`` 优先采用 ``--mode`` / ``-m`` 或 ``UCRAWL_MODE``，否则按参数
-特征识别目标；无参数时提供 GUI、Web、Interactive、CLI、Test 和 Report 六种模式。
+特征识别目标；无参数时提供 GUI、Web、Interactive、CLI、Test、Report 和
+Release Builder 七种模式。
 各模式的运行逻辑由对应入口模块负责。
 
 为兼容现有 ``entry.dispatcher`` 调用方，本模块仍保留终端菜单实现及其辅助
@@ -30,6 +31,7 @@ class Mode(str, Enum):
     INTERACTIVE = "interactive"  # 交互式引导 (逐步选择)
     TEST = "test"                # 测试套件 (GUI/TUI/CLI 三模)
     REPORT = "report"            # 项目代码量统计与 HTML 报告
+    RELEASE = "release"          # 发布构建工具（仅源码开发态）
 
 FROZEN_CONSOLE_EXE_NAME = "UCrawlCLI.exe"
 _CONSOLE_REQUIRED_MODES = frozenset(
@@ -254,9 +256,10 @@ _MENU_ITEMS = [
     ("4", "CLI 命令行  (单次执行后退出)",            Mode.CLI),
     ("5", "测试套件    (全量/单元/UI/浏览器 等)",     Mode.TEST),
     ("6", "代码量统计  (生成并打开 HTML 报告)",       Mode.REPORT),
+    ("7", "发布构建工具  (安装包与热更新发布)",         Mode.RELEASE),
     ("q", "退出",                                    None),
 ]
-_SOURCE_ONLY_MENU_MODES = frozenset({Mode.TEST, Mode.REPORT})
+_SOURCE_ONLY_MENU_MODES = frozenset({Mode.TEST, Mode.REPORT, Mode.RELEASE})
 
 
 def _launcher_mode_visible(mode: Mode | None) -> bool:
@@ -366,6 +369,7 @@ def prompt_mode_menu() -> Mode | None:
             "          python main.py --mode interactive  # 交互式引导\n"
             "          python main.py --mode test     # 测试套件\n"
             "          python main.py --mode report   # 代码量统计报告\n"
+            "          python main.py --mode release  # 发布构建工具（仅源码开发态）\n"
             "      - 或设置环境变量: set UCRAWL_MODE=cli\n"
         )
         return None
@@ -438,6 +442,10 @@ def run_code_report(argv: Sequence[str] | None = None) -> int:
     from entry.code_report_entry import main as _main
     return _main(list(argv) if argv is not None else None)
 
+def run_release_builder(argv: Sequence[str] | None = None) -> int:
+    from entry.release_builder_entry import main as _main
+    return _main(list(argv) if argv is not None else None)
+
 _HANDLERS = {
     Mode.GUI: run_gui,
     Mode.WEB: run_web,
@@ -445,6 +453,7 @@ _HANDLERS = {
     Mode.INTERACTIVE: run_interactive,
     Mode.TEST: run_test,
     Mode.REPORT: run_code_report,
+    Mode.RELEASE: run_release_builder,
 }
 
 def _strip_dispatcher_args(argv: Sequence[str]) -> list[str]:
@@ -492,7 +501,10 @@ def run(argv: Sequence[str] | None = None) -> int:
         explicit_mode = parse_mode_arg(argv)
     except _ModeArgumentError as exc:
         sys.stderr.write(f"error: {exc}\n")
-        sys.stderr.write("usage: ucrawl-auto [--mode {gui,web,cli,interactive,test,report}] [args]\n")
+        sys.stderr.write(
+            "usage: ucrawl-auto "
+            "[--mode {gui,web,cli,interactive,test,report,release}] [args]\n"
+        )
         return 2
     if explicit_mode is None:
         explicit_mode = parse_env_mode()

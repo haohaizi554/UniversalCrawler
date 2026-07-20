@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from urllib.error import HTTPError
 from unittest.mock import Mock
 
 import pytest
@@ -68,6 +69,102 @@ def test_fetch_latest_release_returns_unknown_instead_of_guessing(monkeypatch):
 
     assert info.is_available is False
     assert info.error == "offline"
+
+
+@pytest.mark.parametrize("status_code", (403, 429))
+def test_fetch_latest_release_falls_back_to_release_page_when_api_is_limited(
+    monkeypatch,
+    status_code,
+):
+    monkeypatch.setattr(
+        remote,
+        "_open_json",
+        Mock(
+            side_effect=HTTPError(
+                "https://api.github.com/repos/owner/repo/releases/latest",
+                status_code,
+                "rate limited",
+                hdrs=None,
+                fp=None,
+            )
+        ),
+    )
+    page_lookup = Mock(return_value="v3.6.21")
+    monkeypatch.setattr(remote, "_open_latest_release_tag", page_lookup)
+    environment = {"HTTPS_PROXY": "http://127.0.0.1:7890"}
+
+    info = fetch_latest_release(
+        "haohaizi554/UniversalCrawler",
+        environment=environment,
+        timeout_seconds=2.5,
+    )
+
+    assert info.is_available is True
+    assert info.version == "3.6.21"
+    page_lookup.assert_called_once_with(
+        "haohaizi554",
+        "UniversalCrawler",
+        environment=environment,
+        timeout_seconds=2.5,
+    )
+
+
+def test_fetch_latest_release_reports_both_failures_when_rate_limit_fallback_fails(monkeypatch):
+    monkeypatch.setattr(
+        remote,
+        "_open_json",
+        Mock(
+            side_effect=HTTPError(
+                "https://api.github.com/repos/owner/repo/releases/latest",
+                403,
+                "rate limited",
+                hdrs=None,
+                fp=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        remote,
+        "_open_latest_release_tag",
+        Mock(side_effect=TimeoutError("release page offline")),
+    )
+
+    info = fetch_latest_release("haohaizi554/UniversalCrawler", environment={})
+
+    assert info.is_available is False
+    assert "HTTP Error 403" in info.error
+    assert "release page offline" in info.error
+
+
+def test_release_page_tag_parsers_accept_only_the_requested_github_repository():
+    expected_url = "https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.21"
+    other_url = "https://github.com/other/UniversalCrawler/releases/tag/v9.9.9"
+    html = (
+        '<a href="/other/UniversalCrawler/releases/tag/v9.9.9">other</a>'
+        '<a href="/haohaizi554/UniversalCrawler/releases/tag/v3.6.21">latest</a>'
+    )
+
+    assert (
+        remote._release_tag_from_url(
+            expected_url,
+            owner="haohaizi554",
+            name="UniversalCrawler",
+        )
+        == "v3.6.21"
+    )
+    assert not remote._release_tag_from_url(
+        other_url,
+        owner="haohaizi554",
+        name="UniversalCrawler",
+    )
+    assert (
+        remote._release_tag_from_html(
+            html,
+            owner="haohaizi554",
+            name="UniversalCrawler",
+        )
+        == "v3.6.21"
+    )
 
 
 def test_fetch_latest_release_downgrades_malformed_remote_payload_to_unknown(monkeypatch):

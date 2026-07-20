@@ -48,6 +48,38 @@ def test_system_proxy_choice_preserves_base_environment_without_mutating_it():
     assert base == {"HTTP_PROXY": "http://old", "NO_PROXY": "localhost"}
 
 
+def test_system_proxy_choice_discovers_os_proxy_when_environment_has_none(monkeypatch):
+    monkeypatch.setattr(
+        "release_tool.proxy.getproxies",
+        lambda: {
+            "http": "http://127.0.0.1:7890",
+            "https": "http://127.0.0.1:7890",
+            "no": "localhost,127.0.0.1",
+        },
+    )
+
+    env = build_proxy_environment(ProxySelection.system(), {"UNRELATED": "kept"})
+
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:7890"
+    assert env["http_proxy"] == "http://127.0.0.1:7890"
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
+    assert env["https_proxy"] == "http://127.0.0.1:7890"
+    assert env["NO_PROXY"] == "localhost,127.0.0.1"
+    assert env["no_proxy"] == "localhost,127.0.0.1"
+    assert env["UNRELATED"] == "kept"
+
+
+def test_system_proxy_choice_degrades_when_os_proxy_discovery_fails(monkeypatch):
+    def fail_discovery():
+        raise OSError("registry unavailable")
+
+    monkeypatch.setattr("release_tool.proxy.getproxies", fail_discovery)
+
+    env = build_proxy_environment(ProxySelection.system(), {"UNRELATED": "kept"})
+
+    assert env == {"UNRELATED": "kept"}
+
+
 def test_direct_proxy_choice_removes_upper_and_lowercase_proxy_variables():
     base = {
         "HTTP_PROXY": "http://old",

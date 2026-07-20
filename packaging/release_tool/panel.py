@@ -1,4 +1,4 @@
-"""Themed Qt panel for planning and running release builds."""
+"""用于规划和执行发布构建的主题化 Qt 面板。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from PyQt6.QtGui import QCloseEvent, QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
@@ -41,6 +40,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.components.combo_popup import (
+    ThemedComboBox,
+    refresh_themed_combo_boxes,
+)
 from app.ui.components.log_panel import LogPanel
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from app.ui.layout.window_chrome import WindowChromeFrame
@@ -58,6 +61,7 @@ from .models import (
     BuildRequest,
     ReleaseMode,
     ReleaseResult,
+    ReleaseStage,
     RemoteReleaseInfo,
 )
 from .modes import resolve_release_mode, validate_build_request
@@ -70,6 +74,121 @@ from .versioning import read_project_version
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPOSITORY = "haohaizi554/UniversalCrawler"
 _ACTIVE_REMOTE_THREADS: set[QThread] = set()
+
+_MODE_LABELS = {
+    ReleaseMode.LOCAL_DEBUG.value: "本地调试",
+    ReleaseMode.LOCAL_REBUILD.value: "本地重新构建",
+    ReleaseMode.SAME_RELEASE_REPAIR.value: "同版本修复",
+    ReleaseMode.NEW_RELEASE.value: "新版本发布",
+    ReleaseMode.OFFLINE_DEBUG.value: "离线本地调试",
+    "remote_unknown": "远端版本未知",
+    "invalid": "配置无效",
+}
+_STAGE_LABELS = {
+    ReleaseStage.IDLE.value: "就绪",
+    ReleaseStage.CHECKING_REMOTE.value: "检查远端版本",
+    ReleaseStage.PREFLIGHT.value: "发布前检查",
+    ReleaseStage.VERSION_SYNC.value: "同步版本号",
+    ReleaseStage.SOURCE_IDENTITY.value: "确认源码身份",
+    ReleaseStage.BUILDING_PORTABLE.value: "构建便携版",
+    ReleaseStage.BUILDING_INSTALLER.value: "构建安装包",
+    ReleaseStage.SIGNING.value: "签署更新清单",
+    ReleaseStage.SMOKE_TESTING.value: "执行冒烟测试",
+    ReleaseStage.GIT.value: "提交 Git 变更",
+    ReleaseStage.PUBLISHING.value: "创建 GitHub Release",
+    ReleaseStage.UPLOADING.value: "上传发布资产",
+    ReleaseStage.VERIFYING.value: "校验远端资产",
+    ReleaseStage.SUCCEEDED.value: "构建成功",
+    ReleaseStage.FAILED.value: "构建失败",
+    ReleaseStage.CANCELLED.value: "已取消",
+}
+_ACTION_LABELS = {
+    "apply version changes": "应用版本变更",
+    "applying version changes": "应用版本变更",
+    "build portable artifacts": "构建便携版",
+    "building portable artifacts": "构建便携版",
+    "build installer artifacts": "构建安装包",
+    "building installer artifacts": "构建安装包",
+    "run smoke tests": "执行冒烟测试",
+    "smoke testing": "执行冒烟测试",
+    "generate manifest keys": "生成更新清单密钥",
+    "rotate trust anchors": "轮换信任锚",
+    "sign manifests": "签署更新清单",
+    "signing the manifest": "签署更新清单",
+    "commit version changes": "提交版本变更",
+    "committing version changes": "提交版本变更",
+    "push main": "推送 main 分支",
+    "pushing main": "推送 main 分支",
+    "create or reuse tags": "创建或复用标签",
+    "creating or reusing the release tag": "创建或复用发布标签",
+    "create or update releases": "创建或更新 Release",
+    "upload release assets": "上传发布资产",
+    "uploading release assets": "上传发布资产",
+    "upload public keys": "上传公钥",
+    "remote asset verification": "校验远端资产",
+    "creating or updating the release": "创建或更新 Release",
+    "building the installer": "构建安装包",
+    "a private key": "提供私钥",
+    "committing source identity": "提交源码身份",
+    "generating a manifest key": "生成更新清单密钥",
+    "a new release version": "使用新的发布版本号",
+}
+_EXACT_MESSAGE_LABELS = {
+    "remote release state is unknown": "尚未取得远端发布版本，无法确定构建模式",
+    "same release repair requires target version to equal remote version": (
+        "同版本修复要求目标版本与远端版本一致"
+    ),
+    "creating or updating a release requires release notes": (
+        "创建或更新 Release 时必须提供发布说明"
+    ),
+    "smoke tests require building portable artifacts": (
+        "执行冒烟测试前必须构建便携版"
+    ),
+    "version must use MAJOR.MINOR.PATCH": "版本号必须使用 主版本.次版本.修订号 格式",
+    "invalid proxy selection": "代理选项无效",
+    "invalid custom proxy endpoint": "自定义代理端点无效",
+    "Building": "正在构建",
+    "Release build succeeded": "发布构建成功",
+    "Release build failed": "发布构建失败",
+    "Waiting for background work to stop": "正在等待后台任务安全停止",
+}
+
+
+def _localize_release_message(message: str) -> str:
+    """将发布协议中的稳定英文状态投影为中文界面文案。"""
+
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    exact = _EXACT_MESSAGE_LABELS.get(text)
+    if exact is not None:
+        return exact
+
+    for mode_value, mode_label in _MODE_LABELS.items():
+        prefix = f"{mode_value} mode cannot "
+        if text.startswith(prefix):
+            action = text.removeprefix(prefix)
+            return f"{mode_label}模式不允许{_ACTION_LABELS.get(action, action)}"
+
+    prefixes = (
+        ("new release publication requires ", "发布新版本必须"),
+        ("upload release assets requires ", "上传发布资产前必须"),
+        ("upload public key requires ", "上传公钥前必须"),
+        ("new release tag requires ", "创建新版本标签前必须"),
+        ("new release signing requires ", "签署新版本前必须"),
+        ("rotating the trust anchor requires ", "轮换信任锚前必须"),
+        ("dry run cannot ", "试运行模式不允许"),
+    )
+    for prefix, localized_prefix in prefixes:
+        if text.startswith(prefix):
+            action = text.removeprefix(prefix)
+            return f"{localized_prefix}{_ACTION_LABELS.get(action, action)}"
+
+    if text == (
+        "new release tag for an applied version commit requires pushing main"
+    ):
+        return "基于版本变更提交创建新标签前，必须推送 main 分支"
+    return text
 
 
 class _RemoteLoaderWorker(QObject):
@@ -103,7 +222,7 @@ class _ConfirmationDialog(ChromedDialog):
     def __init__(self, parent: QWidget, summary: str) -> None:
         super().__init__(
             parent,
-            title="Confirm remote release actions",
+            title="确认远端发布操作",
             object_name="ReleaseRemoteConfirmation",
             body_margins=(20, 18, 20, 18),
             body_spacing=14,
@@ -117,7 +236,8 @@ class _ConfirmationDialog(ChromedDialog):
             | QDialogButtonBox.StandardButton.Ok,
             parent=self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Start release")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("开始发布")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.content_layout.addWidget(buttons)
@@ -140,15 +260,15 @@ def build_confirmation_summary(
         if str(name).strip()
     )
     values = (
-        ("Version", redact_release_text(request.target_version)),
-        ("Mode", mode.value),
-        ("Tag", f"v{redact_release_text(request.target_version)}"),
-        ("Repository", repository),
-        ("Proxy", redact_release_text(request.proxy_label)),
-        ("Release notes", notes_path or "(none)"),
-        ("Assets", ", ".join(assets) if assets else "(none)"),
+        ("版本", redact_release_text(request.target_version)),
+        ("发布模式", _MODE_LABELS.get(mode.value, mode.value)),
+        ("Git 标签", f"v{redact_release_text(request.target_version)}"),
+        ("代码仓库", repository),
+        ("代理", redact_release_text(request.proxy_label)),
+        ("发布说明", notes_path or "无"),
+        ("发布资产", ", ".join(assets) if assets else "无"),
     )
-    return "\n".join(f"{label}: {value}" for label, value in values)
+    return "\n".join(f"{label}：{value}" for label, value in values)
 
 
 def _safe_repository_label(repository: str) -> str:
@@ -163,7 +283,7 @@ def _safe_repository_label(repository: str) -> str:
 
 
 class ReleaseBuilderWindow(QWidget):
-    """Top-level release builder with shared project chrome and theme."""
+    """复用项目标题栏与主题体系的顶层发布构建面板。"""
 
     def __init__(
         self,
@@ -179,7 +299,7 @@ class ReleaseBuilderWindow(QWidget):
         self.setProperty("ucpThemeRoot", True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setWindowTitle("UniversalCrawler Release Builder")
+        self.setWindowTitle("UniversalCrawler 发布构建工具")
         self.icon_path = str(release_builder_icon_path())
         self.setWindowIcon(QIcon(self.icon_path))
         self._is_dark = resolve_is_dark_theme(self)
@@ -202,7 +322,7 @@ class ReleaseBuilderWindow(QWidget):
         self._project_version = project_version or read_project_version(PROJECT_ROOT)
 
         self.chrome_frame = WindowChromeFrame(
-            title="UniversalCrawler Release Builder",
+            title="UniversalCrawler 发布构建工具",
             icon=QIcon(self.icon_path),
             is_dark_theme=self._is_dark,
             show_minimize=True,
@@ -285,7 +405,9 @@ class ReleaseBuilderWindow(QWidget):
             request = self._request_from_controls()
 
         errors = validate_build_request(request)
-        self.validation_label.setText("\n".join(errors))
+        self.validation_label.setText(
+            "\n".join(_localize_release_message(error) for error in errors)
+        )
         can_start = (
             self._mode is not None
             and not errors
@@ -300,7 +422,7 @@ class ReleaseBuilderWindow(QWidget):
         self._remote_generation += 1
         generation = self._remote_generation
         self.remote_info = RemoteReleaseInfo.unknown()
-        self.remote_version_label.setText("Checking...")
+        self.remote_version_label.setText("正在检查…")
         self.refresh_remote_button.setEnabled(False)
         self.refresh_mode()
         try:
@@ -343,7 +465,9 @@ class ReleaseBuilderWindow(QWidget):
         request = self._request_from_controls()
         errors = validate_build_request(request)
         if errors:
-            self.validation_label.setText("\n".join(errors))
+            self.validation_label.setText(
+                "\n".join(_localize_release_message(error) for error in errors)
+            )
             self.refresh_mode()
             return
         try:
@@ -354,7 +478,7 @@ class ReleaseBuilderWindow(QWidget):
                 offline_debug=request.offline_debug,
             )
         except ValueError as error:
-            self.validation_label.setText(str(error))
+            self.validation_label.setText(_localize_release_message(str(error)))
             self.refresh_mode()
             return
         if self._has_remote_writes(request):
@@ -398,7 +522,7 @@ class ReleaseBuilderWindow(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._close_pending = True
         if not self.shutdown():
-            self.status_label.setText("Waiting for background work to stop")
+            self.status_label.setText("正在等待后台任务安全停止")
             event.ignore()
             return
         self._close_pending = False
@@ -457,38 +581,38 @@ class ReleaseBuilderWindow(QWidget):
         return group
 
     def _build_version_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Version", sections)
+        group = self._new_section("版本信息", sections)
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         self.target_version_edit = QLineEdit(self._project_version)
         self.target_version_edit.setMinimumWidth(180)
-        self.remote_version_label = QLabel("Not checked")
+        self.remote_version_label = QLabel("尚未检查")
         self.remote_version_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.refresh_remote_button = QPushButton("Refresh")
+        self.refresh_remote_button = QPushButton("刷新")
         remote_row = QHBoxLayout()
         remote_row.addWidget(self.remote_version_label, 1)
         remote_row.addWidget(self.refresh_remote_button)
-        self.check_same_release_repair = QCheckBox("Allow same-release repair")
-        self.check_offline_debug = QCheckBox("Explicit offline local debug")
-        layout.addWidget(QLabel("Target version"), 0, 0)
+        self.check_same_release_repair = QCheckBox("允许修复同版本发布")
+        self.check_offline_debug = QCheckBox("明确使用离线本地调试")
+        layout.addWidget(QLabel("目标版本"), 0, 0)
         layout.addWidget(self.target_version_edit, 0, 1)
-        layout.addWidget(QLabel("Latest remote"), 1, 0)
+        layout.addWidget(QLabel("远端最新版本"), 1, 0)
         layout.addLayout(remote_row, 1, 1)
         layout.addWidget(self.check_same_release_repair, 2, 1)
         layout.addWidget(self.check_offline_debug, 3, 1)
 
     def _build_build_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Build", sections)
+        group = self._new_section("构建选项", sections)
         layout = QHBoxLayout(group)
-        self.check_apply_version = QCheckBox("Apply version")
+        self.check_apply_version = QCheckBox("应用版本号")
         self.check_apply_version.setChecked(True)
-        self.check_build_portable = QCheckBox("Portable")
+        self.check_build_portable = QCheckBox("便携版")
         self.check_build_portable.setChecked(True)
-        self.check_build_installer = QCheckBox("Installer")
+        self.check_build_installer = QCheckBox("安装包")
         self.check_build_installer.setChecked(True)
-        self.check_smoke_tests = QCheckBox("Smoke tests")
+        self.check_smoke_tests = QCheckBox("冒烟测试")
         self.check_smoke_tests.setChecked(True)
         for control in (
             self.check_apply_version,
@@ -500,19 +624,19 @@ class ReleaseBuilderWindow(QWidget):
         layout.addStretch(1)
 
     def _build_signing_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Signing", sections)
+        group = self._new_section("签名与信任", sections)
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         self.private_key_edit = QLineEdit()
-        self.private_key_edit.setPlaceholderText("Private key path or env:REFERENCE")
-        self.private_key_button = QPushButton("Choose")
+        self.private_key_edit.setPlaceholderText("私钥路径或 env:环境变量名")
+        self.private_key_button = QPushButton("选择")
         key_row = QHBoxLayout()
         key_row.addWidget(self.private_key_edit, 1)
         key_row.addWidget(self.private_key_button)
-        self.check_generate_key = QCheckBox("Generate manifest key")
-        self.check_rotate_trust_anchor = QCheckBox("Rotate trust anchor")
-        self.check_sign_manifest = QCheckBox("Sign manifest")
-        layout.addWidget(QLabel("Private key"), 0, 0)
+        self.check_generate_key = QCheckBox("生成更新清单密钥")
+        self.check_rotate_trust_anchor = QCheckBox("轮换信任锚")
+        self.check_sign_manifest = QCheckBox("签署更新清单")
+        layout.addWidget(QLabel("私钥"), 0, 0)
         layout.addLayout(key_row, 0, 1)
         options = QHBoxLayout()
         options.addWidget(self.check_generate_key)
@@ -522,27 +646,27 @@ class ReleaseBuilderWindow(QWidget):
         layout.addLayout(options, 1, 1)
 
     def _build_release_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Git / Release", sections)
+        group = self._new_section("代码仓库与发布", sections)
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         self.repository_edit = QLineEdit(DEFAULT_REPOSITORY)
         self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Release notes path")
-        self.notes_button = QPushButton("Choose")
+        self.notes_edit.setPlaceholderText("发布说明 Markdown 文件路径")
+        self.notes_button = QPushButton("选择")
         notes_row = QHBoxLayout()
         notes_row.addWidget(self.notes_edit, 1)
         notes_row.addWidget(self.notes_button)
-        layout.addWidget(QLabel("Repository"), 0, 0)
+        layout.addWidget(QLabel("GitHub 仓库"), 0, 0)
         layout.addWidget(self.repository_edit, 0, 1)
-        layout.addWidget(QLabel("Release notes"), 1, 0)
+        layout.addWidget(QLabel("发布说明"), 1, 0)
         layout.addLayout(notes_row, 1, 1)
-        self.check_commit_version = QCheckBox("Commit version")
-        self.check_push_main = QCheckBox("Push main")
-        self.check_create_tag = QCheckBox("Create/reuse tag")
-        self.check_create_release = QCheckBox("Create/update release")
-        self.check_upload_assets = QCheckBox("Upload assets")
-        self.check_upload_public_key = QCheckBox("Upload public key")
-        self.check_verify_remote = QCheckBox("Verify remote assets")
+        self.check_commit_version = QCheckBox("提交版本变更")
+        self.check_push_main = QCheckBox("推送 main 分支")
+        self.check_create_tag = QCheckBox("创建或复用标签")
+        self.check_create_release = QCheckBox("创建或更新 Release")
+        self.check_upload_assets = QCheckBox("上传发布资产")
+        self.check_upload_public_key = QCheckBox("上传公钥")
+        self.check_verify_remote = QCheckBox("校验远端资产")
         option_grid = QGridLayout()
         for index, control in enumerate(
             (
@@ -568,32 +692,34 @@ class ReleaseBuilderWindow(QWidget):
         )
 
     def _build_network_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Network", sections)
+        group = self._new_section("网络与代理", sections)
         layout = QFormLayout(group)
-        self.proxy_combo = QComboBox()
+        self.proxy_combo = ThemedComboBox(row_height=36)
+        self.proxy_combo.setObjectName("ReleaseProxyCombo")
+        self.proxy_combo.setProperty("comboPopupClampToControl", True)
         for option in project_proxy_options():
             label = str(option.get("label") or option.get("value") or "")
             value = str(option.get("value") or label)
             self.proxy_combo.addItem(label, value)
         if self.proxy_combo.count() == 0:
-            self.proxy_combo.addItem("System proxy", "System proxy")
-            self.proxy_combo.addItem("Direct", "Direct")
-            self.proxy_combo.addItem("Custom", "Custom")
+            self.proxy_combo.addItem("系统代理", "System proxy")
+            self.proxy_combo.addItem("直连（不使用代理）", "Direct")
+            self.proxy_combo.addItem("自定义 HTTP/SOCKS5 端点", "Custom")
         self.custom_proxy_edit = QLineEdit()
-        self.custom_proxy_edit.setPlaceholderText("Proxy endpoint or env:REFERENCE")
-        layout.addRow("Proxy", self.proxy_combo)
-        layout.addRow("Custom endpoint", self.custom_proxy_edit)
+        self.custom_proxy_edit.setPlaceholderText("代理端点或 env:环境变量名")
+        layout.addRow("上传代理", self.proxy_combo)
+        layout.addRow("自定义端点", self.custom_proxy_edit)
 
     def _build_execution_section(self, sections: QVBoxLayout) -> None:
-        group = self._new_section("Execution / Log", sections)
+        group = self._new_section("执行进度与日志", sections)
         layout = QVBoxLayout(group)
         status_row = QHBoxLayout()
-        self.mode_badge = QLabel("remote_unknown")
+        self.mode_badge = QLabel("远端版本未知")
         self.mode_badge.setObjectName("ReleaseModeBadge")
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("就绪")
         self.status_label.setWordWrap(True)
-        self.start_button = QPushButton("Start build")
-        self.cancel_button = QPushButton("Cancel")
+        self.start_button = QPushButton("开始构建")
+        self.cancel_button = QPushButton("取消")
         self.cancel_button.setEnabled(False)
         status_row.addWidget(self.mode_badge)
         status_row.addWidget(self.status_label, 1)
@@ -609,10 +735,10 @@ class ReleaseBuilderWindow(QWidget):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
         tools = QHBoxLayout()
-        self.copy_log_button = QPushButton("Copy selection")
-        self.export_log_button = QPushButton("Export copy")
-        self.clear_log_button = QPushButton("Clear view")
-        self.open_log_directory_button = QPushButton("Open log directory")
+        self.copy_log_button = QPushButton("复制选中内容")
+        self.export_log_button = QPushButton("导出日志副本")
+        self.clear_log_button = QPushButton("清空显示")
+        self.open_log_directory_button = QPushButton("打开日志目录")
         for button in (
             self.copy_log_button,
             self.export_log_button,
@@ -708,6 +834,7 @@ class ReleaseBuilderWindow(QWidget):
         }}
         """
         self.setStyleSheet(f"{base}\n{semantic}")
+        refresh_themed_combo_boxes(self)
 
     def _apply_initial_geometry(self) -> None:
         app = QApplication.instance()
@@ -783,7 +910,7 @@ class ReleaseBuilderWindow(QWidget):
         self.private_key_button.setEnabled(signing_enabled)
 
     def _set_mode_badge(self, mode_name: str) -> None:
-        self.mode_badge.setText(mode_name.replace("_", " ").title())
+        self.mode_badge.setText(_MODE_LABELS.get(mode_name, mode_name))
         self.mode_badge.setProperty("releaseMode", mode_name)
         self.mode_badge.style().unpolish(self.mode_badge)
         self.mode_badge.style().polish(self.mode_badge)
@@ -804,7 +931,7 @@ class ReleaseBuilderWindow(QWidget):
             self.remote_version_label.setText(result.version)
         else:
             self.remote_version_label.setText(
-                result.error or "Remote release unknown"
+                _localize_release_message(result.error) or "远端发布版本未知"
             )
         self.refresh_mode()
 
@@ -824,11 +951,16 @@ class ReleaseBuilderWindow(QWidget):
         message: str,
     ) -> None:
         self.progress_bar.setValue(progress)
-        self.status_label.setText(message or stage.replace("_", " ").title())
+        self.status_label.setText(
+            _localize_release_message(message)
+            or _STAGE_LABELS.get(stage, stage)
+        )
 
     @pyqtSlot(str)
     def _on_process_error(self, message: str) -> None:
-        self.status_label.setText(redact_release_text(message))
+        self.status_label.setText(
+            _localize_release_message(redact_release_text(message))
+        )
 
     @pyqtSlot(bool)
     def _on_running_changed(self, running: bool) -> None:
@@ -840,14 +972,16 @@ class ReleaseBuilderWindow(QWidget):
     @pyqtSlot(object)
     def _on_process_completed(self, result: ReleaseResult) -> None:
         if result.succeeded:
-            message = "Release build succeeded"
+            message = "发布构建成功"
             if self.process_controller.audit_log_warning:
-                message += "; audit log may be incomplete"
+                message += "；审计日志可能不完整"
             self.status_label.setText(message)
             self.progress_bar.setValue(100)
         else:
             self.status_label.setText(
-                redact_release_text(result.error or "Release build failed")
+                _localize_release_message(
+                    redact_release_text(result.error or "Release build failed")
+                )
             )
         self._continue_pending_close()
 
@@ -871,9 +1005,9 @@ class ReleaseBuilderWindow(QWidget):
     def _choose_private_key(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
             self,
-            "Choose private key",
+            "选择私钥",
             "",
-            "Key files (*.pem *.key);;All files (*)",
+            "密钥文件 (*.pem *.key);;所有文件 (*)",
         )
         if path:
             self.private_key_edit.setText(path)
@@ -881,9 +1015,9 @@ class ReleaseBuilderWindow(QWidget):
     def _choose_release_notes(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
             self,
-            "Choose release notes",
+            "选择发布说明",
             "",
-            "Markdown (*.md);;Text files (*.txt);;All files (*)",
+            "Markdown (*.md);;文本文件 (*.txt);;所有文件 (*)",
         )
         if path:
             self.notes_edit.setText(path)
@@ -893,9 +1027,9 @@ class ReleaseBuilderWindow(QWidget):
         default_name = source.name if source is not None else "release-build.log"
         destination, _filter = QFileDialog.getSaveFileName(
             self,
-            "Export release log",
+            "导出发布日志",
             default_name,
-            "Log files (*.log);;All files (*)",
+            "日志文件 (*.log);;所有文件 (*)",
         )
         if not destination:
             return
@@ -908,7 +1042,7 @@ class ReleaseBuilderWindow(QWidget):
                     encoding="utf-8",
                 )
         except OSError:
-            QMessageBox.warning(self, "Export failed", "Could not export the log.")
+            QMessageBox.warning(self, "导出失败", "无法导出发布日志。")
 
     def _open_log_directory(self) -> None:
         directory = self.process_controller.log_directory
@@ -954,7 +1088,7 @@ _LAUNCHED_WINDOWS: dict[int, QWidget] = {}
 
 
 def launch_release_builder_panel() -> int:
-    """Launch the standalone release-builder application."""
+    """启动独立的发布构建工具。"""
 
     app = QApplication.instance()
     owns_application = app is None

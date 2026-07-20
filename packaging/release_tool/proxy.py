@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from urllib.parse import urlparse
+from urllib.request import getproxies
 
 from app.config.settings import proxy_app_options
 from app.core.plugins.run_options import normalize_proxy_url
@@ -59,6 +60,7 @@ def build_proxy_environment(
     lowered_label = label.lower()
 
     if label in _SYSTEM_PROXY_LABELS or lowered_label in _SYSTEM_PROXY_LABELS:
+        _merge_discovered_system_proxy(environment)
         return environment
     if label in _DIRECT_PROXY_LABELS or lowered_label in _DIRECT_PROXY_LABELS:
         for variable in PROXY_ENVIRONMENT_VARIABLES:
@@ -85,6 +87,48 @@ def build_proxy_environment(
     for variable in PROXY_ENVIRONMENT_VARIABLES:
         environment[variable] = proxy_url
     return environment
+
+
+def _merge_discovered_system_proxy(environment: dict[str, str]) -> None:
+    """Populate missing proxy variables from the operating-system settings."""
+
+    if any(str(environment.get(name) or "").strip() for name in PROXY_ENVIRONMENT_VARIABLES):
+        return
+    try:
+        discovered = {
+            str(key).casefold(): str(value).strip()
+            for key, value in getproxies().items()
+            if str(value).strip()
+        }
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return
+
+    http_proxy = _normalize_discovered_proxy(discovered.get("http", ""))
+    https_proxy = _normalize_discovered_proxy(discovered.get("https", ""))
+    all_proxy = _normalize_discovered_proxy(discovered.get("all", ""))
+    if http_proxy:
+        environment["HTTP_PROXY"] = http_proxy
+        environment["http_proxy"] = http_proxy
+    if https_proxy:
+        environment["HTTPS_PROXY"] = https_proxy
+        environment["https_proxy"] = https_proxy
+    if all_proxy:
+        environment["ALL_PROXY"] = all_proxy
+        environment["all_proxy"] = all_proxy
+
+    no_proxy = discovered.get("no", "")
+    if no_proxy and not (environment.get("NO_PROXY") or environment.get("no_proxy")):
+        environment["NO_PROXY"] = no_proxy
+        environment["no_proxy"] = no_proxy
+
+
+def _normalize_discovered_proxy(value: str) -> str:
+    if not str(value or "").strip():
+        return ""
+    try:
+        return _normalize_explicit_proxy_endpoint(value, allow_credentials=True)
+    except ValueError:
+        return ""
 
 
 def validate_proxy_label_reference(value: str) -> str:

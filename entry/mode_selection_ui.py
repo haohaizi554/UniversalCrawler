@@ -31,6 +31,7 @@ _MENU_ITEMS = [
     ("4", "CLI 命令行  (单次执行后退出)", Mode.CLI),
     ("5", "测试套件    (全量/单元/UI/浏览器 等)", Mode.TEST),
     ("6", "代码量统计  (生成并打开 HTML 报告)", Mode.REPORT),
+    ("7", "发布构建工具  (安装包与热更新发布)", Mode.RELEASE),
     ("q", "退出", None),
 ]
 _QT_MODE_SPECS = (
@@ -40,6 +41,15 @@ _QT_MODE_SPECS = (
     ("cardCli", Mode.CLI, "4", "CLI 命令行终端", "在独立终端查看用法后可继续输入命令", "", "cardTagCli"),
     ("cardTest", Mode.TEST, "5", "测试套件", "全量/单元/UI/浏览器，多类别可勾选", "工程", "cardTagTest"),
     ("cardReport", Mode.REPORT, "6", "代码量统计", "扫描项目代码，生成并直接打开 HTML 报告", "报告", "cardTagReport"),
+    (
+        "cardRelease",
+        Mode.RELEASE,
+        "7",
+        "发布构建工具",
+        "构建安装包、签名清单并按需发布热更新资产",
+        "开发",
+        "cardTagRelease",
+    ),
 )
 
 
@@ -90,7 +100,7 @@ def _viewport_safe_dialog_minimum(
     *,
     margin: int = 32,
 ) -> tuple[int, int]:
-    """返回不超过当前工作区的对话框最小尺寸；内容不足时由滚动区承接。"""
+    """返回不超过当前工作区的对话框最小尺寸。"""
 
     width = min(720, max(1, int(available_width) - max(0, int(margin))))
     height = min(720, max(1, int(available_height) - max(0, int(margin))))
@@ -110,7 +120,6 @@ def _prompt_mode_with_qt() -> Mode | None:
             QHBoxLayout,
             QLabel,
             QPushButton,
-            QScrollArea,
             QSizePolicy,
             QVBoxLayout,
             QWidget,
@@ -171,6 +180,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     accent_cli = "#8b5cf6"
     accent_test = "#ef4444"
     accent_report = "#06b6d4"
+    accent_release = "#ec4899"
     colors = theme_colors(is_dark)
     accent_cancel = colors["muted"]
     text_primary = colors["text"]
@@ -222,7 +232,8 @@ def _prompt_mode_with_qt() -> Mode | None:
         QLabel#cardTagCli {{ background: {accent_cli}; }}
         QLabel#cardTagTest {{ background: {accent_test}; }}
         QLabel#cardTagReport {{ background: {accent_report}; }}
-        QPushButton#cardGui, QPushButton#cardWeb, QPushButton#cardInt, QPushButton#cardCli, QPushButton#cardTest, QPushButton#cardReport {{
+        QLabel#cardTagRelease {{ background: {accent_release}; }}
+        QPushButton#cardGui, QPushButton#cardWeb, QPushButton#cardInt, QPushButton#cardCli, QPushButton#cardTest, QPushButton#cardReport, QPushButton#cardRelease {{
             background: {bg_soft};
             border: 1px solid {border};
             border-radius: 12px;
@@ -235,19 +246,22 @@ def _prompt_mode_with_qt() -> Mode | None:
         QPushButton#cardCli:hover, QPushButton#cardCli:focus {{ border: 2px solid {accent_cli}; background: {panel}; }}
         QPushButton#cardTest:hover, QPushButton#cardTest:focus {{ border: 2px solid {accent_test}; background: {panel}; }}
         QPushButton#cardReport:hover, QPushButton#cardReport:focus {{ border: 2px solid {accent_report}; background: {panel}; }}
+        QPushButton#cardRelease:hover, QPushButton#cardRelease:focus {{ border: 2px solid {accent_release}; background: {panel}; }}
         QPushButton#cardGui QLabel#cardAccent {{ background: {accent_gui}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardWeb QLabel#cardAccent {{ background: {accent_web}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardInt QLabel#cardAccent {{ background: {accent_int}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardCli QLabel#cardAccent {{ background: {accent_cli}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardTest QLabel#cardAccent {{ background: {accent_test}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardReport QLabel#cardAccent {{ background: {accent_report}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardRelease QLabel#cardAccent {{ background: {accent_release}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QPushButton#cardGui QLabel#cardIndex {{ color: {accent_gui}; }}
         QPushButton#cardWeb QLabel#cardIndex {{ color: {accent_web}; }}
         QPushButton#cardInt QLabel#cardIndex {{ color: {accent_int}; }}
         QPushButton#cardCli QLabel#cardIndex {{ color: {accent_cli}; }}
         QPushButton#cardTest QLabel#cardIndex {{ color: {accent_test}; }}
         QPushButton#cardReport QLabel#cardIndex {{ color: {accent_report}; }}
-        QScrollArea#modeSelectionScroll, QWidget#modeSelectionBody {{
+        QPushButton#cardRelease QLabel#cardIndex {{ color: {accent_release}; }}
+        QWidget#modeSelectionBody {{
             background: transparent;
             border: none;
         }}
@@ -256,11 +270,11 @@ def _prompt_mode_with_qt() -> Mode | None:
             color: {accent_cancel};
             border: 1px solid {border_strong};
             border-radius: 10px;
-            padding: 9px 24px;
+            padding: 5px 20px;
             font-size: 13px;
             font-weight: 600;
             min-width: 120px;
-            min-height: 36px;
+            min-height: 30px;
         }}
         QPushButton#cancelBtn:hover {{
             background: {bg_soft};
@@ -279,29 +293,23 @@ def _prompt_mode_with_qt() -> Mode | None:
     top_stripe.setStyleSheet(f"background: {colors['accent']}; border: none;")
     root.addWidget(top_stripe)
 
-    scroll = QScrollArea()
-    scroll.setObjectName("modeSelectionScroll")
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QFrame.Shape.NoFrame)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     body_widget = QWidget()
     body_widget.setObjectName("modeSelectionBody")
     body = QVBoxLayout(body_widget)
-    body.setContentsMargins(36, 30, 36, 24)
+    body.setContentsMargins(36, 16, 36, 14)
     body.setSpacing(0)
-    scroll.setWidget(body_widget)
-    root.addWidget(scroll, 1)
+    root.addWidget(body_widget, 1)
 
     header = QHBoxLayout()
     header.setSpacing(16)
 
     icon_circle = QFrame()
-    icon_circle.setFixedSize(QSize(64, 64))
+    icon_circle.setFixedSize(QSize(52, 52))
     icon_circle.setStyleSheet(
         f"""
         QFrame {{
             background: {colors["accent_soft"]};
-            border-radius: 32px;
+            border-radius: 26px;
             border: none;
         }}
         """
@@ -309,7 +317,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     icon_circle_layout = QVBoxLayout(icon_circle)
     icon_circle_layout.setContentsMargins(0, 0, 0, 0)
     if icon is not None:
-        pixmap = icon.pixmap(QSize(42, 42))
+        pixmap = icon.pixmap(QSize(36, 36))
         if not pixmap.isNull():
             icon_label = QLabel()
             icon_label.setPixmap(pixmap)
@@ -329,7 +337,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     header.addLayout(title_box)
     header.addStretch(1)
     body.addLayout(header)
-    body.addSpacing(22)
+    body.addSpacing(12)
 
     cards: list[tuple[Mode, QPushButton]] = []
 
@@ -348,7 +356,12 @@ def _prompt_mode_with_qt() -> Mode | None:
         card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         card.setAccessibleName(f"{idx} · {name}")
         card.setAccessibleDescription(desc)
-        card.setMinimumHeight(70)
+        card.setMinimumHeight(52)
+        card.setMaximumHeight(72)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         layout = QHBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -356,17 +369,21 @@ def _prompt_mode_with_qt() -> Mode | None:
 
         accent = QLabel()
         accent.setObjectName("cardAccent")
-        accent.setFixedSize(QSize(6, 70))
-        layout.addWidget(accent, 0, Qt.AlignmentFlag.AlignVCenter)
+        accent.setFixedWidth(6)
+        accent.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(accent)
 
         content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(20, 10, 20, 10)
-        content_layout.setSpacing(18)
+        content_layout.setContentsMargins(16, 5, 16, 5)
+        content_layout.setSpacing(12)
 
         num = QLabel(idx)
         num.setObjectName("cardIndex")
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        num.setFixedWidth(40)
+        num.setFixedWidth(36)
         content_layout.addWidget(num, 0, Qt.AlignmentFlag.AlignVCenter)
 
         text_box = QVBoxLayout()
@@ -386,6 +403,7 @@ def _prompt_mode_with_qt() -> Mode | None:
                 "cardTagCli": accent_cli,
                 "cardTagTest": accent_test,
                 "cardTagReport": accent_report,
+                "cardTagRelease": accent_release,
             }.get(tag_obj, accent_gui)
             tag_label.setStyleSheet(
                 f"""
@@ -405,8 +423,8 @@ def _prompt_mode_with_qt() -> Mode | None:
 
         desc_label = QLabel(desc)
         desc_label.setObjectName("cardDesc")
+        desc_label.setWordWrap(True)
         text_box.addWidget(desc_label)
-        text_box.addStretch(1)
         content_layout.addLayout(text_box, 1)
 
         arrow = QLabel("›")
@@ -436,12 +454,11 @@ def _prompt_mode_with_qt() -> Mode | None:
     for spec in btn_specs:
         card = make_card(*spec)
         cards.append((spec[1], card))
-        body.addWidget(card)
+        body.addWidget(card, 1)
         if spec is not btn_specs[-1]:
-            body.addSpacing(8)
+            body.addSpacing(6)
 
-    body.addSpacing(16)
-    body.addStretch(1)
+    body.addSpacing(10)
 
     bottom = QHBoxLayout()
     bottom.addStretch(1)
@@ -509,6 +526,7 @@ def prompt_mode_menu() -> Mode | None:
             "          python main.py --mode interactive  # 交互式引导\n"
             "          python main.py --mode test     # 测试套件\n"
             "          python main.py --mode report   # 代码量统计报告\n"
+            "          python main.py --mode release  # 发布构建工具（仅源码开发态）\n"
             "      - 或设置环境变量: set UCRAWL_MODE=cli\n"
         )
         raise _MenuUnavailable()
