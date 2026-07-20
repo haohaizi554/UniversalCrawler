@@ -338,7 +338,88 @@ def test_release_builder_user_facing_controls_are_chinese(qapp):
         assert window.export_log_button.text() == "导出日志副本"
         assert window.clear_log_button.text() == "清空显示"
         assert window.open_log_directory_button.text() == "打开日志目录"
+        assert (
+            window.open_installer_directory_button.text()
+            == "打开安装包目录"
+        )
         assert window.mode_badge.text() == "本地调试"
+    finally:
+        window.shutdown()
+
+
+def test_release_notes_path_follows_target_version_and_clears_without_match(
+    qapp,
+    tmp_path,
+):
+    notes_directory = tmp_path / "docs" / "releases"
+    notes_directory.mkdir(parents=True)
+    first_notes = notes_directory / "v3.6.20.md"
+    second_notes = notes_directory / "v3.6.21.md"
+    first_notes.write_text("# v3.6.20", encoding="utf-8")
+    second_notes.write_text("# v3.6.21", encoding="utf-8")
+    window = make_panel(
+        qapp,
+        project_root=tmp_path,
+        project_version="3.6.20",
+    )
+    try:
+        assert window.notes_edit.text() == str(first_notes.resolve())
+
+        window.target_version_edit.setText("v3.6.21")
+        assert window.notes_edit.text() == str(second_notes.resolve())
+
+        window.target_version_edit.setText("3.6.22")
+        assert window.notes_edit.text() == ""
+    finally:
+        window.shutdown()
+
+
+def test_release_notes_picker_defaults_to_project_release_notes_directory(
+    qapp,
+    tmp_path,
+):
+    notes_directory = tmp_path / "docs" / "releases"
+    notes_directory.mkdir(parents=True)
+    window = make_panel(
+        qapp,
+        project_root=tmp_path,
+        project_version="3.6.20",
+    )
+    try:
+        with patch.object(
+            panel_module.QFileDialog,
+            "getOpenFileName",
+            return_value=("", ""),
+        ) as get_open_file_name:
+            window._choose_release_notes()
+
+        assert get_open_file_name.call_args.args[2] == str(notes_directory)
+    finally:
+        window.shutdown()
+
+
+def test_open_installer_directory_button_uses_build_output_directory(
+    qapp,
+    tmp_path,
+):
+    window = make_panel(
+        qapp,
+        project_root=tmp_path,
+        project_version="3.6.20",
+    )
+    try:
+        with patch.object(
+            panel_module.QDesktopServices,
+            "openUrl",
+            return_value=True,
+        ) as open_url:
+            window.open_installer_directory_button.click()
+            qapp.processEvents()
+
+        expected = tmp_path.resolve() / "dist" / "installer"
+        assert expected.is_dir()
+        opened_url = open_url.call_args.args[0]
+        assert Path(opened_url.toLocalFile()) == expected
     finally:
         window.shutdown()
 

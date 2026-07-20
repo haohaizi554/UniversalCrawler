@@ -81,6 +81,11 @@ from .process_controller import ReleaseProcessController
 from .proxy import ProxySelection, build_proxy_environment, project_proxy_options
 from .remote import fetch_latest_release
 from .versioning import format_release_tag, normalize_version, read_project_version
+from .workspace_paths import (
+    default_release_notes_directory,
+    find_release_notes_for_version,
+    installer_output_directory,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -361,6 +366,7 @@ class ReleaseBuilderWindow(QWidget):
         parent: QWidget | None = None,
         *,
         project_version: str | None = None,
+        project_root: Path | None = None,
         remote_loader: Callable[[str, Mapping[str, str]], RemoteReleaseInfo]
         | None = None,
         process_controller: ReleaseProcessController | None = None,
@@ -398,7 +404,15 @@ class ReleaseBuilderWindow(QWidget):
             PanelBuildIntent,
             dict[str, bool],
         ] = {}
-        self._project_version = project_version or read_project_version(PROJECT_ROOT)
+        inferred_project_root = (
+            process_controller.project_root
+            if project_root is None and process_controller is not None
+            else project_root
+        )
+        self._project_root = Path(inferred_project_root or PROJECT_ROOT).resolve()
+        self._project_version = project_version or read_project_version(
+            self._project_root
+        )
 
         self.chrome_frame = WindowChromeFrame(
             title="UniversalCrawler 发布构建工具",
@@ -428,10 +442,11 @@ class ReleaseBuilderWindow(QWidget):
 
         self.process_controller = process_controller or ReleaseProcessController(
             self,
-            project_root=PROJECT_ROOT,
+            project_root=self._project_root,
         )
         self._connect_controller()
         self._connect_form()
+        self._sync_release_notes_for_target_version()
         self._apply_compact_control_heights()
         self._apply_theme()
         self._apply_compact_control_heights()
@@ -543,7 +558,20 @@ class ReleaseBuilderWindow(QWidget):
         self.refresh_mode()
 
     def _on_target_version_changed(self) -> None:
+        self._sync_release_notes_for_target_version()
         self.refresh_mode()
+
+    def _sync_release_notes_for_target_version(self) -> None:
+        matched_path = find_release_notes_for_version(
+            self._project_root,
+            self.target_version_edit.text(),
+        )
+        matched_text = str(matched_path) if matched_path is not None else ""
+        if self.notes_edit.text() == matched_text:
+            return
+        blocker = QSignalBlocker(self.notes_edit)
+        self.notes_edit.setText(matched_text)
+        del blocker
 
     def _switch_panel_intent(
         self,
@@ -1159,11 +1187,19 @@ class ReleaseBuilderWindow(QWidget):
         self.export_log_button = QPushButton("导出日志副本")
         self.clear_log_button = QPushButton("清空显示")
         self.open_log_directory_button = QPushButton("打开日志目录")
+        self.open_installer_directory_button = QPushButton("打开安装包目录")
+        self.open_installer_directory_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        self.open_installer_directory_button.setToolTip(
+            "打开 dist/installer 安装包输出目录"
+        )
         for button in (
             self.copy_log_button,
             self.export_log_button,
             self.clear_log_button,
             self.open_log_directory_button,
+            self.open_installer_directory_button,
         ):
             tools.addWidget(button)
         tools.addStretch(1)
@@ -1224,6 +1260,9 @@ class ReleaseBuilderWindow(QWidget):
         self.export_log_button.clicked.connect(self._export_log_copy)
         self.clear_log_button.clicked.connect(self.log_panel.clear)
         self.open_log_directory_button.clicked.connect(self._open_log_directory)
+        self.open_installer_directory_button.clicked.connect(
+            self._open_installer_directory
+        )
         self._sync_custom_proxy_enabled()
 
     def _connect_controller(self) -> None:
@@ -1570,11 +1609,17 @@ class ReleaseBuilderWindow(QWidget):
             self.private_key_edit.setText(path)
 
     def _choose_release_notes(self) -> None:
+        current_path = Path(self.notes_edit.text().strip())
+        start_path = (
+            current_path
+            if current_path.is_file()
+            else default_release_notes_directory(self._project_root)
+        )
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "选择发布说明",
-            "",
-            "Markdown (*.md);;文本文件 (*.txt);;所有文件 (*)",
+            str(start_path),
+            "Markdown (*.md *.markdown);;文本文件 (*.txt);;所有文件 (*)",
         )
         if path:
             self.notes_edit.setText(path)
@@ -1605,6 +1650,11 @@ class ReleaseBuilderWindow(QWidget):
         directory = self.process_controller.log_directory
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def _open_installer_directory(self) -> None:
+        directory = installer_output_directory(self._project_root)
+        directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     @staticmethod
     def _has_remote_writes(request: BuildRequest) -> bool:
