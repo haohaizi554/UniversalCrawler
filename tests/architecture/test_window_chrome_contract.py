@@ -48,6 +48,14 @@ def _relative(path: Path) -> str:
     return path.relative_to(PROJECT_ROOT).as_posix()
 
 
+def _symbol_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
 def test_every_shared_chrome_host_uses_the_complete_controller_contract() -> None:
     violations: dict[str, list[str]] = {}
     hosts = []
@@ -103,10 +111,41 @@ def test_application_code_does_not_construct_bare_qdialogs() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            if isinstance(node.func, ast.Name) and node.func.id == "QDialog":
+            if _symbol_name(node.func) == "QDialog":
                 violations.append(f"{_relative(path)}:{node.lineno}")
 
     assert violations == [], (
         "Application-owned dialogs must inherit ChromedDialog so current and "
         f"future windows share the same chrome contract: {violations}"
+    )
+
+
+def test_new_top_level_window_classes_cannot_bypass_shared_chrome() -> None:
+    direct_dialog_base = (
+        PROJECT_ROOT / "app" / "ui" / "dialogs" / "chromed_dialog.py",
+        "ChromedDialog",
+    )
+    violations: list[str] = []
+    for path in _production_python_files():
+        source = path.read_text(encoding="utf-8-sig")
+        tree = ast.parse(source, filename=str(path))
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            base_names = {_symbol_name(base) for base in node.bases}
+            location = f"{_relative(path)}:{node.lineno}:{node.name}"
+            if "QDialog" in base_names and (path, node.name) != direct_dialog_base:
+                violations.append(f"{location} directly inherits QDialog")
+            if "QMainWindow" in base_names and "WindowChromeFrame(" not in source:
+                violations.append(f"{location} omits WindowChromeFrame")
+            if (
+                "QWidget" in base_names
+                and "FramelessWindowHint" in source
+                and "WindowChromeFrame(" not in source
+            ):
+                violations.append(f"{location} owns frameless chrome without WindowChromeFrame")
+
+    assert violations == [], (
+        "New application-owned top-level windows must use ChromedDialog or the "
+        f"complete WindowChromeFrame controller contract: {violations}"
     )
