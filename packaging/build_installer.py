@@ -372,7 +372,6 @@ def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
             )
         )
         staged_installer = workspace / setup_exe.name
-        build_started_at = time.time()
         command = _build_iscc_command(iscc, output_dir=workspace)
         try:
             return_code, output = _stream_iscc(
@@ -385,11 +384,8 @@ def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
                         "安装包构建失败，Inno Setup 未生成暂存产物："
                         f"{staged_installer}"
                     )
-                if staged_installer.stat().st_mtime < build_started_at:
-                    raise SystemExit(
-                        "安装包暂存产物时间异常，拒绝覆盖上一份有效安装包："
-                        f"{staged_installer}"
-                    )
+                # mkdtemp 每轮都会创建全新的空目录；文件存在本身即可证明它由
+                # 本轮 ISCC 生成。mtime 在 Windows/CI 上可能因时间精度被向前取整。
                 _promote_installer(staged_installer, setup_exe)
                 return
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,6 +70,40 @@ def test_transient_resource_update_retries_in_isolated_workspace(tmp_path):
     assert final_installer.read_bytes() == b"new-installer"
     assert not any(path.exists() for path in attempt_dirs)
     sleep.assert_called_once()
+
+
+def test_isolated_workspace_accepts_current_build_with_coarse_file_mtime(tmp_path):
+    """隔离目录已能证明产物归属本轮构建，不应再依赖文件系统时间精度。"""
+
+    tool = _load_build_installer_tool()
+    output_dir = tmp_path / "installer"
+    output_dir.mkdir()
+    final_installer = output_dir / "setup.exe"
+    final_installer.write_bytes(b"previous-installer")
+
+    def fake_stream(command, *, cwd):
+        assert cwd == tool.PROJECT_ROOT / "packaging"
+        output_argument = next(
+            item for item in command if item.startswith("/DOutputDir=")
+        )
+        staged_installer = (
+            Path(output_argument.split("=", 1)[1]) / final_installer.name
+        )
+        staged_installer.write_bytes(b"new-installer")
+        coarse_timestamp = time.time() - 1
+        os.utime(
+            staged_installer,
+            (coarse_timestamp, coarse_timestamp),
+        )
+        return 0, "Successful compile\n"
+
+    with (
+        patch.object(tool, "OUTPUT_DIR", output_dir),
+        patch.object(tool, "_stream_iscc", side_effect=fake_stream),
+    ):
+        tool._compile_installer_with_retry("iscc", final_installer)
+
+    assert final_installer.read_bytes() == b"new-installer"
 
 
 def test_non_transient_compiler_error_is_not_retried(tmp_path):
