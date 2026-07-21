@@ -652,7 +652,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
 
         def ensure_release(self, tag, title, notes_path, *, repair):
             assert tag == "v3.6.22"
-            assert title == "UniversalCrawler 3.6.22"
+            assert title == "v3.6.22"
             assert Path(notes_path) == tmp_path / "notes.md"
             assert repair is False
             calls.append("remote_release")

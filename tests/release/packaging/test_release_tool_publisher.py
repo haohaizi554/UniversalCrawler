@@ -91,6 +91,35 @@ def test_publisher_uses_argument_arrays_and_never_shell(tmp_path):
     assert any("releases/tags/v3.6.22" in value for value in run.call_args_list[0].args[0])
 
 
+def test_publisher_decodes_github_cli_output_as_utf8(tmp_path):
+    """GitHub CLI 始终输出 UTF-8，不能交给 Windows 本地代码页猜测。"""
+    run = Mock(return_value=releases_response(release_payload()))
+    publisher = make_publisher(run)
+
+    publisher.ensure_release("v3.6.22", "中文修订", write_notes(tmp_path / "notes.md"), repair=False)
+
+    kwargs = run.call_args.kwargs
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def test_expected_missing_release_probe_does_not_flood_publish_log(tmp_path):
+    """创建前的 404 属于正常分支，不应把响应头和错误正文展示给用户。"""
+    lines = []
+    run = Mock(
+        side_effect=[
+            releases_response(),
+            completed([]),
+            releases_response(release_payload()),
+        ]
+    )
+    publisher = make_publisher(run, output=lines.append)
+
+    publisher.ensure_release("v3.6.22", "中文修订", write_notes(tmp_path / "notes.md"), repair=False)
+
+    assert lines == []
+
+
 def test_publisher_redacts_subprocess_output_and_raises_for_nonzero_exit(tmp_path):
     lines = []
     run = Mock(

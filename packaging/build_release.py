@@ -1406,11 +1406,9 @@ def _build_pipeline_hooks(
             raise ValueError("creating a release requires release_notes_path")
         publisher.ensure_release(
             tag,
-            (
-                f"UniversalCrawler {request.target_version}"
-                if request.release_revision == 0
-                else f"UniversalCrawler {request.target_version} 修订 {request.release_revision}"
-            ),
+            # GitHub 左侧发布列表很窄，标题直接使用规范 tag，避免产品名
+            # 挤掉真正用于区分同版本修订的 ``-rN`` 后缀。
+            tag,
             request.release_notes_path,
             repair=False,
         )

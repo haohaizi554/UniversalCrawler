@@ -262,11 +262,13 @@ class GitHubReleasePublisher:
                 "--include",
             ),
             timeout_seconds=self._metadata_timeout_seconds,
+            emit_output=False,
         )
         status, body = _included_response(completed.stdout)
         if status == 404:
             return None
         if completed.returncode or status != 200:
+            self._emit_streams(completed.stdout, completed.stderr)
             raise PublishError("GitHub command failed")
         payload = _json_payload(body)
         if not isinstance(payload, Mapping) or payload.get("tag_name") != tag:
@@ -349,6 +351,7 @@ class GitHubReleasePublisher:
         argv: Sequence[str],
         *,
         timeout_seconds: float,
+        emit_output: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         timeout_error: subprocess.TimeoutExpired | None = None
         os_error = False
@@ -359,6 +362,10 @@ class GitHubReleasePublisher:
                 env=dict(self.environment),
                 capture_output=True,
                 text=True,
+                # gh 的管道输出固定为 UTF-8；Windows 默认 GBK 会在中文
+                # Release 标题或说明处令 subprocess 的 reader 线程崩溃。
+                encoding="utf-8",
+                errors="replace",
                 shell=False,
                 check=False,
                 timeout=timeout_seconds,
@@ -372,7 +379,8 @@ class GitHubReleasePublisher:
             raise PublishError("GitHub command failed")
         if os_error:
             raise PublishError("GitHub command failed")
-        self._emit_streams(completed.stdout, completed.stderr)
+        if emit_output:
+            self._emit_streams(completed.stdout, completed.stderr)
         return completed
 
     def _emit_streams(self, *streams: object) -> None:
