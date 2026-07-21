@@ -1841,8 +1841,11 @@ class FrontendStateServiceTests(unittest.TestCase):
                 failed_record_store=store,
             )
             try:
+                # 服务初始化会先排队快照刷新和过期清理；先隔离这些维护任务，
+                # 避免 coverage 下的 CI 调度抖动污染随后要验证的结构化 upsert。
+                self.assertTrue(store.flush(timeout=10))
                 failed = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
-                self.assertTrue(store.flush(timeout=2))
+                self.assertTrue(store.flush(timeout=10))
                 rows = store.query(limit=10)
             finally:
                 service.destroy()
