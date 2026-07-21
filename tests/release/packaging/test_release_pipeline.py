@@ -481,6 +481,33 @@ def test_manifest_payload_records_the_full_source_commit(tmp_path):
     assert payload["sourceCommit"] == "a" * 40
 
 
+def test_manifest_payload_records_revision_identity_and_never_marks_update_mandatory(tmp_path):
+    tool = _load_manifest_tool()
+    asset = tmp_path / "setup.exe"
+    asset.write_bytes(b"installer")
+
+    payload = tool.build_manifest_payload(
+        version="3.6.21",
+        release_revision=2,
+        tag="v3.6.21-r2",
+        assets=[
+            tool.ReleaseAssetSpec(
+                key="windows-x64",
+                path=asset,
+                url="https://github.com/owner/repo/releases/download/v3.6.21-r2/setup.exe",
+                os="windows",
+                arch="x64",
+                installer_type="inno",
+            )
+        ],
+        mandatory=True,
+    )
+
+    assert payload["releaseRevision"] == 2
+    assert payload["tag"] == "v3.6.21-r2"
+    assert payload["mandatory"] is False
+
+
 def test_build_only_is_an_explicit_escape_hatch_that_does_not_prepare_update_assets():
     tool = _load_tool()
 

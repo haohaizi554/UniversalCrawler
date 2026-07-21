@@ -35,6 +35,7 @@ from app.services.secure_updater import (  # noqa: E402
     UpdateManifestVerifier,
 )
 from scripts.update_bootstrap import default_manifest_private_key_path  # noqa: E402
+from shared.release_identity import ReleaseIdentity  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ def build_manifest_payload(
     version: str,
     tag: str,
     assets: list[ReleaseAssetSpec],
+    release_revision: int = 0,
     notes: str = "",
     published_at: str | None = None,
     expires_days: int = 30,
@@ -92,6 +94,9 @@ def build_manifest_payload(
 ) -> dict[str, Any]:
     if not assets:
         raise ValueError("at least one release asset is required")
+    identity = ReleaseIdentity(version, release_revision)
+    if str(tag) != identity.tag:
+        raise ValueError("release tag does not match version and release revision")
     published = _parse_or_now(published_at)
     expires_at = published + timedelta(days=int(expires_days))
     payload: dict[str, Any] = {
@@ -99,11 +104,13 @@ def build_manifest_payload(
         "appId": app_id,
         "channel": channel,
         "version": str(version),
+        "releaseRevision": identity.revision,
         "tag": str(tag),
         "publishedAt": _format_rfc3339(published),
         "expiresAt": _format_rfc3339(expires_at),
         "minClientVersion": str(min_client_version),
-        "mandatory": bool(mandatory),
+        # 保留字段是为了兼容旧客户端，但项目更新始终需要用户确认。
+        "mandatory": False,
         "notes": str(notes or ""),
         "assets": {spec.key: _asset_payload(spec) for spec in assets},
     }
@@ -124,6 +131,7 @@ def write_signed_manifest(
     version: str,
     tag: str,
     assets: list[ReleaseAssetSpec],
+    release_revision: int = 0,
     notes: str = "",
     published_at: str | None = None,
     expires_days: int = 30,
@@ -152,6 +160,7 @@ def write_signed_manifest(
         version=version,
         tag=tag,
         assets=assets,
+        release_revision=release_revision,
         notes=notes,
         published_at=published_at,
         expires_days=expires_days,
@@ -210,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--private-key", default="")
     parser.add_argument("--version", required=True)
     parser.add_argument("--tag", required=True)
+    parser.add_argument("--release-revision", type=int, default=0)
     parser.add_argument("--asset-spec", required=True, help="JSON array of release asset specs")
     parser.add_argument("--notes", default="")
     parser.add_argument("--published-at", default="")
@@ -235,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         private_key_path=private_key,
         version=args.version,
         tag=args.tag,
+        release_revision=args.release_revision,
         assets=_parse_asset_specs(Path(args.asset_spec)),
         notes=args.notes,
         published_at=args.published_at or None,

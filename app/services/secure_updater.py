@@ -36,6 +36,7 @@ from defusedxml.common import DefusedXmlException
 
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_cache_root, user_logs_root
+from shared.release_identity import ReleaseIdentity, SemVer, compare_semver
 
 
 APP_ID = "ucrawl.universalcrawlerpro"
@@ -157,81 +158,6 @@ class InstallError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class SemVer:
-    major: int
-    minor: int
-    patch: int
-    prerelease: tuple[str, ...] = ()
-    build: str = ""
-
-    @classmethod
-    def parse(cls, value: Any) -> "SemVer":
-        raw = str(value or "").strip()
-        if raw.lower().startswith("v"):
-            raw = raw[1:]
-        match = re.fullmatch(
-            r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?",
-            raw,
-        )
-        if not match:
-            raise ValueError(f"invalid semver: {value!r}")
-        prerelease = tuple(part for part in (match.group(4) or "").split(".") if part)
-        return cls(
-            major=int(match.group(1)),
-            minor=int(match.group(2)),
-            patch=int(match.group(3)),
-            prerelease=prerelease,
-            build=match.group(5) or "",
-        )
-
-
-def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-    if not left and not right:
-        return 0
-    if not left:
-        return 1
-    if not right:
-        return -1
-    for left_part, right_part in zip(left, right, strict=False):
-        left_num = left_part.isdigit()
-        right_num = right_part.isdigit()
-        if left_num and right_num:
-            left_number, right_number = int(left_part), int(right_part)
-            if left_number < right_number:
-                return -1
-            if left_number > right_number:
-                return 1
-            continue
-        if left_num:
-            return -1
-        if right_num:
-            return 1
-        if left_part < right_part:
-            return -1
-        if left_part > right_part:
-            return 1
-    if len(left) < len(right):
-        return -1
-    if len(left) > len(right):
-        return 1
-    return 0
-
-
-def compare_semver(left: Any, right: Any) -> int:
-    """按 SemVer 数值和预发布规则比较，避免字符串字典序误判。"""
-
-    left_version = SemVer.parse(left)
-    right_version = SemVer.parse(right)
-    left_core = (left_version.major, left_version.minor, left_version.patch)
-    right_core = (right_version.major, right_version.minor, right_version.patch)
-    if left_core < right_core:
-        return -1
-    if left_core > right_core:
-        return 1
-    return _compare_prerelease(left_version.prerelease, right_version.prerelease)
-
-
-@dataclass(frozen=True)
 class UpdateAsset:
     name: str
     url: str
@@ -268,6 +194,12 @@ class UpdateManifest:
     notes: str
     assets: dict[str, UpdateAsset]
     trusted_hosts: tuple[str, ...] = ()
+    release_revision: int = 0
+    source_commit: str = ""
+
+    @property
+    def identity(self) -> ReleaseIdentity:
+        return ReleaseIdentity(self.version, self.release_revision)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "UpdateManifest":
@@ -276,6 +208,9 @@ class UpdateManifest:
             raise ManifestError("manifest assets must be a map")
         assets = {str(key): UpdateAsset.from_dict(value) for key, value in assets_raw.items() if isinstance(value, Mapping)}
         trusted_hosts = tuple(str(host).lower() for host in data.get("trustedHosts") or () if host)
+        revision = data.get("releaseRevision", 0)
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ManifestError("manifest release revision must be a non-negative integer")
         return cls(
             schema=int(data.get("schema") or 0),
             app_id=str(data.get("appId") or data.get("app_id") or ""),
@@ -289,6 +224,8 @@ class UpdateManifest:
             notes=str(data.get("notes") or ""),
             assets=assets,
             trusted_hosts=trusted_hosts,
+            release_revision=revision,
+            source_commit=str(data.get("sourceCommit") or data.get("source_commit") or "").strip().lower(),
         )
 
 
@@ -344,8 +281,13 @@ class UpdateManifestVerifier:
         try:
             SemVer.parse(manifest.version)
             SemVer.parse(manifest.min_client_version)
+            identity = manifest.identity
         except ValueError as exc:
             raise ManifestError(str(exc)) from exc
+        if manifest.tag != identity.tag:
+            raise ManifestError("manifest tag does not match version and release revision")
+        if manifest.source_commit and not re.fullmatch(r"[0-9a-f]{40}", manifest.source_commit):
+            raise ManifestError("manifest sourceCommit must be a full 40-character Git SHA")
         expires_at = _parse_rfc3339(manifest.expires_at)
         if expires_at <= self._now():
             raise ManifestError("manifest is expired")
@@ -361,6 +303,11 @@ class PendingInstall:
     attempts: int = 0
     installer_path: str = ""
     log_path: str = ""
+    release_revision: int = 0
+
+    @property
+    def identity(self) -> ReleaseIdentity:
+        return ReleaseIdentity(self.version, self.release_revision)
 
 
 def _state_semver(value: Any) -> str:
@@ -374,6 +321,8 @@ def _state_semver(value: Any) -> str:
 
 
 def _state_int(value: Any, *, default: int, minimum: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -384,24 +333,38 @@ def _state_int(value: Any, *, default: int, minimum: int = 0) -> int:
 @dataclass
 class LocalUpdateState:
     last_seen_version: str = ""
+    last_seen_revision: int = 0
     skipped_version: str = ""
+    skipped_revision: int = 0
     pending_install: PendingInstall | None = None
     last_install_error: str = ""
     install_attempt_limit: int = DEFAULT_INSTALL_ATTEMPT_LIMIT
 
-    def record_startup_health(self, *, current_version: str, staging_dir: Path | None = None) -> None:
+    def record_startup_health(
+        self,
+        *,
+        current_version: str,
+        current_revision: int = 0,
+        staging_dir: Path | None = None,
+    ) -> None:
         pending = self.pending_install
         if pending is None:
             return
-        if compare_semver(current_version, pending.version) == 0:
+        current_identity = ReleaseIdentity(current_version, current_revision)
+        if current_identity == pending.identity:
             self.pending_install = None
             self.last_install_error = ""
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
-            _log_update_event("update.install.succeeded", "pending update completed", version=current_version)
+            _log_update_event(
+                "update.install.succeeded",
+                "pending update completed",
+                version=current_version,
+                revision=current_revision,
+            )
             return
         pending.attempts += 1
-        self.last_install_error = f"installed version did not change to {pending.version}"
+        self.last_install_error = f"installed version did not change to {pending.identity.tag}"
         _log_update_event("update.install.failed", self.last_install_error, level="ERROR")
         if pending.attempts >= self.install_attempt_limit:
             self.pending_install = None
@@ -426,10 +389,16 @@ class LocalUpdateState:
                     attempts=_state_int(pending_payload.get("attempts"), default=0),
                     installer_path=str(pending_payload.get("installer_path") or ""),
                     log_path=str(pending_payload.get("log_path") or ""),
+                    release_revision=_state_int(
+                        pending_payload.get("release_revision"),
+                        default=0,
+                    ),
                 )
         return cls(
             last_seen_version=_state_semver(payload.get("last_seen_version")),
+            last_seen_revision=_state_int(payload.get("last_seen_revision"), default=0),
             skipped_version=_state_semver(payload.get("skipped_version")),
+            skipped_revision=_state_int(payload.get("skipped_revision"), default=0),
             pending_install=pending,
             last_install_error=str(payload.get("last_install_error") or ""),
             install_attempt_limit=_state_int(
@@ -466,6 +435,7 @@ def save_local_update_state(state: LocalUpdateState, path: Path | None = None) -
 def record_pending_install(
     *,
     version: str,
+    release_revision: int = 0,
     installer_path: str | Path,
     log_path: str | Path,
     path: Path | None = None,
@@ -478,32 +448,55 @@ def record_pending_install(
         attempts=0,
         installer_path=str(installer_path),
         log_path=str(log_path),
+        release_revision=ReleaseIdentity(version, release_revision).revision,
     )
     state.save(state_path)
-    _log_update_event("update.install.pending", "pending update recorded", version=version)
+    _log_update_event(
+        "update.install.pending",
+        "pending update recorded",
+        version=version,
+        revision=release_revision,
+    )
     return state
 
 
-def record_skipped_update(version: str, path: Path | None = None) -> LocalUpdateState:
-    """记录用户跳过的版本；手动检查和 mandatory 更新仍由 VersionPolicy 决定。"""
+def record_skipped_update(
+    version: str,
+    path: Path | None = None,
+    *,
+    release_revision: int = 0,
+) -> LocalUpdateState:
+    """记录用户跳过的发布身份；手动检查仍可再次选择。"""
     state_path = path or default_update_state_path()
     state = LocalUpdateState.load(state_path)
-    state.skipped_version = _normalize_semver_text(str(version or ""))
+    identity = ReleaseIdentity(version, release_revision)
+    state.skipped_version = identity.version
+    state.skipped_revision = identity.revision
     state.save(state_path)
-    _log_update_event("update.check.skipped", "update version skipped", version=state.skipped_version)
+    _log_update_event(
+        "update.check.skipped",
+        "update version skipped",
+        version=state.skipped_version,
+        revision=state.skipped_revision,
+    )
     return state
 
 
 def record_startup_update_health(
     *,
     current_version: str,
+    current_revision: int = 0,
     path: Path | None = None,
     staging_dir: Path | None = None,
 ) -> LocalUpdateState:
     """启动后以实际运行版本确认安装结果；未切换版本会累计尝试并最终停止重试。"""
     state_path = path or default_update_state_path()
     state = LocalUpdateState.load(state_path)
-    state.record_startup_health(current_version=current_version, staging_dir=staging_dir)
+    state.record_startup_health(
+        current_version=current_version,
+        current_revision=current_revision,
+        staging_dir=staging_dir,
+    )
     state.save(state_path)
     return state
 
@@ -516,7 +509,7 @@ class UpdatePolicy:
 
 
 class VersionPolicy:
-    """统一处理 SemVer 通道、跳过版本和低于 last_seen_version 的回滚防护。"""
+    """统一处理发布身份、跳过记录和低于 last_seen 身份的回滚防护。"""
 
     def __init__(
         self,
@@ -533,25 +526,34 @@ class VersionPolicy:
         self,
         update_version: str,
         *,
+        update_revision: int = 0,
         current_version: str,
+        current_revision: int = 0,
         manual: bool = False,
         mandatory: bool = False,
     ) -> UpdatePolicy:
         try:
             candidate = SemVer.parse(update_version)
-            SemVer.parse(current_version)
+            candidate_identity = ReleaseIdentity(update_version, update_revision)
+            current_identity = ReleaseIdentity(current_version, current_revision)
         except ValueError as exc:
-            return UpdatePolicy(False, str(exc), mandatory=mandatory)
+            return UpdatePolicy(False, str(exc), mandatory=False)
         if self.channel == "stable" and candidate.prerelease:
-            return UpdatePolicy(False, "stable channel excludes prerelease updates", mandatory=mandatory)
-        if compare_semver(update_version, current_version) <= 0 and not self.allow_downgrade:
-            return UpdatePolicy(False, "candidate version is not newer than current version", mandatory=mandatory)
-        if self.state.last_seen_version and compare_semver(update_version, self.state.last_seen_version) < 0 and not self.allow_downgrade:
-            return UpdatePolicy(False, "candidate version is lower than last seen version", mandatory=mandatory)
-        if self.state.skipped_version and compare_semver(update_version, self.state.skipped_version) == 0 and not manual and not mandatory:
-            return UpdatePolicy(False, "candidate version was skipped", mandatory=mandatory)
-        self.state.last_seen_version = _normalize_semver_text(update_version)
-        return UpdatePolicy(True, mandatory=mandatory)
+            return UpdatePolicy(False, "stable channel excludes prerelease updates", mandatory=False)
+        if candidate_identity <= current_identity and not self.allow_downgrade:
+            return UpdatePolicy(False, "candidate release is not newer than current release", mandatory=False)
+        if self.state.last_seen_version:
+            last_seen = ReleaseIdentity(self.state.last_seen_version, self.state.last_seen_revision)
+            if candidate_identity < last_seen and not self.allow_downgrade:
+                return UpdatePolicy(False, "candidate release is lower than last seen release", mandatory=False)
+        if self.state.skipped_version:
+            skipped = ReleaseIdentity(self.state.skipped_version, self.state.skipped_revision)
+            if candidate_identity == skipped and not manual:
+                return UpdatePolicy(False, "candidate release was skipped", mandatory=False)
+        self.state.last_seen_version = candidate_identity.version
+        self.state.last_seen_revision = candidate_identity.revision
+        # mandatory 仅为旧清单兼容字段；更新必须始终由用户确认。
+        return UpdatePolicy(True, mandatory=False)
 
 
 @dataclass(frozen=True)

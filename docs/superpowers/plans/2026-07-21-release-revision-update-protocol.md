@@ -27,11 +27,11 @@
 - Test: `tests/release/updater/test_release_identity.py`
 - Test: `tests/release/packaging/test_version_contract.py`
 
-- [ ] 增加失败测试：标签解析、修订排序、非法修订拒绝、缺失身份文件回退到修订 `0`、打包身份文件读取。
-- [ ] 运行 `python -m pytest tests/release/updater/test_release_identity.py -q`，确认新测试先失败。
-- [ ] 实现 `ReleaseIdentity`、`parse_release_tag()`、`format_release_tag()`、`load_runtime_release_identity()` 和面向 UI 的标签格式化。
-- [ ] 保证文件解析失败时安全回退到产品版本修订 `0`，不让损坏元数据阻断程序启动。
-- [ ] 运行本任务测试、`python -m py_compile shared/release_identity.py` 和 `git diff --check`。
+- [x] 增加失败测试：标签解析、修订排序、非法修订拒绝、缺失身份文件回退到修订 `0`、打包身份文件读取。
+- [x] 运行 `python -m pytest tests/release/updater/test_release_identity.py -q`，确认新测试先失败。
+- [x] 实现 `ReleaseIdentity`、`parse_release_tag()`、`format_release_tag()`、`load_runtime_release_identity()` 和面向 UI 的标签格式化。
+- [x] 保证文件解析失败时安全回退到产品版本修订 `0`，不让损坏元数据阻断程序启动。
+- [x] 运行本任务测试、`python -m py_compile shared/release_identity.py` 和 `git diff --check`。
 
 ## Task 2: 更新清单、策略和持久状态改用完整身份
 
@@ -41,12 +41,12 @@
 - Test: `tests/release/updater/test_secure_updater.py`
 - Test: `tests/release/packaging/test_release_pipeline.py`
 
-- [ ] 增加失败测试：`releaseRevision` 严格校验、tag/identity 一致性、旧状态迁移、同版本更高修订可更新、同身份默认不可重复安装。
-- [ ] 运行定向测试，记录 RED 原因。
-- [ ] 为 `UpdateManifest`、`PendingInstall`、`LocalUpdateState` 增加修订字段，并保持旧 JSON 兼容。
-- [ ] 将版本策略、跳过记录、启动健康回执和待安装记录升级为完整发布身份比较。
-- [ ] 让清单生成器输出 `releaseRevision`、标准 tag 和 `sourceCommit`，并永久输出 `mandatory: false`。
-- [ ] 运行本任务测试、相关 `py_compile`、乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：`releaseRevision` 严格校验、tag/identity 一致性、旧状态迁移、同版本更高修订可更新、同身份默认不可重复安装。
+- [x] 运行定向测试，记录 RED 原因。
+- [x] 为 `UpdateManifest`、`PendingInstall`、`LocalUpdateState` 增加修订字段，并保持旧 JSON 兼容。
+- [x] 将版本策略、跳过记录、启动健康回执和待安装记录升级为完整发布身份比较。
+- [x] 让清单生成器输出 `releaseRevision`、标准 tag 和 `sourceCommit`，并永久输出 `mandatory: false`。
+- [x] 运行本任务测试、相关 `py_compile`、乱码守卫和 `git diff --check`。
 
 ## Task 3: 候选发现、验签、选择与 helper 交接
 

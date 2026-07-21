@@ -224,6 +224,54 @@ def test_manifest_rejects_app_id_mismatch_and_expiration(tmp_path):
         verifier.load_verified(manifest_path, sig_path)
 
 
+def test_manifest_accepts_revision_when_tag_matches(tmp_path):
+    manifest_path, sig_path, public_pem = _signed_manifest(
+        tmp_path,
+        overrides={"releaseRevision": 2, "tag": "v3.7.0-r2", "sourceCommit": "a" * 40},
+    )
+
+    manifest = UpdateManifestVerifier(public_key_pem=public_pem).load_verified(
+        manifest_path,
+        sig_path,
+    )
+
+    assert manifest.release_revision == 2
+    assert manifest.identity.tag == "v3.7.0-r2"
+    assert manifest.source_commit == "a" * 40
+
+
+@pytest.mark.parametrize("revision", (-1, True, "2", 1.5))
+def test_manifest_rejects_invalid_release_revision(tmp_path, revision):
+    manifest_path, sig_path, public_pem = _signed_manifest(
+        tmp_path,
+        overrides={"releaseRevision": revision, "tag": "v3.7.0-r2"},
+    )
+
+    with pytest.raises(ManifestError, match="revision"):
+        UpdateManifestVerifier(public_key_pem=public_pem).load_verified(manifest_path, sig_path)
+
+
+def test_manifest_rejects_tag_that_does_not_match_revision(tmp_path):
+    manifest_path, sig_path, public_pem = _signed_manifest(
+        tmp_path,
+        overrides={"releaseRevision": 2, "tag": "v3.7.0-r1"},
+    )
+
+    with pytest.raises(ManifestError, match="tag"):
+        UpdateManifestVerifier(public_key_pem=public_pem).load_verified(manifest_path, sig_path)
+
+
+def test_legacy_manifest_without_revision_is_initial_release(tmp_path):
+    manifest_path, sig_path, public_pem = _signed_manifest(tmp_path)
+
+    manifest = UpdateManifestVerifier(public_key_pem=public_pem).load_verified(
+        manifest_path,
+        sig_path,
+    )
+
+    assert manifest.release_revision == 0
+
+
 def test_asset_selector_requires_exact_platform_and_safe_https_url():
     manifest = UpdateManifest(
         schema=1,
@@ -1000,6 +1048,22 @@ def test_pending_install_clears_after_new_version_starts(tmp_path):
     assert state.last_install_error == ""
 
 
+def test_pending_install_requires_matching_revision_before_it_is_healthy(tmp_path):
+    state = LocalUpdateState(
+        pending_install=PendingInstall(version="3.7.0", release_revision=2, attempts=0)
+    )
+
+    state.record_startup_health(
+        current_version="3.7.0",
+        current_revision=1,
+        staging_dir=tmp_path,
+    )
+
+    assert state.pending_install is not None
+    assert state.pending_install.attempts == 1
+    assert "v3.7.0-r2" in state.last_install_error
+
+
 def test_pending_install_state_persists_and_stops_retry_loop(tmp_path):
     state_path = tmp_path / "state.json"
 
@@ -1040,6 +1104,61 @@ def test_record_skipped_update_persists_version(tmp_path):
     state = record_skipped_update("v3.7.0", path=tmp_path / "state.json")
 
     assert state.skipped_version == "3.7.0"
+
+
+def test_update_state_persists_revision_fields(tmp_path):
+    state_path = tmp_path / "state.json"
+
+    record_pending_install(
+        version="3.7.0",
+        release_revision=2,
+        installer_path=tmp_path / "installer.exe",
+        log_path=tmp_path / "install.log",
+        path=state_path,
+    )
+    state = record_skipped_update("3.7.0", release_revision=1, path=state_path)
+
+    assert state.skipped_revision == 1
+    assert state.pending_install is not None
+    assert state.pending_install.release_revision == 2
+    assert LocalUpdateState.load(state_path).pending_install.release_revision == 2
+
+
+def test_version_policy_orders_same_version_by_revision_and_never_forces_skipped_update():
+    state = LocalUpdateState(
+        last_seen_version="3.7.0",
+        last_seen_revision=1,
+        skipped_version="3.7.0",
+        skipped_revision=2,
+    )
+    policy = VersionPolicy(channel="stable", state=state)
+
+    assert not policy.evaluate(
+        "3.7.0",
+        update_revision=1,
+        current_version="3.7.0",
+        current_revision=1,
+    ).allowed
+    skipped = policy.evaluate(
+        "3.7.0",
+        update_revision=2,
+        current_version="3.7.0",
+        current_revision=1,
+        mandatory=True,
+    )
+    manual = policy.evaluate(
+        "3.7.0",
+        update_revision=2,
+        current_version="3.7.0",
+        current_revision=1,
+        manual=True,
+        mandatory=True,
+    )
+
+    assert not skipped.allowed
+    assert skipped.mandatory is False
+    assert manual.allowed
+    assert manual.mandatory is False
 
 
 def test_update_state_load_tolerates_unknown_fields_and_invalid_numbers(tmp_path):
