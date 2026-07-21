@@ -534,6 +534,7 @@ class PlaybackCases:
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               const originalFetch = window.fetch;
               const originalSetTimeout = window.setTimeout;
               const originalClearTimeout = window.clearTimeout;
