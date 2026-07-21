@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from shared.release_identity import parse_release_tag
+
 from .events import redact_release_text
-from .versioning import normalize_version
 
 
 GITHUB_HOST = "github.com"
@@ -147,22 +148,12 @@ class GitHubReleasePublisher:
             raise PublishError("GitHub command failed")
 
     def ensure_release(self, tag: str, title: str, notes_path: str | Path, *, repair: bool) -> None:
-        """Create a release only for an existing tag, or repair existing metadata."""
+        """Create a release once; existing metadata is immutable and reused."""
 
         checked_tag = _checked_tag(tag)
         resolved_notes = _resolved_regular_file(notes_path, label="release notes", reject_dash=True)
         existing = self._read_release(checked_tag)
         if existing is not None:
-            if not repair:
-                return
-            completed = self._execute(
-                self._release_command("edit", checked_tag, title, resolved_notes),
-                timeout_seconds=self._metadata_timeout_seconds,
-            )
-            if completed.returncode:
-                raise PublishError("GitHub command failed")
-            if self._read_release(checked_tag) is None:
-                raise PublishError("GitHub command failed")
             return
 
         self._execute(
@@ -185,7 +176,6 @@ class GitHubReleasePublisher:
         local_assets = _local_assets(assets)
         remote_assets = _assets_by_name(self._release_assets(checked_tag))
         normal_uploads: list[_LocalAsset] = []
-        repair_uploads: list[_LocalAsset] = []
 
         for local in local_assets:
             remote = remote_assets.get(local.info.name)
@@ -194,16 +184,17 @@ class GitHubReleasePublisher:
                 continue
             if remote.size == local.info.size and remote.digest and remote.digest == local.info.digest:
                 continue
-            if not repair:
-                if remote.size == local.info.size and not remote.digest:
-                    raise PublishError(
-                        f"remote asset {local.info.name} digest is unavailable; repair is required"
-                    )
-                raise PublishError(f"remote asset {local.info.name} differs; requires repair")
-            repair_uploads.append(local)
+            if remote.size == local.info.size and not remote.digest:
+                raise PublishError(
+                    f"remote asset {local.info.name} digest is unavailable; "
+                    "immutable release requires a new revision"
+                )
+            raise PublishError(
+                f"remote asset {local.info.name} differs; "
+                "immutable release requires a new revision"
+            )
 
-        self._upload(checked_tag, normal_uploads, clobber=False)
-        self._upload(checked_tag, repair_uploads, clobber=True)
+        self._upload(checked_tag, normal_uploads)
 
     def verify_assets(
         self,
@@ -302,13 +293,11 @@ class GitHubReleasePublisher:
         if invalid:
             raise PublishError("invalid release asset response")
 
-    def _upload(self, tag: str, assets: Sequence["_LocalAsset"], *, clobber: bool) -> None:
+    def _upload(self, tag: str, assets: Sequence["_LocalAsset"]) -> None:
         if not assets:
             return
         _assert_upload_snapshots(assets, phase="before")
         argv = ["gh", "release", "upload", "--repo", self.repository]
-        if clobber:
-            argv.append("--clobber")
         argv.extend(["--", tag, *(str(asset.path) for asset in assets)])
         completed = self._execute(argv, timeout_seconds=self._upload_timeout_seconds)
         _assert_upload_snapshots(assets, phase="after")
@@ -457,16 +446,11 @@ def _file_snapshot(path: Path) -> tuple[int, int, int, int]:
 
 def _checked_tag(tag: str) -> str:
     value = str(tag).strip()
-    valid = value.startswith("v")
-    normalized = ""
-    if valid:
-        try:
-            normalized = normalize_version(value)
-        except ValueError:
-            valid = False
-    if not valid or value != f"v{normalized}":
+    try:
+        identity = parse_release_tag(value)
+    except ValueError:
         raise ValueError("invalid release tag")
-    return f"v{normalized}"
+    return identity.tag
 
 
 def _checked_commit(commit: str) -> str:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import filecmp
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +54,14 @@ else:
     from .playwright_bundle import resolve_playwright_browser_directories
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.release_identity import (  # noqa: E402
+    RELEASE_IDENTITY_FILENAME,
+    ReleaseIdentity,
+)
+
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
 DIST_ROOT = PROJECT_ROOT / "dist"
 DIST_DIR = DIST_ROOT / APP_NAME
@@ -103,6 +113,41 @@ LOCKING_PROCESSES = [
     UPDATER_HELPER_EXE_NAME,
     "ffmpeg.exe",  # ffmpeg 子进程也可能锁住 _internal 下的 dll
 ]
+
+
+def _release_identity_from_environment() -> tuple[ReleaseIdentity, str]:
+    raw_revision = os.environ.get("UCRAWL_RELEASE_REVISION", "0").strip()
+    if not raw_revision.isdigit():
+        raise SystemExit("UCRAWL_RELEASE_REVISION 必须是非负整数")
+    identity = ReleaseIdentity(PACKAGE_VERSION, int(raw_revision))
+    expected_tag = os.environ.get("UCRAWL_RELEASE_TAG", identity.tag).strip()
+    if expected_tag != identity.tag:
+        raise SystemExit(
+            "构建环境中的版本、修订号和 tag 不一致："
+            f"expected={identity.tag}, actual={expected_tag}"
+        )
+    source_commit = os.environ.get("UCRAWL_SOURCE_COMMIT", "").strip().lower()
+    if source_commit and not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise SystemExit("UCRAWL_SOURCE_COMMIT 必须是完整 Git commit SHA")
+    return identity, source_commit
+
+
+def write_release_identity(identity: ReleaseIdentity, source_commit: str) -> None:
+    """把本次构建身份写到安装根目录，供更新比较和故障诊断读取。"""
+
+    destination = DIST_DIR / RELEASE_IDENTITY_FILENAME
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    payload = {
+        "version": identity.version,
+        "revision": identity.revision,
+        "tag": identity.tag,
+        "sourceCommit": source_commit,
+    }
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
 
 def kill_locking_processes() -> None:
     """尝试终止可能占用 dist 目录的旧进程。
@@ -206,6 +251,9 @@ def verify_output() -> None:
     if not updater_helper_path.exists():
         raise SystemExit(f"未找到更新 helper: {updater_helper_path}")
 
+    if not (DIST_DIR / RELEASE_IDENTITY_FILENAME).is_file():
+        raise SystemExit(f"便携版缺少发布身份文件: {RELEASE_IDENTITY_FILENAME}")
+
     for readme_name in PORTABLE_ROOT_DOCS:
         if not (DIST_DIR / readme_name).exists():
             raise SystemExit(f"缺少随包说明文件: {readme_name}")
@@ -267,12 +315,15 @@ def verify_output() -> None:
         if path.is_file() and path.name.lower() in FORBIDDEN_BASENAMES:
             raise SystemExit(f"发现不应打包的用户数据文件: {path}")
 
-def write_manifest() -> None:
+def write_manifest(identity: ReleaseIdentity | None = None) -> None:
     
+    if identity is None:
+        identity, _source_commit = _release_identity_from_environment()
     manifest = DIST_DIR / "BUILD_INFO.txt"
     lines = [
         f"{APP_DISPLAY_NAME} Portable Build v{PACKAGE_VERSION}",
         f"Package Version: {PACKAGE_VERSION}",
+        f"Release Identity: {identity.tag}",
         f"Executable: {APP_EXE_NAME}",
         f"Launcher: {LAUNCHER_EXE_NAME}",
         f"CLI Launcher: {CLI_LAUNCHER_EXE_NAME}",
@@ -324,13 +375,15 @@ def _validate_project_root(project_root: str | Path) -> Path:
 
 
 def _build_portable() -> None:
+    identity, source_commit = _release_identity_from_environment()
     ensure_prerequisites()
     clean_previous_outputs()
     run_pyinstaller()
     copy_python_sqlite_runtime_files()
     copy_portable_root_docs()
+    write_release_identity(identity, source_commit)
     verify_output()
-    write_manifest()
+    write_manifest(identity)
     print(f"绿色版构建完成: {DIST_DIR}")
 
 

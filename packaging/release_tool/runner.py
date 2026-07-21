@@ -147,6 +147,7 @@ _STRING_FIELDS = frozenset(
         "custom_proxy",
     }
 )
+_INTEGER_FIELDS = frozenset({"release_revision"})
 _REFERENCE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -432,6 +433,9 @@ def load_request_file(path: Path) -> BuildRequest:
         elif key in _STRING_FIELDS:
             if not isinstance(value, str):
                 raise ValueError(f"release request field {key} must be a string")
+        elif key in _INTEGER_FIELDS:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"release request field {key} must be an integer")
         elif key == "remote":
             value = _load_remote(value)
         else:  # Defensive guard for future BuildRequest fields.
@@ -440,6 +444,10 @@ def load_request_file(path: Path) -> BuildRequest:
 
     if "target_version" not in values:
         raise ValueError("release request requires target_version")
+    if values.get("same_release_repair") is True and "release_revision" not in values:
+        raise ValueError(
+            "same version publication requires an explicit release_revision"
+        )
     values["target_version"] = normalize_version(str(values["target_version"]))
     _validate_secret_reference(str(values.get("private_key_path", "")))
     values["proxy_label"] = validate_proxy_label_reference(
@@ -452,17 +460,31 @@ def load_request_file(path: Path) -> BuildRequest:
 def _load_remote(value: object) -> RemoteReleaseInfo:
     if not isinstance(value, dict):
         raise ValueError("release request field remote must be an object")
-    unknown = sorted(set(value) - {"version", "error"})
+    unknown = sorted(
+        set(value) - {"version", "release_revision", "release_tags", "error"}
+    )
     if unknown:
         raise ValueError("release request remote contains unknown fields")
     version = value.get("version", "")
     error = value.get("error", "")
+    release_revision = value.get("release_revision", 0)
+    release_tags = value.get("release_tags", ())
     if not isinstance(version, str) or not isinstance(error, str):
         raise ValueError("release request remote version and error must be strings")
+    if isinstance(release_revision, bool) or not isinstance(release_revision, int):
+        raise ValueError("release request remote revision must be an integer")
+    if not isinstance(release_tags, (list, tuple)) or not all(
+        isinstance(tag, str) for tag in release_tags
+    ):
+        raise ValueError("release request remote tags must be a string array")
     if version and error:
         raise ValueError("release request remote cannot include both version and error")
     if version:
-        return RemoteReleaseInfo.available(version)
+        return RemoteReleaseInfo.available(
+            version,
+            release_revision,
+            release_tags=tuple(release_tags),
+        )
     if error:
         return RemoteReleaseInfo.unavailable(error)
     return RemoteReleaseInfo.unknown()

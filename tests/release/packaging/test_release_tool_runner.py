@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -847,6 +848,53 @@ def test_request_file_rejects_unknown_invalid_and_inline_secret_fields(tmp_path)
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="reference"):
+        load_request_file(request_path)
+
+
+def test_request_file_preserves_remote_revision_inventory(tmp_path):
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "target_version": "3.6.21",
+                "release_revision": 3,
+                "same_release_repair": True,
+                "remote": {
+                    "version": "3.6.21",
+                    "release_revision": 2,
+                    "release_tags": ["v3.6.21-r2", "v3.6.21-r1", "v3.6.21"],
+                    "error": "",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = load_request_file(request_path)
+
+    assert request.release_revision == 3
+    assert request.remote.identity.tag == "v3.6.21-r2"
+    assert request.remote.next_revision_for("3.6.21") == 3
+
+
+def test_same_version_request_file_requires_explicit_release_revision(tmp_path):
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "target_version": "3.6.21",
+                "same_release_repair": True,
+                "remote": {
+                    "version": "3.6.21",
+                    "release_revision": 2,
+                    "release_tags": ["v3.6.21-r2", "v3.6.21-r1", "v3.6.21"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="explicit release_revision"):
         load_request_file(request_path)
 
 

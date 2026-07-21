@@ -371,6 +371,38 @@ def test_models_normalize_versions_and_are_frozen():
         result.stage = ReleaseStage.FAILED
 
 
+def test_same_version_request_uses_next_remote_revision_without_overwriting_old_tags():
+    remote = RemoteReleaseInfo.available(
+        "v3.6.21-r2",
+        release_tags=("v3.6.21", "v3.6.21-r1", "v3.6.21-r2"),
+    )
+
+    request = BuildRequest(
+        target_version="3.6.21",
+        same_release_repair=True,
+        remote=remote,
+    )
+
+    assert request.release_revision == 3
+    assert validate_build_request(request) == ()
+
+
+@pytest.mark.parametrize("revision", (True, -1, 2, 4))
+def test_same_version_request_rejects_invalid_or_non_next_revision(revision):
+    remote = RemoteReleaseInfo.available(
+        "v3.6.21-r2",
+        release_tags=("v3.6.21", "v3.6.21-r1", "v3.6.21-r2"),
+    )
+    request = BuildRequest(
+        target_version="3.6.21",
+        release_revision=revision,
+        same_release_repair=True,
+        remote=remote,
+    )
+
+    assert validate_build_request(request)
+
+
 def test_dry_run_rejects_every_side_effecting_option():
     request = BuildRequest(
         target_version="3.6.22",

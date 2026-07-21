@@ -207,9 +207,10 @@ def test_local_defaults_never_enable_signing_or_remote_writes():
 def test_same_release_defaults_publish_without_source_version_commit():
     defaults = option_defaults(PanelBuildIntent.SAME_RELEASE)
 
+    assert defaults.apply_version is False
     assert defaults.sign_manifest is True
     assert defaults.commit_version_changes is False
-    assert defaults.push_main is False
+    assert defaults.push_main is True
     assert defaults.create_or_reuse_tag is True
     assert defaults.create_or_update_release is True
     assert defaults.upload_release_assets is True

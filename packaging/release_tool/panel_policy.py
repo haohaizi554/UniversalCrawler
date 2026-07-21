@@ -74,7 +74,7 @@ _LOCAL_DEFAULTS = PanelOptionDefaults(
 )
 
 _SAME_RELEASE_DEFAULTS = PanelOptionDefaults(
-    apply_version=True,
+    apply_version=False,
     build_portable=True,
     build_installer=True,
     run_smoke_tests=True,
@@ -82,7 +82,9 @@ _SAME_RELEASE_DEFAULTS = PanelOptionDefaults(
     rotate_trust_anchor=False,
     sign_manifest=True,
     commit_version_changes=False,
-    push_main=False,
+    # 同版本修订没有版本文件提交，但先把当前干净 HEAD 推到 main，GitHub
+    # 才能可靠地为该源码创建新的不可变 revision tag。
+    push_main=True,
     create_or_reuse_tag=True,
     create_or_update_release=True,
     upload_release_assets=True,

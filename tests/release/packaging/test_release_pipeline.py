@@ -69,6 +69,7 @@ def _release_payload(installer: Path, *, source_commit: str = "a" * 40) -> dict:
         "appId": "ucrawl.universalcrawlerpro",
         "channel": "stable",
         "version": "3.6.21",
+        "releaseRevision": 0,
         "tag": "v3.6.21",
         "publishedAt": "2026-07-16T00:00:00Z",
         "expiresAt": "2099-07-16T00:00:00Z",
@@ -555,6 +556,7 @@ def test_pipeline_hooks_use_the_existing_local_build_primitive_without_source_im
         enforce_source_immutability=False,
         build_portable=True,
         build_installer=False,
+        release_revision=0,
     )
 
 
@@ -591,15 +593,17 @@ def test_local_pipeline_build_stages_share_one_request_lock():
             "lock_token": "release-token",
             "lock_root": tool.PROJECT_ROOT,
             "enforce_source_immutability": False,
-            "build_portable": True,
-            "build_installer": False,
+                "build_portable": True,
+                "build_installer": False,
+                "release_revision": 0,
         },
         {
             "lock_token": "release-token",
             "lock_root": tool.PROJECT_ROOT,
             "enforce_source_immutability": False,
-            "build_portable": False,
-            "build_installer": True,
+                "build_portable": False,
+                "build_installer": True,
+                "release_revision": 0,
         },
     ]
     validate_release_state.assert_not_called()
@@ -841,12 +845,13 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     with (
         patch.object(tool, "GitHubReleasePublisher", side_effect=make_publisher),
         patch.object(tool, "_read_only_public_key_path", return_value=public_key),
-        patch.object(
-            tool,
-            "_validate_git_release_state",
-            return_value="a" * 40,
-        ),
-    ):
+            patch.object(
+                tool,
+                "_validate_git_release_state",
+                return_value="a" * 40,
+            ),
+            patch.object(tool, "_validate_release_baseline_clean"),
+        ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter)
         result = run_release_request(request, hooks, emitter, CancellationToken())
 
@@ -1891,7 +1896,8 @@ def test_release_build_and_publish_use_the_same_snapshot_under_one_lock(tmp_path
     lock_held = False
     calls: list[tuple[str, Path]] = []
 
-    def fake_metadata(project_root: Path = tool.PROJECT_ROOT):
+    def fake_metadata(project_root: Path = tool.PROJECT_ROOT, release_revision: int = 0):
+        assert release_revision == 0
         root = Path(project_root)
         return "3.6.21", (
             root / "dist" / "installer" / "UniversalCrawlerPro_Setup_3.6.21.exe"
@@ -2303,6 +2309,29 @@ def test_release_identity_requires_tag_to_match_version():
         )
 
 
+def test_release_identity_accepts_revision_tag_for_matching_package_version():
+    tool = _load_tool()
+
+    tool._validate_release_identity(
+        package_version="3.6.21",
+        version="3.6.21",
+        release_revision=3,
+        tag="v3.6.21-r3",
+    )
+
+
+def test_release_identity_rejects_revision_tag_mismatch():
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="tag"):
+        tool._validate_release_identity(
+            package_version="3.6.21",
+            version="3.6.21",
+            release_revision=3,
+            tag="v3.6.21-r2",
+        )
+
+
 def test_release_identity_rejects_a_prefixed_package_version():
     tool = _load_tool()
 
@@ -2384,6 +2413,19 @@ def test_final_asset_validation_rejects_tag_version_mismatch(tmp_path):
     (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
 
     with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="version/tag"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_release_revision_mismatch(tmp_path):
+    tool = _load_tool()
+    installer, payload = _write_staged_release(tmp_path)
+    payload["releaseRevision"] = 1
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(
+        RuntimeError,
+        match="releaseRevision",
+    ):
         tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
 
 

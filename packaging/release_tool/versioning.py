@@ -8,6 +8,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from shared.release_identity import format_release_tag as format_identity_tag
+
 
 SEMVER_RE = re.compile(r"^[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _VERSION_ASSIGNMENT_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
@@ -67,10 +69,10 @@ def normalize_version(value: str) -> str:
     return ".".join(match.groups())
 
 
-def format_release_tag(value: str) -> str:
-    """Return the canonical Git release tag with exactly one ``v`` prefix."""
+def format_release_tag(value: str, revision: int = 0) -> str:
+    """Return the canonical Git tag for a product version and release revision."""
 
-    return f"v{normalize_version(value)}"
+    return format_identity_tag(normalize_version(value), revision)
 
 
 def read_project_version(project_root: Path) -> str:

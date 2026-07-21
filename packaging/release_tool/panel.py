@@ -113,7 +113,7 @@ _MODE_OPTION_BINDINGS = {
 _MODE_LABELS = {
     ReleaseMode.LOCAL_DEBUG.value: "本地调试",
     ReleaseMode.LOCAL_REBUILD.value: "本地重新构建",
-    ReleaseMode.SAME_RELEASE_REPAIR.value: "同版本修复",
+    ReleaseMode.SAME_RELEASE_REPAIR.value: "同版本新修订",
     ReleaseMode.NEW_RELEASE.value: "新版本发布",
     ReleaseMode.OFFLINE_DEBUG.value: "离线本地调试",
     "remote_unknown": "远端版本未知",
@@ -171,7 +171,7 @@ _ACTION_LABELS = {
 _EXACT_MESSAGE_LABELS = {
     "remote release state is unknown": "尚未取得远端发布版本，无法确定构建模式",
     "same release repair requires target version to equal remote version": (
-        "同版本修复要求目标版本与远端版本一致"
+        "同版本新修订要求目标版本与远端版本一致"
     ),
     "creating or updating a release requires release notes": (
         "创建或更新 Release 时必须提供发布说明"
@@ -345,7 +345,10 @@ def build_confirmation_summary(
     values = (
         ("版本", redact_release_text(version)),
         ("发布模式", _MODE_LABELS.get(mode.value, mode.value)),
-        ("Git 标签", redact_release_text(format_release_tag(version))),
+        (
+            "Git 标签",
+            redact_release_text(format_release_tag(version, request.release_revision)),
+        ),
         ("代码仓库", repository),
         ("代理", redact_release_text(request.proxy_label)),
         ("发布说明", notes_path or "无"),
@@ -554,6 +557,12 @@ class ReleaseBuilderWindow(QWidget):
             request = self._request_from_controls()
 
         errors = validate_build_request(request)
+        try:
+            self.target_release_label.setText(
+                format_release_tag(request.target_version, request.release_revision)
+            )
+        except ValueError:
+            self.target_release_label.setText("-")
         validation_messages = [
             _localize_release_message(error) for error in errors
         ]
@@ -596,31 +605,7 @@ class ReleaseBuilderWindow(QWidget):
         available = set(available_intents(target_version, self.remote_info))
         self._source_identity_notice = ""
         self.mode_same_button.setToolTip(
-            "修复远端同版本 Release 及其发布资产"
-        )
-        if PanelBuildIntent.SAME_RELEASE not in available:
-            return frozenset(available)
-
-        if target_version not in self._source_identity_cache:
-            try:
-                state = self._source_identity_checker(
-                    self._project_root,
-                    target_version,
-                )
-            except (OSError, RuntimeError, ValueError):
-                state = None
-            self._source_identity_cache[target_version] = state
-        if self._source_identity_cache[target_version] is not False:
-            return frozenset(available)
-
-        available.discard(PanelBuildIntent.SAME_RELEASE)
-        tag = format_release_tag(target_version)
-        self._source_identity_notice = (
-            f"当前源码与 {tag} 标签提交不一致，已切换为“本地构建”。"
-            "如需发布当前源码，请提高版本号后使用“高版本发布”。"
-        )
-        self.mode_same_button.setToolTip(
-            f"同版本修复只能重建 {tag} 标签对应的原提交；当前源码已不同"
+            "以当前源码创建同版本下一个独立、不可变的 Release"
         )
         return frozenset(available)
 
@@ -729,7 +714,7 @@ class ReleaseBuilderWindow(QWidget):
         self._remote_lookup_pending = True
         if self.remote_info.is_available:
             self.remote_version_label.setText(
-                f"正在检查…（当前 {self.remote_info.version}）"
+                f"正在检查…（当前 {self.remote_info.identity.tag}）"
             )
         else:
             self.remote_info = RemoteReleaseInfo.unknown()
@@ -1021,10 +1006,10 @@ class ReleaseBuilderWindow(QWidget):
         )
         self.mode_local_button.setToolTip("任意版本仅在本地构建，不发布远端资源")
         self.mode_same_button = self._new_mode_button(
-            "同版本修复\n修复现有发布",
+            "同版本新修订\n创建独立发布",
             PanelBuildIntent.SAME_RELEASE,
         )
-        self.mode_same_button.setToolTip("修复远端同版本 Release 及其发布资产")
+        self.mode_same_button.setToolTip("创建同版本下一个独立、不可变的 Release")
         self.mode_release_button = self._new_mode_button(
             "高版本发布\n创建正式发布",
             PanelBuildIntent.NEW_RELEASE,
@@ -1044,8 +1029,14 @@ class ReleaseBuilderWindow(QWidget):
         layout.addWidget(self.target_version_edit, 0, 1)
         layout.addWidget(QLabel("远端最新版本"), 1, 0)
         layout.addLayout(remote_row, 1, 1)
-        layout.addWidget(QLabel("构建模式"), 2, 0)
-        layout.addLayout(mode_row, 2, 1)
+        self.target_release_label = QLabel("-")
+        self.target_release_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(QLabel("发布目标"), 2, 0)
+        layout.addWidget(self.target_release_label, 2, 1)
+        layout.addWidget(QLabel("构建模式"), 3, 0)
+        layout.addLayout(mode_row, 3, 1)
 
     def _new_mode_button(
         self,
@@ -1507,8 +1498,14 @@ class ReleaseBuilderWindow(QWidget):
                 self.panel_intent is PanelBuildIntent.SAME_RELEASE
             )
             offline_debug = self.panel_intent is PanelBuildIntent.LOCAL
+        release_revision = (
+            self.remote_info.next_revision_for(target_version)
+            if same_release_repair and self.remote_info.is_available
+            else 0
+        )
         return BuildRequest(
             target_version=target_version,
+            release_revision=release_revision,
             repository=self.repository_edit.text().strip(),
             release_notes_path=self.notes_edit.text().strip(),
             build_portable=self.check_build_portable.isChecked(),
@@ -1584,7 +1581,7 @@ class ReleaseBuilderWindow(QWidget):
         self.remote_info = result
         self._remote_lookup_pending = False
         if result.is_available:
-            self.remote_version_label.setText(result.version)
+            self.remote_version_label.setText(result.identity.tag)
         else:
             self.remote_version_label.setText(
                 _localize_release_message(result.error) or "远端发布版本未知"

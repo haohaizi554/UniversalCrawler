@@ -454,7 +454,7 @@ def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
         assert window.mode_same_button.isChecked() is True
         assert window.check_sign_manifest.isChecked() is True
         assert window.check_commit_version.isChecked() is False
-        assert window.check_push_main.isChecked() is False
+        assert window.check_push_main.isChecked() is True
         assert window.check_create_tag.isChecked() is True
         assert window.check_create_release.isChecked() is True
         assert window.check_upload_assets.isChecked() is True
@@ -466,7 +466,10 @@ def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
         window.shutdown()
 
 
-def test_equal_version_with_diverged_tag_defaults_to_local_rebuild(qapp, tmp_path):
+def test_equal_version_with_diverged_base_tag_still_creates_new_revision(qapp, tmp_path):
+    release_notes = tmp_path / "docs" / "releases" / "v3.6.21.md"
+    release_notes.parent.mkdir(parents=True)
+    release_notes.write_text("revision notes\n", encoding="utf-8")
     window = make_panel(
         qapp,
         project_root=tmp_path,
@@ -475,14 +478,14 @@ def test_equal_version_with_diverged_tag_defaults_to_local_rebuild(qapp, tmp_pat
         source_identity_checker=lambda *_args: False,
     )
     try:
-        assert window.panel_intent is PanelBuildIntent.LOCAL
-        assert window._mode is ReleaseMode.LOCAL_REBUILD
-        assert window.mode_local_button.isChecked() is True
-        assert window.mode_same_button.isEnabled() is False
+        assert window.panel_intent is PanelBuildIntent.SAME_RELEASE
+        assert window._mode is ReleaseMode.SAME_RELEASE_REPAIR
+        assert window.mode_same_button.isChecked() is True
+        assert window.mode_same_button.isEnabled() is True
         assert window.check_build_installer.isChecked() is True
         assert window.start_button.isEnabled() is True
-        assert "已切换为“本地构建”" in window.validation_label.text()
-        assert "提高版本号" in window.validation_label.text()
+        assert window.target_release_label.text() == "v3.6.21-r1"
+        assert window.validation_label.text() == ""
     finally:
         window.shutdown()
 

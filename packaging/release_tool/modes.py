@@ -67,6 +67,13 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     errors: list[str] = []
     mode: ReleaseMode | None = None
 
+    if (
+        isinstance(request.release_revision, bool)
+        or not isinstance(request.release_revision, int)
+        or request.release_revision < 0
+    ):
+        errors.append("release revision must be a non-negative integer")
+
     try:
         mode = resolve_release_mode(
             request.target_version,
@@ -82,6 +89,18 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
 
     if request.same_release_repair and mode is not ReleaseMode.SAME_RELEASE_REPAIR:
         errors.append("same release repair requires target version to equal remote version")
+
+    if mode is ReleaseMode.SAME_RELEASE_REPAIR:
+        expected_revision = request.remote.next_revision_for(request.target_version)
+        if request.release_revision <= 0:
+            errors.append("same version publication requires a positive release revision")
+        elif request.release_revision != expected_revision:
+            errors.append(
+                "same version publication requires the next release revision "
+                f"{expected_revision}"
+            )
+    elif mode is not None and request.release_revision != 0:
+        errors.append(f"{mode.value} mode requires release revision 0")
 
     if request.create_or_update_release and not request.release_notes_path.strip():
         errors.append("creating or updating a release requires release notes")

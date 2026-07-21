@@ -60,6 +60,14 @@ else:
     )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.release_identity import (  # noqa: E402
+    RELEASE_IDENTITY_FILENAME,
+    ReleaseIdentity,
+)
+
 DIST_DIR = PROJECT_ROOT / "dist" / DIST_DIR_NAME
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
@@ -78,6 +86,7 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / WEBUI_EXE_NAME,
     lambda: DIST_DIR / UPDATER_HELPER_EXE_NAME,
     lambda: DIST_DIR / "BUILD_INFO.txt",
+    lambda: DIST_DIR / RELEASE_IDENTITY_FILENAME,
     lambda: DIST_DIR / "README.md",
     lambda: DIST_DIR / "README_EN.md",
     lambda: DIST_DIR / "_internal" / "_sqlite3.pyd",
@@ -115,8 +124,29 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: WEBUI_ICON,
 )
 
-def get_setup_exe_path() -> Path:
-    return OUTPUT_DIR / f"{INSTALLER_BASENAME}.exe"
+def _release_identity_from_environment() -> ReleaseIdentity:
+    raw_revision = os.environ.get("UCRAWL_RELEASE_REVISION", "0").strip()
+    if not raw_revision.isdigit():
+        raise SystemExit("UCRAWL_RELEASE_REVISION 必须是非负整数")
+    identity = ReleaseIdentity(PACKAGE_VERSION, int(raw_revision))
+    expected_tag = os.environ.get("UCRAWL_RELEASE_TAG", identity.tag).strip()
+    if expected_tag != identity.tag:
+        raise SystemExit(
+            "安装包构建身份与 tag 不一致："
+            f"expected={identity.tag}, actual={expected_tag}"
+        )
+    return identity
+
+
+def _installer_basename(identity: ReleaseIdentity) -> str:
+    if identity.revision == 0:
+        return INSTALLER_BASENAME
+    return f"{INSTALLER_BASENAME}-r{identity.revision}"
+
+
+def get_setup_exe_path(identity: ReleaseIdentity | None = None) -> Path:
+    release_identity = identity or _release_identity_from_environment()
+    return OUTPUT_DIR / f"{_installer_basename(release_identity)}.exe"
 
 
 def _resolve_iscc_from_registry() -> str | None:
@@ -260,11 +290,22 @@ def _validate_project_root(project_root: str | Path) -> Path:
     return root
 
 
-def _build_iscc_command(iscc: str, *, output_dir: Path) -> list[str]:
+def _build_iscc_command(
+    iscc: str,
+    *,
+    output_dir: Path,
+    identity: ReleaseIdentity | None = None,
+) -> list[str]:
+    release_identity = identity or _release_identity_from_environment()
+    display_version = release_identity.version
+    if release_identity.revision:
+        display_version += f"-r{release_identity.revision}"
+    numeric_version = f"{release_identity.version}.{release_identity.revision}"
     return [
         iscc,
         f"/DAppName={APP_DISPLAY_NAME}",
-        f"/DAppVersion={PACKAGE_VERSION}",
+        f"/DAppVersion={display_version}",
+        f"/DVersionInfoVersion={numeric_version}",
         f"/DAppPublisher={APP_PUBLISHER}",
         f"/DAppComments={APP_DISPLAY_NAME} Windows 安装程序",
         f"/DAppExeName={APP_EXE_NAME}",
@@ -281,7 +322,7 @@ def _build_iscc_command(iscc: str, *, output_dir: Path) -> list[str]:
         f"/DDistDir=..\\dist\\{DIST_DIR_NAME}",
         f"/DInstallDirName={INSTALL_DIR_NAME}",
         f"/DOutputDir={output_dir}",
-        f"/DOutputBaseFilename={INSTALLER_BASENAME}",
+        f"/DOutputBaseFilename={_installer_basename(release_identity)}",
         str(ISS_FILE),
     ]
 
@@ -359,7 +400,11 @@ def _promote_installer(staged_installer: Path, setup_exe: Path) -> None:
             time.sleep(delays[attempt])
 
 
-def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
+def _compile_installer_with_retry(
+    iscc: str,
+    setup_exe: Path,
+    identity: ReleaseIdentity | None = None,
+) -> None:
     """在唯一工作区编译；仅对 Windows 资源写入竞态做有限重试。"""
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -372,7 +417,7 @@ def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
             )
         )
         staged_installer = workspace / setup_exe.name
-        command = _build_iscc_command(iscc, output_dir=workspace)
+        command = _build_iscc_command(iscc, output_dir=workspace, identity=identity)
         try:
             return_code, output = _stream_iscc(
                 command,
@@ -412,9 +457,10 @@ def _compile_installer_with_retry(iscc: str, setup_exe: Path) -> None:
 
 
 def _build_installer() -> None:
+    identity = _release_identity_from_environment()
     iscc = ensure_prerequisites()
-    setup_exe = get_setup_exe_path()
-    _compile_installer_with_retry(iscc, setup_exe)
+    setup_exe = get_setup_exe_path(identity)
+    _compile_installer_with_retry(iscc, setup_exe, identity)
     maybe_sign_windows_installer(setup_exe)
     print(f"安装包构建完成: {setup_exe}")
 

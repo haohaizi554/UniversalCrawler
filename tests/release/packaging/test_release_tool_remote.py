@@ -54,7 +54,9 @@ def test_fetch_latest_release_uses_fixed_headers_timeout_and_proxy_environment(m
         timeout_seconds=2.5,
     )
 
-    assert observed["request"].full_url.endswith("/repos/haohaizi554/UniversalCrawler/releases/latest")
+    assert observed["request"].full_url.endswith(
+        "/repos/haohaizi554/UniversalCrawler/releases?per_page=30&page=1"
+    )
     assert observed["request"].get_header("User-agent") == remote.GITHUB_API_USER_AGENT
     assert observed["request"].get_header("Accept") == remote.GITHUB_API_ACCEPT
     assert observed["timeout_seconds"] == 2.5
@@ -174,6 +176,29 @@ def test_fetch_latest_release_downgrades_malformed_remote_payload_to_unknown(mon
 
     assert info.is_available is False
     assert info.error
+
+
+def test_fetch_latest_release_collects_public_revisions_and_ignores_non_public_entries(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        remote,
+        "_open_json",
+        lambda *_args, **_kwargs: [
+            {"tag_name": "v3.6.21-r2", "draft": False, "prerelease": False},
+            {"tag_name": "v3.6.21-r1", "draft": False, "prerelease": False},
+            {"tag_name": "v3.6.21", "draft": False, "prerelease": False},
+            {"tag_name": "v9.9.9", "draft": True, "prerelease": False},
+            {"tag_name": "v8.8.8", "draft": False, "prerelease": True},
+            {"tag_name": "not-a-release", "draft": False, "prerelease": False},
+        ],
+    )
+
+    info = fetch_latest_release("haohaizi554/UniversalCrawler", environment={})
+
+    assert info.identity.tag == "v3.6.21-r2"
+    assert info.release_tags == ("v3.6.21-r2", "v3.6.21-r1", "v3.6.21")
+    assert info.next_revision_for("3.6.21") == 3
 
 
 @pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))

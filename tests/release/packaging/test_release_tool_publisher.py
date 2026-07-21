@@ -172,39 +172,34 @@ def test_upload_rejects_mismatched_asset_without_repair(tmp_path):
     run = Mock(return_value=releases_response(release_payload(assets=[remote_asset.to_json()])))
     publisher = make_publisher(run)
 
-    with pytest.raises(PublishError, match="requires repair"):
+    with pytest.raises(PublishError, match="immutable release requires a new revision"):
         publisher.upload_assets("v3.6.22", [asset], repair=False)
 
     assert run.call_count == 1
 
 
-def test_upload_repairs_mismatched_asset_with_explicit_clobber(tmp_path):
+def test_upload_never_clobbers_mismatched_asset_even_with_legacy_repair_flag(tmp_path):
     asset = write_asset(tmp_path / "installer.exe", b"local")
     remote_asset = ReleaseAssetInfo(name="installer.exe", size=asset.stat().st_size, digest="sha256:" + "0" * 64)
-    run = Mock(
-        side_effect=[
-            releases_response(release_payload(assets=[remote_asset.to_json()])),
-            completed([]),
-        ]
-    )
+    run = Mock(return_value=releases_response(release_payload(assets=[remote_asset.to_json()])))
     publisher = make_publisher(run)
 
-    publisher.upload_assets("v3.6.22", [asset], repair=True)
+    with pytest.raises(PublishError, match="immutable release requires a new revision"):
+        publisher.upload_assets("v3.6.22", [asset], repair=True)
 
-    upload = run.call_args_list[1].args[0]
-    assert "--clobber" in upload
-    assert upload.index("--clobber") < upload.index("--")
-    assert run.call_args_list[1].kwargs["timeout"] == 7200.0
+    assert run.call_count == 1
+    assert "--clobber" not in " ".join(run.call_args.args[0])
 
 
-def test_upload_requires_repair_when_remote_digest_is_unavailable(tmp_path):
+@pytest.mark.parametrize("repair", (False, True))
+def test_upload_rejects_remote_asset_when_digest_is_unavailable(tmp_path, repair):
     asset = write_asset(tmp_path / "installer.exe", b"same")
     remote_asset = ReleaseAssetInfo(name="installer.exe", size=asset.stat().st_size)
     run = Mock(return_value=releases_response(release_payload(assets=[remote_asset.to_json()])))
     publisher = make_publisher(run)
 
-    with pytest.raises(PublishError, match="digest is unavailable.*repair"):
-        publisher.upload_assets("v3.6.22", [asset], repair=False)
+    with pytest.raises(PublishError, match="digest is unavailable.*new revision"):
+        publisher.upload_assets("v3.6.22", [asset], repair=repair)
 
 
 @pytest.mark.parametrize("repair", (False, True))
@@ -238,21 +233,29 @@ def test_ensure_release_treats_an_existing_release_as_idempotent(tmp_path):
     assert run.call_count == 1
 
 
-def test_ensure_release_repairs_existing_release_and_re_reads_it(tmp_path):
+def test_ensure_release_never_edits_existing_release_with_legacy_repair_flag(tmp_path):
     notes = write_notes(tmp_path / "notes.md")
-    run = Mock(
-        side_effect=[
-            releases_response(release_payload()),
-            completed([]),
-            releases_response(release_payload()),
-        ]
-    )
+    run = Mock(return_value=releases_response(release_payload()))
     publisher = make_publisher(run)
 
     publisher.ensure_release("v3.6.22", "Release", notes, repair=True)
 
-    assert run.call_args_list[1].args[0][:3] == ["gh", "release", "edit"]
-    assert run.call_count == 3
+    assert run.call_count == 1
+    assert "edit" not in run.call_args.args[0]
+
+
+def test_publisher_accepts_canonical_same_version_revision_tag(tmp_path):
+    run = Mock(return_value=releases_response(release_payload("v3.6.22-r3")))
+    publisher = make_publisher(run)
+
+    publisher.ensure_release(
+        "v3.6.22-r3",
+        "Release revision 3",
+        write_notes(tmp_path / "notes.md"),
+        repair=False,
+    )
+
+    assert run.call_count == 1
 
 
 def test_ensure_tag_is_idempotent_and_rejects_conflicting_commit():

@@ -77,6 +77,7 @@ from release_tool.versioning import (  # noqa: E402
     plan_version_update,
     read_project_version,
 )
+from shared.release_identity import ReleaseIdentity  # noqa: E402
 
 
 def _run_build(
@@ -85,8 +86,13 @@ def _run_build(
     *,
     lock_token: str,
     lock_root: Path,
+    release_identity: ReleaseIdentity | None = None,
+    source_commit: str = "",
 ) -> None:
     root = Path(project_root).resolve()
+    if release_identity is None:
+        version_root = root if (root / "shared" / "version.py").is_file() else PROJECT_ROOT
+        release_identity = ReleaseIdentity(read_project_version(version_root), 0)
     script = root / "packaging" / script_name
     environment = os.environ.copy()
     environment[LOCK_TOKEN_ENV] = str(lock_token)
@@ -95,6 +101,9 @@ def _run_build(
     # import-time runtime state below build/ so a release never mutates its
     # immutable sourceCommit snapshot or captures a developer's user data.
     environment[USER_DATA_ROOT_ENV] = str(root / "build" / "runtime-user-data")
+    environment["UCRAWL_RELEASE_REVISION"] = str(release_identity.revision)
+    environment["UCRAWL_RELEASE_TAG"] = release_identity.tag
+    environment["UCRAWL_SOURCE_COMMIT"] = str(source_commit or "").strip().lower()
     subprocess.run(
         [
             sys.executable,
@@ -143,15 +152,22 @@ def _default_private_key_path() -> Path:
     return default_manifest_private_key_path(project_root=PROJECT_ROOT)
 
 
-def _project_release_metadata(project_root: Path = PROJECT_ROOT) -> tuple[str, Path]:
+def _project_release_metadata(
+    project_root: Path = PROJECT_ROOT,
+    release_revision: int = 0,
+) -> tuple[str, Path]:
     root = Path(project_root).resolve()
     values = runpy.run_path(str(root / "packaging" / "project_meta.py"))
     version = str(values["PACKAGE_VERSION"])
+    identity = ReleaseIdentity(version, release_revision)
+    installer_basename = str(values["INSTALLER_BASENAME"])
+    if identity.revision:
+        installer_basename += f"-r{identity.revision}"
     installer = (
         root
         / "dist"
         / "installer"
-        / f"{values['INSTALLER_BASENAME']}.exe"
+        / f"{installer_basename}.exe"
     )
     return version, installer
 
@@ -442,7 +458,13 @@ def _source_snapshot(
         yield snapshot_root
 
 
-def _validate_release_identity(*, package_version: str, version: str, tag: str) -> None:
+def _validate_release_identity(
+    *,
+    package_version: str,
+    version: str,
+    release_revision: int = 0,
+    tag: str,
+) -> None:
     package_text = str(package_version).strip()
     version_text = str(version).strip()
     normalized_tag = str(tag).strip()
@@ -461,7 +483,10 @@ def _validate_release_identity(*, package_version: str, version: str, tag: str) 
             "发布版本与实际构建包版本不一致："
             f"package={normalized_package}, release={normalized_version}。"
         )
-    expected_tag = format_release_tag(normalized_version)
+    try:
+        expected_tag = format_release_tag(normalized_version, release_revision)
+    except ValueError as exc:
+        raise SystemExit(f"release revision is invalid: {exc}") from exc
     if normalized_tag != expected_tag:
         raise SystemExit(
             f"release tag 必须与版本完全一致：expected={expected_tag}, actual={normalized_tag}。"
@@ -685,6 +710,7 @@ def _validate_staged_assets(
     installer_sha256: str,
     asset_url: str,
     version: str,
+    release_revision: int = 0,
     tag: str,
     source_commit: str,
     project_root: Path,
@@ -715,6 +741,8 @@ def _validate_staged_assets(
         raise RuntimeError("latest.json schema 必须为 1")
     if payload.get("version") != version or payload.get("tag") != tag:
         raise RuntimeError("latest.json 的 version/tag 与本次发布不一致")
+    if payload.get("releaseRevision") != release_revision:
+        raise RuntimeError("latest.json 的 releaseRevision 与本次发布不一致")
     if payload.get("sourceCommit") != source_commit:
         raise RuntimeError("latest.json 的 sourceCommit 与 release tag commit 不一致")
     assets = payload.get("assets")
@@ -743,6 +771,7 @@ def _prepare_release_assets(
     installer: Path,
     private_key: Path,
     version: str,
+    release_revision: int = 0,
     tag: str,
     source_commit: str,
     repository: str,
@@ -800,6 +829,8 @@ def _prepare_release_assets(
                 str(key_path),
                 "--version",
                 version,
+                "--release-revision",
+                str(release_revision),
                 "--tag",
                 tag,
                 "--asset-spec",
@@ -820,6 +851,7 @@ def _prepare_release_assets(
             installer_sha256=installer_sha256,
             asset_url=asset_url,
             version=version,
+            release_revision=release_revision,
             tag=tag,
             source_commit=source_commit,
             project_root=project_root,
@@ -956,8 +988,12 @@ def _build_binaries(
     enforce_source_immutability: bool = True,
     build_portable: bool = True,
     build_installer: bool = True,
+    release_revision: int = 0,
+    source_commit: str = "",
 ) -> None:
     root = Path(project_root).resolve()
+    version_root = root if (root / "shared" / "version.py").is_file() else PROJECT_ROOT
+    release_identity = ReleaseIdentity(read_project_version(version_root), release_revision)
     source_fingerprints = (
         _snapshot_source_fingerprints(root) if enforce_source_immutability else {}
     )
@@ -973,6 +1009,8 @@ def _build_binaries(
             root,
             lock_token=lock_token,
             lock_root=lock_root,
+            release_identity=release_identity,
+            source_commit=source_commit,
         )
     if build_installer:
         _run_build(
@@ -980,11 +1018,13 @@ def _build_binaries(
             root,
             lock_token=lock_token,
             lock_root=lock_root,
+            release_identity=release_identity,
+            source_commit=source_commit,
         )
     if enforce_source_immutability:
         _validate_snapshot_source_unchanged(root, source_fingerprints)
     if signed_build and trust is not None:
-        _version, installer = _project_release_metadata(root)
+        _version, installer = _project_release_metadata(root, release_revision)
         signer = _extract_windows_trust(installer, project_root=root)
         _validate_windows_signer_identity(trust, signer)
 
@@ -1014,7 +1054,7 @@ def _build_pipeline_hooks(
         "version_plan": None,
         "version_result": None,
     }
-    tag = format_release_tag(request.target_version)
+    tag = format_release_tag(request.target_version, request.release_revision)
     formal_build = (
         request.sign_manifest
         or request.upload_release_assets
@@ -1104,9 +1144,7 @@ def _build_pipeline_hooks(
 
     def prepare(_request: BuildRequest, mode: ReleaseMode) -> None:
         ensure_lock()
-        if mode is ReleaseMode.SAME_RELEASE_REPAIR and formal_build:
-            _validate_git_release_state(tag)
-        if (
+        if formal_build or (
             mode is ReleaseMode.NEW_RELEASE
             and _new_release_requires_clean_baseline(request)
         ):
@@ -1212,10 +1250,14 @@ def _build_pipeline_hooks(
             _source_snapshot(source_commit, repository_root=PROJECT_ROOT)
         )
         _validate_windows_release_tools(snapshot_root)
-        snapshot_version, installer = _project_release_metadata(snapshot_root)
+        snapshot_version, installer = _project_release_metadata(
+            snapshot_root,
+            request.release_revision,
+        )
         _validate_release_identity(
             package_version=snapshot_version,
             version=request.target_version,
+            release_revision=request.release_revision,
             tag=tag,
         )
         state["snapshot_root"] = snapshot_root
@@ -1236,6 +1278,7 @@ def _build_pipeline_hooks(
                 enforce_source_immutability=False,
                 build_portable=portable,
                 build_installer=installer,
+                release_revision=request.release_revision,
             )
             return
         snapshot_root, _source_commit = ensure_snapshot()
@@ -1246,6 +1289,8 @@ def _build_pipeline_hooks(
             lock_root=PROJECT_ROOT,
             build_portable=portable,
             build_installer=installer,
+            release_revision=request.release_revision,
+            source_commit=_source_commit,
         )
 
     def sign_manifest(_request: BuildRequest) -> tuple[Path, ...]:
@@ -1263,6 +1308,7 @@ def _build_pipeline_hooks(
             installer=installer,
             private_key=private_key,
             version=request.target_version,
+            release_revision=request.release_revision,
             tag=tag,
             source_commit=source_commit,
             repository=request.repository,
@@ -1349,8 +1395,8 @@ def _build_pipeline_hooks(
         else:
             if existing.lower() != source_commit.lower():
                 raise SystemExit(
-                    f"同版本修复要求 release tag {tag} 精确指向当前源码；"
-                    "当前源码已偏离该发布。请改用本地构建，或提高版本号后正式发布。"
+                    f"不可变 release tag {tag} 已指向其他源码；"
+                    "请刷新远端状态并使用下一个修订号。"
                 )
         publisher.ensure_tag(tag, source_commit)
 
@@ -1360,9 +1406,13 @@ def _build_pipeline_hooks(
             raise ValueError("creating a release requires release_notes_path")
         publisher.ensure_release(
             tag,
-            f"UniversalCrawler {request.target_version}",
+            (
+                f"UniversalCrawler {request.target_version}"
+                if request.release_revision == 0
+                else f"UniversalCrawler {request.target_version} 修订 {request.release_revision}"
+            ),
             request.release_notes_path,
-            repair=request.same_release_repair,
+            repair=False,
         )
 
     def upload_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
@@ -1378,7 +1428,7 @@ def _build_pipeline_hooks(
             selected.append(_validate_public_key_path(material.public_key_path))
         uploaded = tuple(selected)
         state["uploaded_assets"] = uploaded
-        publisher.upload_assets(tag, uploaded, repair=request.same_release_repair)
+        publisher.upload_assets(tag, uploaded, repair=False)
 
     def verify_remote_assets(_request: BuildRequest, assets: tuple[Path, ...]) -> None:
         _child_environment, publisher = resolve_release_context()
@@ -1397,7 +1447,10 @@ def _build_pipeline_hooks(
         if not cli.is_file() or not build_info.is_file():
             raise RuntimeError("portable smoke test artifacts are incomplete")
         if request.build_installer:
-            _version, installer = _project_release_metadata(build_root)
+            _version, installer = _project_release_metadata(
+                build_root,
+                request.release_revision,
+            )
             if not installer.is_file():
                 raise RuntimeError("installer artifact is unavailable for smoke testing")
         try:
@@ -1467,6 +1520,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅构建便携版和安装器；不会产出可上传的热更新资产",
     )
     parser.add_argument("--version", default="")
+    parser.add_argument("--release-revision", type=int, default=0)
     parser.add_argument("--tag", default="")
     parser.add_argument("--repository", default=DEFAULT_RELEASE_REPOSITORY)
     parser.add_argument("--private-key", default="")
@@ -1606,12 +1660,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_headless_legacy(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
-    package_version, _installer = _project_release_metadata()
+    package_version, _installer = _project_release_metadata(
+        release_revision=args.release_revision
+    )
     version = normalize_version(args.version or package_version)
-    tag = str(args.tag or format_release_tag(version)).strip()
+    tag = str(args.tag or format_release_tag(version, args.release_revision)).strip()
     _validate_release_identity(
         package_version=package_version,
         version=version,
+        release_revision=args.release_revision,
         tag=tag,
     )
 
@@ -1622,6 +1679,7 @@ def _run_headless_legacy(argv: list[str]) -> int:
                 lock_token=lock_token,
                 lock_root=PROJECT_ROOT,
                 enforce_source_immutability=False,
+                release_revision=args.release_revision,
             )
         print("仅构建模式完成；未生成 latest.json / latest.json.sig，不得作为热更新发布。")
         return 0
@@ -1641,16 +1699,22 @@ def _run_headless_legacy(argv: list[str]) -> int:
             raise SystemExit("等待构建锁期间 HEAD 或 release tag 发生变化，拒绝发布")
         with _source_snapshot(source_commit, repository_root=PROJECT_ROOT) as snapshot_root:
             _validate_windows_release_tools(snapshot_root)
-            snapshot_version, snapshot_installer = _project_release_metadata(snapshot_root)
+            snapshot_version, snapshot_installer = _project_release_metadata(
+                snapshot_root,
+                args.release_revision,
+            )
             _validate_release_identity(
                 package_version=snapshot_version,
                 version=version,
+                release_revision=args.release_revision,
                 tag=tag,
             )
             _build_binaries(
                 snapshot_root,
                 lock_token=lock_token,
                 lock_root=PROJECT_ROOT,
+                release_revision=args.release_revision,
+                source_commit=source_commit,
             )
             if _validate_git_release_state(tag) != source_commit:
                 raise SystemExit("构建期间 HEAD 或 release tag 发生变化，拒绝签名发布资产")
@@ -1658,6 +1722,7 @@ def _run_headless_legacy(argv: list[str]) -> int:
                 installer=snapshot_installer,
                 private_key=private_key,
                 version=version,
+                release_revision=args.release_revision,
                 tag=tag,
                 source_commit=source_commit,
                 repository=repository,

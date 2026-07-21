@@ -4,6 +4,9 @@
 #ifndef AppVersion
   #error AppVersion must be supplied by build_installer.py
 #endif
+#ifndef VersionInfoVersion
+  #error VersionInfoVersion must be supplied by build_installer.py
+#endif
 #ifndef AppPublisher
   #define AppPublisher "UCrawl Team"
 #endif
@@ -92,7 +95,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 AppComments={#AppComments}
 VersionInfoProductName={#AppName} Setup
 VersionInfoDescription={#AppComments}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VersionInfoVersion}
 ChangesAssociations=yes
 
 [Languages]

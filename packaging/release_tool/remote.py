@@ -13,12 +13,14 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, _parse_pr
 
 from .events import redact_release_text
 from .models import RemoteReleaseInfo
+from shared.release_identity import parse_release_tag
 
 
 GITHUB_API_ACCEPT = "application/vnd.github+json"
 GITHUB_API_USER_AGENT = "UniversalCrawlerReleaseBuilder/1.0"
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_RELEASE_PAGE_BYTES = 256_000
+MAX_RELEASE_RESULTS = 30
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -28,7 +30,7 @@ def fetch_latest_release(
     environment: Mapping[str, str],
     timeout_seconds: float = 10.0,
 ) -> RemoteReleaseInfo:
-    """Return the newest public release version, or an explicit unknown state."""
+    """Return a bounded snapshot of public protocol-compatible releases."""
 
     try:
         owner, name = _repository_components(repository)
@@ -36,7 +38,8 @@ def fetch_latest_release(
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and positive")
         request = Request(
-            f"https://api.github.com/repos/{owner}/{name}/releases/latest",
+            f"https://api.github.com/repos/{owner}/{name}/releases"
+            f"?per_page={MAX_RELEASE_RESULTS}&page=1",
             headers={
                 "Accept": GITHUB_API_ACCEPT,
                 "User-Agent": GITHUB_API_USER_AGENT,
@@ -66,12 +69,39 @@ def fetch_latest_release(
         return RemoteReleaseInfo.unavailable(redact_release_text(str(error)))
 
     try:
-        tag = payload.get("tag_name") if isinstance(payload, Mapping) else None
-        if not isinstance(tag, str) or not tag.strip():
-            raise ValueError("latest release response has no tag_name")
-        return RemoteReleaseInfo.available(tag)
+        tags = _public_release_tags(payload)
+        if not tags:
+            raise ValueError("release response has no protocol-compatible public tag")
+        return RemoteReleaseInfo.available(tags[0], release_tags=tags)
     except Exception as error:
         return RemoteReleaseInfo.unavailable(redact_release_text(str(error)))
+
+
+def _public_release_tags(payload: object) -> tuple[str, ...]:
+    """Filter GitHub metadata before it reaches revision planning."""
+
+    items: list[object]
+    if isinstance(payload, Mapping):
+        items = [payload]
+    elif isinstance(payload, list):
+        items = payload[:MAX_RELEASE_RESULTS]
+    else:
+        return ()
+
+    identities = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("draft") is True or item.get("prerelease") is True:
+            continue
+        tag = item.get("tag_name")
+        if not isinstance(tag, str):
+            continue
+        try:
+            identities.add(parse_release_tag(tag.strip()))
+        except ValueError:
+            continue
+    return tuple(identity.tag for identity in sorted(identities, reverse=True))
 
 
 def _open_json(
@@ -228,4 +258,9 @@ def _is_safe_component(value: str) -> bool:
     )
 
 
-__all__ = ["GITHUB_API_ACCEPT", "GITHUB_API_USER_AGENT", "fetch_latest_release"]
+__all__ = [
+    "GITHUB_API_ACCEPT",
+    "GITHUB_API_USER_AGENT",
+    "MAX_RELEASE_RESULTS",
+    "fetch_latest_release",
+]

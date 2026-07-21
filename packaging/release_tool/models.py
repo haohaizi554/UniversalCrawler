@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from shared.release_identity import ReleaseIdentity, parse_release_tag
+
 from .versioning import normalize_version
 
 try:
@@ -44,11 +46,34 @@ class ReleaseStage(StrEnum):
 @dataclass(frozen=True)
 class RemoteReleaseInfo:
     version: str = ""
+    release_revision: int = 0
+    release_tags: tuple[str, ...] = ()
     error: str = ""
 
     @classmethod
-    def available(cls, version: str) -> "RemoteReleaseInfo":
-        return cls(version=normalize_version(version))
+    def available(
+        cls,
+        version: str,
+        release_revision: int = 0,
+        *,
+        release_tags: tuple[str, ...] = (),
+    ) -> "RemoteReleaseInfo":
+        """Build a normalized snapshot from one or more public release tags."""
+
+        identities: set[ReleaseIdentity] = set()
+        raw_version = str(version or "").strip()
+        if raw_version.startswith("v"):
+            identities.add(parse_release_tag(raw_version))
+        else:
+            identities.add(ReleaseIdentity(normalize_version(raw_version), release_revision))
+        identities.update(parse_release_tag(tag) for tag in release_tags)
+        ordered = tuple(sorted(identities, reverse=True))
+        latest = ordered[0]
+        return cls(
+            version=latest.version,
+            release_revision=latest.revision,
+            release_tags=tuple(identity.tag for identity in ordered),
+        )
 
     @classmethod
     def unavailable(cls, error: str) -> "RemoteReleaseInfo":
@@ -62,10 +87,36 @@ class RemoteReleaseInfo:
     def is_available(self) -> bool:
         return bool(self.version)
 
+    @property
+    def identity(self) -> ReleaseIdentity:
+        if not self.is_available:
+            raise ValueError("remote release state is unknown")
+        return ReleaseIdentity(self.version, self.release_revision)
+
+    @property
+    def release_identities(self) -> tuple[ReleaseIdentity, ...]:
+        if self.release_tags:
+            return tuple(parse_release_tag(tag) for tag in self.release_tags)
+        return (self.identity,) if self.is_available else ()
+
+    def highest_revision_for(self, version: str) -> int:
+        normalized = normalize_version(version)
+        revisions = (
+            identity.revision
+            for identity in self.release_identities
+            if identity.version == normalized
+        )
+        return max(revisions, default=-1)
+
+    def next_revision_for(self, version: str) -> int:
+        highest = self.highest_revision_for(version)
+        return 0 if highest < 0 else highest + 1
+
 
 @dataclass(frozen=True)
 class BuildRequest:
     target_version: str
+    release_revision: int = 0
     repository: str = "haohaizi554/UniversalCrawler"
     release_notes_path: str = ""
     output_root: str = ""
@@ -97,6 +148,21 @@ class BuildRequest:
         except ValueError:
             return
         object.__setattr__(self, "target_version", normalized)
+        # 旧请求文件没有 release_revision；在兼容入口补成远端的下一修订，
+        # 但后续校验仍会拒绝负数、bool 或跳号，避免静默覆盖既有发布。
+        if (
+            self.same_release_repair
+            and isinstance(self.release_revision, int)
+            and not isinstance(self.release_revision, bool)
+            and self.release_revision == 0
+            and self.remote.is_available
+            and self.remote.version == normalized
+        ):
+            object.__setattr__(
+                self,
+                "release_revision",
+                self.remote.next_revision_for(normalized),
+            )
 
 
 @dataclass(frozen=True)

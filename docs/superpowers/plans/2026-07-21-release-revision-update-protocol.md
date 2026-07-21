@@ -100,12 +100,12 @@
 - Test: `tests/release/packaging/test_release_builder_panel.py`
 - Test: `tests/release/packaging/test_release_tool_runner.py`
 
-- [ ] 增加失败测试：远端 Release 列表解析同版本修订、下一修订计算、同版本修订请求、面板显示目标 tag。
-- [ ] 远端读取改为有界枚举 Releases，而非只依赖 `/releases/latest`；忽略不符合本项目标签协议的条目。
-- [ ] “同版本修复”改成“发布同版本新修订”，自动建议 `max(revision)+1`，并清楚显示即将创建的独立 tag。
-- [ ] 删除“源提交必须等于旧标签”的阻断逻辑；改为新修订标签若已存在则必须指向当前 HEAD，否则拒绝复用。
-- [ ] 请求文件严格传递 `release_revision`，非法、遗漏或远端状态未知时给出可操作错误。
-- [ ] 运行本任务测试、`py_compile`、乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：远端 Release 列表解析同版本修订、下一修订计算、同版本修订请求、面板显示目标 tag。
+- [x] 远端读取改为有界枚举 Releases，而非只依赖 `/releases/latest`；忽略不符合本项目标签协议的条目。
+- [x] “同版本修复”改成“发布同版本新修订”，自动建议 `max(revision)+1`，并清楚显示即将创建的独立 tag。
+- [x] 删除“源提交必须等于旧标签”的阻断逻辑；改为新修订标签若已存在则必须指向当前 HEAD，否则拒绝复用。
+- [x] 请求文件严格传递 `release_revision`，非法、遗漏或远端状态未知时给出可操作错误。
+- [x] 运行本任务测试、`py_compile`、乱码守卫和 `git diff --check`。
 
 ## Task 6: 构建产物写入修订身份
 
@@ -118,11 +118,11 @@
 - Test: `tests/release/packaging/test_build_installer_resilience.py`
 - Test: `tests/release/packaging/test_version_contract.py`
 
-- [ ] 增加失败测试：修订 tag 构建、缺失新 tag 可构建、已存在冲突 tag 拒绝、portable 身份文件、安装器四段数字版本。
-- [ ] 构建入口按完整身份创建发布目录和资产名，快照仍固定到本次 source commit。
-- [ ] portable 根目录写入 `release_identity.json`；安装包携带该文件，并将显示版本与 Windows 四段版本分别传入 Inno Setup。
-- [ ] staged asset 校验同时核对 version、revision、tag、sourceCommit，阻止混装不同修订资产。
-- [ ] 运行本任务测试、构建脚本 `py_compile`、乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：修订 tag 构建、缺失新 tag 可构建、已存在冲突 tag 拒绝、portable 身份文件、安装器四段数字版本。
+- [x] 构建入口按完整身份创建发布目录和资产名，快照仍固定到本次 source commit。
+- [x] portable 根目录写入 `release_identity.json`；安装包携带该文件，并将显示版本与 Windows 四段版本分别传入 Inno Setup。
+- [x] staged asset 校验同时核对 version、revision、tag、sourceCommit，阻止混装不同修订资产。
+- [x] 运行本任务测试、构建脚本 `py_compile`、乱码守卫和 `git diff --check`。
 
 ## Task 7: 发布独立 Release，禁止同版本资产覆盖
 
@@ -133,10 +133,10 @@
 - Test: `tests/release/packaging/test_release_tool_publisher.py`
 - Test: `tests/release/packaging/test_release_pipeline.py`
 
-- [ ] 增加失败测试：修订模式创建独立 tag/Release、已存在同名但摘要不同的资产失败、不得传 `--clobber`。
-- [ ] 发布流程为当前 identity 创建 tag 和 Release；重试时只允许相同摘要的幂等跳过。
-- [ ] 更新发布指南，明确初版/修订标签、首次协议升级要求、旧客户端无法发现同 SemVer 修订的兼容边界。
-- [ ] 运行发布工具定向测试、文档/乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：修订模式创建独立 tag/Release、已存在同名但摘要不同的资产失败、不得传 `--clobber`。
+- [x] 发布流程为当前 identity 创建 tag 和 Release；重试时只允许相同摘要的幂等跳过。
+- [x] 更新发布指南，明确初版/修订标签、首次协议升级要求、旧客户端无法发现同 SemVer 修订的兼容边界。
+- [x] 运行发布工具定向测试、文档/乱码守卫和 `git diff --check`。
 
 ## Task 8: 全链回归、安全审计与推送
 
