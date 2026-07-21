@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -446,6 +447,7 @@ def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
         qapp,
         project_version="3.6.21",
         remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+        source_identity_checker=lambda *_args: True,
     )
     try:
         assert window.panel_intent is PanelBuildIntent.SAME_RELEASE
@@ -462,6 +464,62 @@ def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
         assert window.check_rotate_trust_anchor.isChecked() is False
     finally:
         window.shutdown()
+
+
+def test_equal_version_with_diverged_tag_defaults_to_local_rebuild(qapp, tmp_path):
+    window = make_panel(
+        qapp,
+        project_root=tmp_path,
+        project_version="3.6.21",
+        remote_loader=lambda *_args: RemoteReleaseInfo.available("3.6.21"),
+        source_identity_checker=lambda *_args: False,
+    )
+    try:
+        assert window.panel_intent is PanelBuildIntent.LOCAL
+        assert window._mode is ReleaseMode.LOCAL_REBUILD
+        assert window.mode_local_button.isChecked() is True
+        assert window.mode_same_button.isEnabled() is False
+        assert window.check_build_installer.isChecked() is True
+        assert window.start_button.isEnabled() is True
+        assert "已切换为“本地构建”" in window.validation_label.text()
+        assert "提高版本号" in window.validation_label.text()
+    finally:
+        window.shutdown()
+
+
+def test_release_tag_identity_checker_detects_diverged_head(tmp_path):
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "release-test@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Release Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("tagged source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "tagged source"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "tag", "v3.6.21"], cwd=tmp_path, check=True)
+
+    assert panel_module._release_tag_matches_head(tmp_path, "3.6.21") is True
+
+    tracked.write_text("new source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "new source"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert panel_module._release_tag_matches_head(tmp_path, "3.6.21") is False
 
 
 def test_higher_version_recommends_complete_new_release_chain(qapp):

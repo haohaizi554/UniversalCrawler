@@ -814,6 +814,11 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     with (
         patch.object(tool, "GitHubReleasePublisher", side_effect=make_publisher),
         patch.object(tool, "_read_only_public_key_path", return_value=public_key),
+        patch.object(
+            tool,
+            "_validate_git_release_state",
+            return_value="a" * 40,
+        ),
     ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter)
         result = run_release_request(request, hooks, emitter, CancellationToken())
@@ -833,6 +838,49 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
         (tool.ReleaseStage.UPLOADING, 85),
         (tool.ReleaseStage.VERIFYING, 95),
     ]
+
+
+def test_same_release_tag_mismatch_fails_before_resolving_signing_material(tmp_path):
+    tool = _load_tool()
+    private_key = tmp_path / "manifest-private.pem"
+    private_key.write_text(
+        ECC.generate(curve="Ed25519").export_key(format="PEM"),
+        encoding="utf-8",
+    )
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        private_key_path=str(private_key),
+        sign_manifest=True,
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(
+            tool,
+            "_validate_git_release_state",
+            side_effect=SystemExit("release tag points to a different source commit"),
+        ),
+        patch.object(
+            tool,
+            "_manifest_public_key_from_private",
+            wraps=tool._manifest_public_key_from_private,
+        ) as resolve_key,
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    resolve_key.assert_not_called()
 
 
 def test_formal_new_release_rejects_a_pre_staged_unrelated_file_before_version_apply(tmp_path):

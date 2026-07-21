@@ -616,7 +616,9 @@ def _validate_git_release_state(tag: str) -> str:
         raise SystemExit(f"无法解析当前 HEAD commit：{head}")
     if tag_commit.lower() != head.lower():
         raise SystemExit(
-            f"release tag {tag} 未指向当前 HEAD：tag={tag_commit}, HEAD={head}"
+            f"同版本修复要求 release tag {tag} 精确指向当前 HEAD；"
+            "当前源码已偏离该发布。请改用本地构建，或提高版本号后正式发布。"
+            f"tag={tag_commit}, HEAD={head}"
         )
     return head.lower()
 
@@ -1102,6 +1104,8 @@ def _build_pipeline_hooks(
 
     def prepare(_request: BuildRequest, mode: ReleaseMode) -> None:
         ensure_lock()
+        if mode is ReleaseMode.SAME_RELEASE_REPAIR and formal_build:
+            _validate_git_release_state(tag)
         if (
             mode is ReleaseMode.NEW_RELEASE
             and _new_release_requires_clean_baseline(request)
@@ -1344,7 +1348,10 @@ def _build_pipeline_hooks(
             _run_git(["tag", tag, source_commit])
         else:
             if existing.lower() != source_commit.lower():
-                raise SystemExit("release tag points to a different source commit")
+                raise SystemExit(
+                    f"同版本修复要求 release tag {tag} 精确指向当前源码；"
+                    "当前源码已偏离该发布。请改用本地构建，或提高版本号后正式发布。"
+                )
         publisher.ensure_tag(tag, source_commit)
 
     def ensure_release(_request: BuildRequest) -> None:

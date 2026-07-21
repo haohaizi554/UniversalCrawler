@@ -165,9 +165,23 @@ def run_release_request(
     signing_material: SigningMaterial | None = None
     signing_transaction_finalized = False
 
-    def emit(kind: str, stage: ReleaseStage, *, message: str = "", data: Mapping[str, object] | None = None) -> None:
-        hooks.activate_stage(stage, _PROGRESS[stage])
-        emitter.emit(kind, stage=stage, progress=_PROGRESS[stage], message=message, data=data)
+    def emit(
+        kind: str,
+        stage: ReleaseStage,
+        *,
+        message: str = "",
+        data: Mapping[str, object] | None = None,
+        progress: int | None = None,
+    ) -> None:
+        effective_progress = _PROGRESS[stage] if progress is None else progress
+        hooks.activate_stage(stage, effective_progress)
+        emitter.emit(
+            kind,
+            stage=stage,
+            progress=effective_progress,
+            message=message,
+            data=data,
+        )
 
     def run_stage(stage: ReleaseStage, action: Callable[[], _T]) -> _T:
         nonlocal current_stage
@@ -297,11 +311,13 @@ def run_release_request(
             _cleanup_once_safely(cleanup_once)
             message = _failure_message(error)
             emit("error", current_stage, message=message)
-            emit("stage", ReleaseStage.FAILED)
+            terminal_progress = _PROGRESS[current_stage]
+            emit("stage", ReleaseStage.FAILED, progress=terminal_progress)
             emit(
                 "result",
                 ReleaseStage.FAILED,
                 data={"status": "failed", "error": message},
+                progress=terminal_progress,
             )
             return ReleaseResult(
                 mode=mode,
@@ -312,8 +328,14 @@ def run_release_request(
                 error=message,
             )
         _cleanup_once_safely(cleanup_once)
-        emit("stage", ReleaseStage.CANCELLED)
-        emit("result", ReleaseStage.CANCELLED, data={"status": "cancelled"})
+        terminal_progress = _PROGRESS[current_stage]
+        emit("stage", ReleaseStage.CANCELLED, progress=terminal_progress)
+        emit(
+            "result",
+            ReleaseStage.CANCELLED,
+            data={"status": "cancelled"},
+            progress=terminal_progress,
+        )
         return ReleaseResult(mode=mode, stage=ReleaseStage.CANCELLED, failed_stage=current_stage)
     except (Exception, SystemExit) as error:
         failure = error
@@ -324,8 +346,14 @@ def run_release_request(
         _cleanup_once_safely(cleanup_once)
         message = _failure_message(failure)
         emit("error", current_stage, message=message)
-        emit("stage", ReleaseStage.FAILED)
-        emit("result", ReleaseStage.FAILED, data={"status": "failed", "error": message})
+        terminal_progress = _PROGRESS[current_stage]
+        emit("stage", ReleaseStage.FAILED, progress=terminal_progress)
+        emit(
+            "result",
+            ReleaseStage.FAILED,
+            data={"status": "failed", "error": message},
+            progress=terminal_progress,
+        )
         return ReleaseResult(
             mode=mode,
             stage=ReleaseStage.FAILED,

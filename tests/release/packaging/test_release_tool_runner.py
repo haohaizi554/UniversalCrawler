@@ -291,6 +291,12 @@ def test_system_exit_from_stage_is_redacted_and_emits_one_terminal_result():
     assert "ghp_stage_secret" not in result.error
     assert [event["kind"] for event in events.events].count("error") == 1
     assert [event["kind"] for event in events.events].count("result") == 1
+    terminal_progress = {
+        event["progress"]
+        for event in events.events
+        if event["stage"] is ReleaseStage.FAILED
+    }
+    assert terminal_progress == {50}
 
 
 def test_cancellation_observed_during_cleanup_cannot_report_success():

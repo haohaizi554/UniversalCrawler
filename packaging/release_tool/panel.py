@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -188,6 +189,9 @@ _EXACT_MESSAGE_LABELS = {
     "formal release requires a clean Git worktree and index": (
         "正式发布要求 Git 工作区与暂存区均无未提交变更"
     ),
+    "release tag points to a different source commit": (
+        "发布标签指向旧源码；请改用本地构建，或提高版本号后正式发布"
+    ),
 }
 
 
@@ -361,6 +365,44 @@ def _safe_repository_label(repository: str) -> str:
     return urlunsplit((parsed.scheme, hostname, parsed.path, "", ""))
 
 
+def _release_tag_matches_head(project_root: Path, version: str) -> bool | None:
+    """检查同版本标签是否指向 HEAD；非 Git 工作区返回 None。"""
+
+    try:
+        tag = format_release_tag(normalize_version(version))
+    except ValueError:
+        return None
+
+    run_options: dict[str, object] = {
+        "cwd": str(Path(project_root).resolve()),
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": 5,
+        "check": False,
+    }
+    if os.name == "nt":
+        run_options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            **run_options,
+        )
+        if head_result.returncode != 0:
+            return None
+        tag_result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"],
+            **run_options,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if tag_result.returncode != 0:
+        return False
+    return head_result.stdout.strip().lower() == tag_result.stdout.strip().lower()
+
+
 class ReleaseBuilderWindow(QWidget):
     """复用项目标题栏与主题体系的顶层发布构建面板。"""
 
@@ -373,6 +415,7 @@ class ReleaseBuilderWindow(QWidget):
         remote_loader: Callable[[str, Mapping[str, str]], RemoteReleaseInfo]
         | None = None,
         process_controller: ReleaseProcessController | None = None,
+        source_identity_checker: Callable[[Path, str], bool | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ReleaseBuilderWindow")
@@ -402,6 +445,11 @@ class ReleaseBuilderWindow(QWidget):
         self._mode: ReleaseMode | None = None
         self._panel_intent: PanelBuildIntent | None = None
         self._local_mode_forced = False
+        self._source_identity_checker = (
+            source_identity_checker or _release_tag_matches_head
+        )
+        self._source_identity_cache: dict[str, bool | None] = {}
+        self._source_identity_notice = ""
         self._projecting_panel_mode = False
         self._mode_form_states: dict[
             PanelBuildIntent,
@@ -506,9 +554,12 @@ class ReleaseBuilderWindow(QWidget):
             request = self._request_from_controls()
 
         errors = validate_build_request(request)
-        self.validation_label.setText(
-            "\n".join(_localize_release_message(error) for error in errors)
-        )
+        validation_messages = [
+            _localize_release_message(error) for error in errors
+        ]
+        if self._source_identity_notice:
+            validation_messages.append(self._source_identity_notice)
+        self.validation_label.setText("\n".join(validation_messages))
         can_start = (
             self._mode is not None
             and not errors
@@ -519,10 +570,7 @@ class ReleaseBuilderWindow(QWidget):
         self.cancel_button.setEnabled(self.process_controller.running)
 
     def _reconcile_panel_intent(self) -> None:
-        available = available_intents(
-            self.target_version_edit.text().strip(),
-            self.remote_info,
-        )
+        available = self._available_panel_intents()
         running = self.process_controller.running
         for intent, button in self._panel_intent_buttons().items():
             button.setEnabled(intent in available and not running)
@@ -543,16 +591,46 @@ class ReleaseBuilderWindow(QWidget):
         else:
             self._sync_mode_button_checks(desired)
 
+    def _available_panel_intents(self) -> frozenset[PanelBuildIntent]:
+        target_version = self.target_version_edit.text().strip()
+        available = set(available_intents(target_version, self.remote_info))
+        self._source_identity_notice = ""
+        self.mode_same_button.setToolTip(
+            "修复远端同版本 Release 及其发布资产"
+        )
+        if PanelBuildIntent.SAME_RELEASE not in available:
+            return frozenset(available)
+
+        if target_version not in self._source_identity_cache:
+            try:
+                state = self._source_identity_checker(
+                    self._project_root,
+                    target_version,
+                )
+            except (OSError, RuntimeError, ValueError):
+                state = None
+            self._source_identity_cache[target_version] = state
+        if self._source_identity_cache[target_version] is not False:
+            return frozenset(available)
+
+        available.discard(PanelBuildIntent.SAME_RELEASE)
+        tag = format_release_tag(target_version)
+        self._source_identity_notice = (
+            f"当前源码与 {tag} 标签提交不一致，已切换为“本地构建”。"
+            "如需发布当前源码，请提高版本号后使用“高版本发布”。"
+        )
+        self.mode_same_button.setToolTip(
+            f"同版本修复只能重建 {tag} 标签对应的原提交；当前源码已不同"
+        )
+        return frozenset(available)
+
     def _on_panel_intent_selected(
         self,
         intent: PanelBuildIntent,
     ) -> None:
         if self._projecting_panel_mode:
             return
-        available = available_intents(
-            self.target_version_edit.text().strip(),
-            self.remote_info,
-        )
+        available = self._available_panel_intents()
         if intent not in available:
             self._sync_mode_button_checks(self.panel_intent)
             return
@@ -561,6 +639,7 @@ class ReleaseBuilderWindow(QWidget):
         self.refresh_mode()
 
     def _on_target_version_changed(self) -> None:
+        self._source_identity_cache.clear()
         self._sync_release_notes_for_target_version()
         self.refresh_mode()
 
@@ -644,6 +723,7 @@ class ReleaseBuilderWindow(QWidget):
     def start_remote_lookup(self) -> None:
         if self.remote_lookup_active or self._shutting_down:
             return
+        self._source_identity_cache.clear()
         self._remote_generation += 1
         generation = self._remote_generation
         self._remote_lookup_pending = True
