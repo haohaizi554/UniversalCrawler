@@ -80,7 +80,7 @@ from .panel_policy import (
 )
 from .process_controller import ReleaseProcessController
 from .proxy import ProxySelection, build_proxy_environment, project_proxy_options
-from .remote import fetch_latest_release
+from .remote import fetch_release_inventory
 from .versioning import format_release_tag, normalize_version, read_project_version
 from .workspace_paths import (
     default_release_notes_directory,
@@ -342,7 +342,7 @@ def build_confirmation_summary(
         if str(name).strip()
     )
     version = normalize_version(request.target_version)
-    values = (
+    values = [
         ("版本", redact_release_text(version)),
         ("发布模式", _MODE_LABELS.get(mode.value, mode.value)),
         (
@@ -353,7 +353,9 @@ def build_confirmation_summary(
         ("代理", redact_release_text(request.proxy_label)),
         ("发布说明", notes_path or "无"),
         ("发布资产", ", ".join(assets) if assets else "无"),
-    )
+    ]
+    if request.remote.is_resumable_revision(version, request.release_revision):
+        values.insert(3, ("执行策略", "继续未完成修订，仅补齐缺失发布步骤"))
     return "\n".join(f"{label}：{value}" for label, value in values)
 
 
@@ -433,9 +435,10 @@ class ReleaseBuilderWindow(QWidget):
         self.setPalette(build_palette(self._is_dark))
         self.remote_info = RemoteReleaseInfo.unknown()
         self._remote_loader = remote_loader or (
-            lambda repository, environment: fetch_latest_release(
+            lambda repository, environment: fetch_release_inventory(
                 repository,
                 environment=environment,
+                project_root=self._project_root,
             )
         )
         self._remote_generation = 0
@@ -555,6 +558,11 @@ class ReleaseBuilderWindow(QWidget):
             self._set_mode_badge(resolution.release_mode.value)
             self._project_mode_controls(resolution.release_mode)
             request = self._request_from_controls()
+            if request.remote.is_resumable_revision(
+                request.target_version,
+                request.release_revision,
+            ):
+                self.mode_badge.setText("继续未完成修订")
 
         errors = validate_build_request(request)
         try:
@@ -604,9 +612,32 @@ class ReleaseBuilderWindow(QWidget):
         target_version = self.target_version_edit.text().strip()
         available = set(available_intents(target_version, self.remote_info))
         self._source_identity_notice = ""
-        self.mode_same_button.setToolTip(
-            "以当前源码创建同版本下一个独立、不可变的 Release"
-        )
+        tooltip = "以当前源码创建同版本下一个独立、不可变的 Release"
+        try:
+            normalized = normalize_version(target_version)
+            revision = self.remote_info.target_revision_for(normalized)
+            target_tag = format_release_tag(normalized, revision)
+            resumable = self.remote_info.is_resumable_revision(
+                normalized,
+                revision,
+            )
+            incomplete = self.remote_info.incomplete_tags_for(normalized)
+        except ValueError:
+            resumable = False
+            incomplete = ()
+        if resumable:
+            tooltip = f"继续 {target_tag}，复用同一源码并补齐缺失的 Release 或资产"
+            self._source_identity_notice = (
+                f"检测到 {target_tag} 已创建但尚无公开 Release，且仍指向当前源码；"
+                "本次将继续该修订并补齐缺失步骤。"
+            )
+        elif incomplete:
+            occupied = "、".join(incomplete)
+            self._source_identity_notice = (
+                f"检测到未完成标签 {occupied} 指向其他或无法确认的源码；"
+                f"为保持标签不可变，发布目标已顺延为 {target_tag}。"
+            )
+        self.mode_same_button.setToolTip(tooltip)
         return frozenset(available)
 
     def _on_panel_intent_selected(
@@ -1499,7 +1530,7 @@ class ReleaseBuilderWindow(QWidget):
             )
             offline_debug = self.panel_intent is PanelBuildIntent.LOCAL
         release_revision = (
-            self.remote_info.next_revision_for(target_version)
+            self.remote_info.target_revision_for(target_version)
             if same_release_repair and self.remote_info.is_available
             else 0
         )

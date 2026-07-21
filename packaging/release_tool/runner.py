@@ -461,7 +461,15 @@ def _load_remote(value: object) -> RemoteReleaseInfo:
     if not isinstance(value, dict):
         raise ValueError("release request field remote must be an object")
     unknown = sorted(
-        set(value) - {"version", "release_revision", "release_tags", "error"}
+        set(value)
+        - {
+            "version",
+            "release_revision",
+            "release_tags",
+            "occupied_tags",
+            "resumable_tags",
+            "error",
+        }
     )
     if unknown:
         raise ValueError("release request remote contains unknown fields")
@@ -469,14 +477,23 @@ def _load_remote(value: object) -> RemoteReleaseInfo:
     error = value.get("error", "")
     release_revision = value.get("release_revision", 0)
     release_tags = value.get("release_tags", ())
+    occupied_tags = value.get("occupied_tags", ())
+    resumable_tags = value.get("resumable_tags", ())
     if not isinstance(version, str) or not isinstance(error, str):
         raise ValueError("release request remote version and error must be strings")
     if isinstance(release_revision, bool) or not isinstance(release_revision, int):
         raise ValueError("release request remote revision must be an integer")
-    if not isinstance(release_tags, (list, tuple)) or not all(
-        isinstance(tag, str) for tag in release_tags
+    for label, tags in (
+        ("release", release_tags),
+        ("occupied", occupied_tags),
+        ("resumable", resumable_tags),
     ):
-        raise ValueError("release request remote tags must be a string array")
+        if not isinstance(tags, (list, tuple)) or not all(
+            isinstance(tag, str) for tag in tags
+        ):
+            raise ValueError(
+                f"release request remote {label} tags must be a string array"
+            )
     if version and error:
         raise ValueError("release request remote cannot include both version and error")
     if version:
@@ -484,6 +501,8 @@ def _load_remote(value: object) -> RemoteReleaseInfo:
             version,
             release_revision,
             release_tags=tuple(release_tags),
+            occupied_tags=tuple(occupied_tags),
+            resumable_tags=tuple(resumable_tags),
         )
     if error:
         return RemoteReleaseInfo.unavailable(error)

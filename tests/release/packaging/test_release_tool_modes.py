@@ -387,6 +387,45 @@ def test_same_version_request_uses_next_remote_revision_without_overwriting_old_
     assert validate_build_request(request) == ()
 
 
+def test_same_version_request_reserves_diverged_bare_tag_and_uses_next_revision():
+    remote = RemoteReleaseInfo.available(
+        "v3.6.21",
+        release_tags=("v3.6.21",),
+        occupied_tags=("v3.6.21-r1", "v3.6.21"),
+    )
+
+    request = BuildRequest(
+        target_version="3.6.21",
+        same_release_repair=True,
+        remote=remote,
+    )
+
+    assert remote.incomplete_tags_for("3.6.21") == ("v3.6.21-r1",)
+    assert remote.next_revision_for("3.6.21") == 2
+    assert request.release_revision == 2
+    assert validate_build_request(request) == ()
+
+
+def test_same_version_request_resumes_latest_bare_tag_verified_for_current_source():
+    remote = RemoteReleaseInfo.available(
+        "v3.6.21",
+        release_tags=("v3.6.21",),
+        occupied_tags=("v3.6.21-r1", "v3.6.21"),
+        resumable_tags=("v3.6.21-r1",),
+    )
+
+    request = BuildRequest(
+        target_version="3.6.21",
+        same_release_repair=True,
+        remote=remote,
+    )
+
+    assert remote.next_revision_for("3.6.21") == 2
+    assert remote.target_revision_for("3.6.21") == 1
+    assert request.release_revision == 1
+    assert validate_build_request(request) == ()
+
+
 @pytest.mark.parametrize("revision", (True, -1, 2, 4))
 def test_same_version_request_rejects_invalid_or_non_next_revision(revision):
     remote = RemoteReleaseInfo.available(

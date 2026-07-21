@@ -863,6 +863,13 @@ def test_request_file_preserves_remote_revision_inventory(tmp_path):
                     "version": "3.6.21",
                     "release_revision": 2,
                     "release_tags": ["v3.6.21-r2", "v3.6.21-r1", "v3.6.21"],
+                    "occupied_tags": [
+                        "v3.6.21-r3",
+                        "v3.6.21-r2",
+                        "v3.6.21-r1",
+                        "v3.6.21",
+                    ],
+                    "resumable_tags": ["v3.6.21-r3"],
                     "error": "",
                 },
             }
@@ -874,7 +881,8 @@ def test_request_file_preserves_remote_revision_inventory(tmp_path):
 
     assert request.release_revision == 3
     assert request.remote.identity.tag == "v3.6.21-r2"
-    assert request.remote.next_revision_for("3.6.21") == 3
+    assert request.remote.next_revision_for("3.6.21") == 4
+    assert request.remote.target_revision_for("3.6.21") == 3
 
 
 def test_same_version_request_file_requires_explicit_release_revision(tmp_path):

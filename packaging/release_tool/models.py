@@ -48,6 +48,8 @@ class RemoteReleaseInfo:
     version: str = ""
     release_revision: int = 0
     release_tags: tuple[str, ...] = ()
+    occupied_tags: tuple[str, ...] = ()
+    resumable_tags: tuple[str, ...] = ()
     error: str = ""
 
     @classmethod
@@ -57,22 +59,44 @@ class RemoteReleaseInfo:
         release_revision: int = 0,
         *,
         release_tags: tuple[str, ...] = (),
+        occupied_tags: tuple[str, ...] = (),
+        resumable_tags: tuple[str, ...] = (),
     ) -> "RemoteReleaseInfo":
-        """Build a normalized snapshot from one or more public release tags."""
+        """Build a normalized snapshot of releases and immutable Git tags.
 
-        identities: set[ReleaseIdentity] = set()
+        ``release_tags`` are backed by a public GitHub Release. ``occupied_tags``
+        additionally includes bare local/remote refs left by an interrupted
+        publication. Only bare tags verified against the current HEAD belong in
+        ``resumable_tags``.
+        """
+
+        published: set[ReleaseIdentity] = set()
         raw_version = str(version or "").strip()
         if raw_version.startswith("v"):
-            identities.add(parse_release_tag(raw_version))
+            published.add(parse_release_tag(raw_version))
         else:
-            identities.add(ReleaseIdentity(normalize_version(raw_version), release_revision))
-        identities.update(parse_release_tag(tag) for tag in release_tags)
-        ordered = tuple(sorted(identities, reverse=True))
-        latest = ordered[0]
+            published.add(ReleaseIdentity(normalize_version(raw_version), release_revision))
+        published.update(parse_release_tag(tag) for tag in release_tags)
+        ordered_published = tuple(sorted(published, reverse=True))
+        latest = ordered_published[0]
+
+        occupied = set(published)
+        occupied.update(parse_release_tag(tag) for tag in occupied_tags)
+        resumable = {parse_release_tag(tag) for tag in resumable_tags}
+        # A public Release is immutable and complete from the planner's point of
+        # view. Automatic resume is reserved for a definitely incomplete bare tag.
+        resumable.intersection_update(occupied)
+        resumable.difference_update(published)
         return cls(
             version=latest.version,
             release_revision=latest.revision,
-            release_tags=tuple(identity.tag for identity in ordered),
+            release_tags=tuple(identity.tag for identity in ordered_published),
+            occupied_tags=tuple(
+                identity.tag for identity in sorted(occupied, reverse=True)
+            ),
+            resumable_tags=tuple(
+                identity.tag for identity in sorted(resumable, reverse=True)
+            ),
         )
 
     @classmethod
@@ -99,11 +123,30 @@ class RemoteReleaseInfo:
             return tuple(parse_release_tag(tag) for tag in self.release_tags)
         return (self.identity,) if self.is_available else ()
 
+    @property
+    def occupied_identities(self) -> tuple[ReleaseIdentity, ...]:
+        if self.occupied_tags:
+            return tuple(parse_release_tag(tag) for tag in self.occupied_tags)
+        return self.release_identities
+
+    @property
+    def resumable_identities(self) -> tuple[ReleaseIdentity, ...]:
+        return tuple(parse_release_tag(tag) for tag in self.resumable_tags)
+
+    @property
+    def incomplete_identities(self) -> tuple[ReleaseIdentity, ...]:
+        published = set(self.release_identities)
+        return tuple(
+            identity
+            for identity in self.occupied_identities
+            if identity not in published
+        )
+
     def highest_revision_for(self, version: str) -> int:
         normalized = normalize_version(version)
         revisions = (
             identity.revision
-            for identity in self.release_identities
+            for identity in self.occupied_identities
             if identity.version == normalized
         )
         return max(revisions, default=-1)
@@ -111,6 +154,35 @@ class RemoteReleaseInfo:
     def next_revision_for(self, version: str) -> int:
         highest = self.highest_revision_for(version)
         return 0 if highest < 0 else highest + 1
+
+    def target_revision_for(self, version: str) -> int:
+        """Resume the newest safe bare tag, otherwise allocate the next revision."""
+
+        normalized = normalize_version(version)
+        highest = self.highest_revision_for(normalized)
+        resumable = {
+            identity.revision
+            for identity in self.resumable_identities
+            if identity.version == normalized and identity.revision > 0
+        }
+        # Only the newest occupied revision may be resumed. Filling an older gap
+        # after a newer revision exists would make update ordering ambiguous.
+        return highest if highest in resumable else self.next_revision_for(normalized)
+
+    def is_resumable_revision(self, version: str, revision: int) -> bool:
+        try:
+            identity = ReleaseIdentity(normalize_version(version), revision)
+        except (TypeError, ValueError):
+            return False
+        return identity in self.resumable_identities
+
+    def incomplete_tags_for(self, version: str) -> tuple[str, ...]:
+        normalized = normalize_version(version)
+        return tuple(
+            identity.tag
+            for identity in self.incomplete_identities
+            if identity.version == normalized
+        )
 
 
 @dataclass(frozen=True)
@@ -148,8 +220,8 @@ class BuildRequest:
         except ValueError:
             return
         object.__setattr__(self, "target_version", normalized)
-        # 旧请求文件没有 release_revision；在兼容入口补成远端的下一修订，
-        # 但后续校验仍会拒绝负数、bool 或跳号，避免静默覆盖既有发布。
+        # 旧请求文件没有 release_revision；优先恢复同一源码的裸标签，否则
+        # 分配所有已占用标签之后的下一修订，避免中断重试静默覆盖旧源码。
         if (
             self.same_release_repair
             and isinstance(self.release_revision, int)
@@ -161,7 +233,7 @@ class BuildRequest:
             object.__setattr__(
                 self,
                 "release_revision",
-                self.remote.next_revision_for(normalized),
+                self.remote.target_revision_for(normalized),
             )
 
 

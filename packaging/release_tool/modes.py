@@ -91,12 +91,12 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
         errors.append("same release repair requires target version to equal remote version")
 
     if mode is ReleaseMode.SAME_RELEASE_REPAIR:
-        expected_revision = request.remote.next_revision_for(request.target_version)
+        expected_revision = request.remote.target_revision_for(request.target_version)
         if request.release_revision <= 0:
             errors.append("same version publication requires a positive release revision")
         elif request.release_revision != expected_revision:
             errors.append(
-                "same version publication requires the next release revision "
+                "same version publication requires the planned release revision "
                 f"{expected_revision}"
             )
     elif mode is not None and request.release_revision != 0:

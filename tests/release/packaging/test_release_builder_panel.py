@@ -490,6 +490,57 @@ def test_equal_version_with_diverged_base_tag_still_creates_new_revision(qapp, t
         window.shutdown()
 
 
+def test_interrupted_tag_for_current_head_is_presented_as_resumable(qapp):
+    inventory = RemoteReleaseInfo.available(
+        "v3.6.21",
+        occupied_tags=("v3.6.21-r1", "v3.6.21"),
+        resumable_tags=("v3.6.21-r1",),
+    )
+    window = make_panel(
+        qapp,
+        project_version="3.6.21",
+        remote_loader=lambda *_args: inventory,
+    )
+    try:
+        request = window._request_from_controls()
+
+        assert request.release_revision == 1
+        assert window.target_release_label.text() == "v3.6.21-r1"
+        assert window.mode_badge.text() == "继续未完成修订"
+        assert "继续该修订" in window.validation_label.text()
+        assert "补齐缺失" in window.mode_same_button.toolTip()
+        assert window.start_button.isEnabled() is True
+        assert "继续未完成修订" in build_confirmation_summary(
+            request,
+            ReleaseMode.SAME_RELEASE_REPAIR,
+            asset_names=("setup.exe",),
+        )
+    finally:
+        window.shutdown()
+
+
+def test_interrupted_tag_for_old_head_advances_target_without_moving_tag(qapp):
+    inventory = RemoteReleaseInfo.available(
+        "v3.6.21",
+        occupied_tags=("v3.6.21-r1", "v3.6.21"),
+    )
+    window = make_panel(
+        qapp,
+        project_version="3.6.21",
+        remote_loader=lambda *_args: inventory,
+    )
+    try:
+        request = window._request_from_controls()
+
+        assert request.release_revision == 2
+        assert window.target_release_label.text() == "v3.6.21-r2"
+        assert "未完成标签 v3.6.21-r1" in window.validation_label.text()
+        assert "已顺延为 v3.6.21-r2" in window.validation_label.text()
+        assert window.start_button.isEnabled() is True
+    finally:
+        window.shutdown()
+
+
 def test_release_tag_identity_checker_detects_diverged_head(tmp_path):
     subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
     subprocess.run(

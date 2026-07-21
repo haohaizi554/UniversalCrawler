@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
 import re
+import subprocess
 from collections.abc import Mapping
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, _parse_proxy, build_opener
@@ -21,7 +24,10 @@ GITHUB_API_USER_AGENT = "UniversalCrawlerReleaseBuilder/1.0"
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_RELEASE_PAGE_BYTES = 256_000
 MAX_RELEASE_RESULTS = 30
+MAX_GIT_TAG_RESULTS = 512
+MAX_GIT_OUTPUT_CHARS = 512_000
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def fetch_latest_release(
@@ -75,6 +81,212 @@ def fetch_latest_release(
         return RemoteReleaseInfo.available(tags[0], release_tags=tags)
     except Exception as error:
         return RemoteReleaseInfo.unavailable(redact_release_text(str(error)))
+
+
+def fetch_release_inventory(
+    repository: str,
+    *,
+    environment: Mapping[str, str],
+    project_root: str | Path,
+    timeout_seconds: float = 10.0,
+) -> RemoteReleaseInfo:
+    """Combine public Releases with local and remote immutable tag refs.
+
+    GitHub's Releases endpoint omits a tag created immediately before a failed
+    ``gh release create`` or asset upload. Reading both Git namespaces prevents
+    the panel from trying to reuse that revision for different source code.
+    """
+
+    release_info = fetch_latest_release(
+        repository,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+    )
+    if not release_info.is_available:
+        return release_info
+    try:
+        occupied, resumable = _git_release_tag_inventory(
+            repository,
+            project_root=project_root,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+            published_tags=release_info.release_tags,
+        )
+    except Exception as error:
+        message = f"release tag inventory failed: {error}"
+        return RemoteReleaseInfo.unavailable(redact_release_text(message))
+    return RemoteReleaseInfo.available(
+        release_info.identity.tag,
+        release_tags=release_info.release_tags,
+        occupied_tags=occupied,
+        resumable_tags=resumable,
+    )
+
+
+def _git_release_tag_inventory(
+    repository: str,
+    *,
+    project_root: str | Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+    published_tags: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return all occupied tags and bare tags that safely match current HEAD."""
+
+    owner, name = _repository_components(repository)
+    root = Path(project_root).resolve()
+    head = _git_output(
+        ("rev-parse", "--verify", "HEAD"),
+        project_root=root,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+    ).strip().lower()
+    if not _COMMIT_PATTERN.fullmatch(head):
+        raise ValueError("Git HEAD is not a full commit SHA")
+
+    local = _parse_local_tag_refs(
+        _git_output(
+            (
+                "for-each-ref",
+                "--format=%(refname:strip=2)%09%(objecttype)%09%(objectname)%09%(*objecttype)%09%(*objectname)",
+                "refs/tags",
+            ),
+            project_root=root,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    remote_url = f"https://github.com/{owner}/{name}.git"
+    remote = _parse_remote_tag_refs(
+        _git_output(
+            ("ls-remote", "--tags", remote_url),
+            project_root=root,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    return _merge_release_tag_inventory(
+        published_tags=published_tags,
+        head_commit=head,
+        local_tags=local,
+        remote_tags=remote,
+    )
+
+
+def _git_output(
+    arguments: tuple[str, ...],
+    *,
+    project_root: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+) -> str:
+    process_environment = dict(environment) if environment else dict(os.environ)
+    process_environment["GIT_TERMINAL_PROMPT"] = "0"
+    run_options: dict[str, object] = {
+        "cwd": str(project_root),
+        "env": process_environment,
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout_seconds,
+        "check": False,
+    }
+    if os.name == "nt":
+        run_options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    completed = subprocess.run(["git", *arguments], **run_options)
+    if completed.returncode != 0:
+        raise RuntimeError("Git tag inventory command failed")
+    output = str(completed.stdout or "")
+    if len(output) > MAX_GIT_OUTPUT_CHARS:
+        raise ValueError("Git tag inventory exceeds the configured size limit")
+    return output
+
+
+def _parse_local_tag_refs(output: str) -> dict[str, str | None]:
+    refs: dict[str, str | None] = {}
+    for line in _bounded_git_lines(output):
+        parts = line.split("\t")
+        if len(parts) != 5:
+            continue
+        tag, object_type, object_sha, peeled_type, peeled_sha = parts
+        canonical = _canonical_release_tag(tag)
+        if not canonical:
+            continue
+        commit = object_sha if object_type == "commit" else peeled_sha
+        if object_type != "commit" and peeled_type != "commit":
+            commit = ""
+        refs[canonical] = commit.lower() if _COMMIT_PATTERN.fullmatch(commit) else None
+    return refs
+
+
+def _parse_remote_tag_refs(output: str) -> dict[str, str | None]:
+    direct: dict[str, str] = {}
+    peeled: dict[str, str] = {}
+    for line in _bounded_git_lines(output):
+        parts = line.split()
+        if len(parts) != 2 or not _COMMIT_PATTERN.fullmatch(parts[0]):
+            continue
+        sha, ref = parts
+        prefix = "refs/tags/"
+        if not ref.startswith(prefix):
+            continue
+        raw_tag = ref[len(prefix) :]
+        is_peeled = raw_tag.endswith("^{}")
+        if is_peeled:
+            raw_tag = raw_tag[:-3]
+        canonical = _canonical_release_tag(raw_tag)
+        if not canonical:
+            continue
+        (peeled if is_peeled else direct)[canonical] = sha.lower()
+    return {
+        tag: peeled.get(tag, direct.get(tag))
+        for tag in set(direct) | set(peeled)
+    }
+
+
+def _bounded_git_lines(output: str) -> tuple[str, ...]:
+    lines = tuple(line for line in str(output).splitlines() if line.strip())
+    if len(lines) > MAX_GIT_TAG_RESULTS * 2:
+        raise ValueError("Git tag inventory contains too many refs")
+    return lines
+
+
+def _canonical_release_tag(value: str) -> str:
+    try:
+        identity = parse_release_tag(str(value).strip())
+    except ValueError:
+        return ""
+    return identity.tag
+
+
+def _merge_release_tag_inventory(
+    *,
+    published_tags: tuple[str, ...],
+    head_commit: str,
+    local_tags: Mapping[str, str | None],
+    remote_tags: Mapping[str, str | None],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    published = {_canonical_release_tag(tag) for tag in published_tags}
+    published.discard("")
+    occupied = published | set(local_tags) | set(remote_tags)
+    resumable: set[str] = set()
+    for tag in occupied - published:
+        commits = {
+            commit.lower()
+            for commit in (local_tags.get(tag), remote_tags.get(tag))
+            if commit
+        }
+        if commits == {head_commit.lower()}:
+            resumable.add(tag)
+    def order(tag: str):
+        return parse_release_tag(tag)
+
+    return (
+        tuple(sorted(occupied, key=order, reverse=True)),
+        tuple(sorted(resumable, key=order, reverse=True)),
+    )
 
 
 def _public_release_tags(payload: object) -> tuple[str, ...]:
@@ -262,5 +474,6 @@ __all__ = [
     "GITHUB_API_ACCEPT",
     "GITHUB_API_USER_AGENT",
     "MAX_RELEASE_RESULTS",
+    "fetch_release_inventory",
     "fetch_latest_release",
 ]

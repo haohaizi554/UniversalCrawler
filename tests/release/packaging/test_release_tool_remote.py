@@ -17,7 +17,7 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
 
 
 from release_tool import remote
-from release_tool.remote import fetch_latest_release
+from release_tool.remote import fetch_latest_release, fetch_release_inventory
 
 
 def test_fetch_latest_release_normalizes_tag_version(monkeypatch):
@@ -199,6 +199,58 @@ def test_fetch_latest_release_collects_public_revisions_and_ignores_non_public_e
     assert info.identity.tag == "v3.6.21-r2"
     assert info.release_tags == ("v3.6.21-r2", "v3.6.21-r1", "v3.6.21")
     assert info.next_revision_for("3.6.21") == 3
+
+
+def test_release_inventory_resumes_only_an_unpublished_tag_matching_head(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        remote,
+        "fetch_latest_release",
+        lambda *_args, **_kwargs: remote.RemoteReleaseInfo.available("v3.6.21"),
+    )
+    monkeypatch.setattr(
+        remote,
+        "_git_release_tag_inventory",
+        lambda *_args, **_kwargs: (
+            ("v3.6.21-r1", "v3.6.21"),
+            ("v3.6.21-r1",),
+        ),
+    )
+
+    info = fetch_release_inventory(
+        "haohaizi554/UniversalCrawler",
+        environment={},
+        project_root=tmp_path,
+    )
+
+    assert info.release_tags == ("v3.6.21",)
+    assert info.occupied_tags == ("v3.6.21-r1", "v3.6.21")
+    assert info.resumable_tags == ("v3.6.21-r1",)
+    assert info.target_revision_for("3.6.21") == 1
+
+
+def test_tag_inventory_keeps_conflicting_or_old_source_tags_immutable():
+    occupied, resumable = remote._merge_release_tag_inventory(
+        published_tags=("v3.6.21",),
+        head_commit="a" * 40,
+        local_tags={"v3.6.21": "0" * 40, "v3.6.21-r1": "b" * 40},
+        remote_tags={"v3.6.21": "0" * 40},
+    )
+
+    assert occupied == ("v3.6.21-r1", "v3.6.21")
+    assert resumable == ()
+
+
+def test_remote_tag_parser_prefers_peeled_annotated_commit():
+    parsed = remote._parse_remote_tag_refs(
+        f"{'1' * 40}\trefs/tags/v3.6.21\n"
+        f"{'2' * 40}\trefs/tags/v3.6.21^{{}}\n"
+        f"{'3' * 40}\trefs/tags/v3.6.21-r1\n"
+    )
+
+    assert parsed == {
+        "v3.6.21": "2" * 40,
+        "v3.6.21-r1": "3" * 40,
+    }
 
 
 @pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
