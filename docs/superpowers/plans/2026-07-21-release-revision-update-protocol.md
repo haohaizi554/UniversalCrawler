@@ -148,4 +148,4 @@
 - [x] 运行 `python -m pytest -q`；若环境性测试不能执行，保留完整失败证据并确认不是本次回归。
 - [x] 运行 `python -m compileall app shared entry packaging -q`、`python -m pytest tests/architecture/test_mojibake.py -q` 和 `git diff --check`。
 - [x] 运行 `python scripts/update_bootstrap.py scan-secrets`，检查 `git diff --cached --name-only` 和 `git diff --cached`，确认无私钥、PFX/P12、密码、token 或 secret 文件/内容。
-- [ ] 用中文提交说明创建最终提交，确认工作树状态后推送当前 `main`。
+- [x] 用中文提交说明创建最终提交，确认工作树状态后推送当前 `main`。
