@@ -14,10 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from app.exceptions import ConfigValidationError
 from app.services import update_check_service
+from app.services.secure_updater import record_skipped_update
 from app.web.api_result import error_result, finalize_api_result
 from app.web.controller_config_service import WebControllerConfigService
 from app.web.controller_route_service import require_valid_video_id
 from app.web.session_runtime import is_local_host
+from shared.release_identity import ReleaseIdentity, load_runtime_release_identity
 
 
 def _finalize_route_result(payload: Any, *, enforce_statuses: set[int] | None = None) -> Any:
@@ -48,6 +50,11 @@ class UpdateCheckRequest(_RequestModel):
 
 class UpdatePrepareRequest(UpdateCheckRequest):
     selected_version: str = Field(default="", max_length=40)
+    selected_candidate_id: str = Field(default="", max_length=80)
+    confirm_revision_change: bool = False
+
+class UpdateSkipRequest(UpdatePrepareRequest):
+    pass
 
 class UpdateInstallRequest(_RequestModel):
     pass
@@ -56,13 +63,43 @@ class UpdateInstallRequest(_RequestModel):
 def _public_update_result(result: Any) -> dict[str, Any]:
     """公开版本元数据，但不泄露服务端校验路径。"""
     payload = asdict(result)
+    payload["local_tag"] = result.local_identity.tag
+    payload["latest_tag"] = result.selected_identity.tag
+    payload["selected_candidate_id"] = result.selected_identity.candidate_id
     payload.pop("manifest_path", None)
     payload.pop("signature_path", None)
     for candidate in payload.get("candidates", []):
         if isinstance(candidate, dict):
             candidate.pop("manifest_path", None)
             candidate.pop("signature_path", None)
+    for candidate, public_candidate in zip(result.candidates, payload.get("candidates", []), strict=False):
+        public_candidate["candidate_id"] = candidate.candidate_id
+        public_candidate["display_label"] = candidate.display_label
     return payload
+
+
+def _check_secure_update_for_runtime() -> Any:
+    """读取受信运行时身份；r0 保持旧调用形状，兼容现有扩展和测试替身。"""
+
+    identity = load_runtime_release_identity()
+    if identity.revision:
+        return update_check_service.check_secure_update(
+            identity.version,
+            local_revision=identity.revision,
+        )
+    return update_check_service.check_secure_update(identity.version)
+
+
+def _select_update_result(result: Any, *, candidate_id: str = "", version: str = "") -> Any:
+    """集中处理新 candidate id 与旧 version 请求，避免 prepare/skip 选择规则漂移。"""
+
+    selected_candidate_id = str(candidate_id or "").strip()
+    if selected_candidate_id:
+        return result.for_candidate(selected_candidate_id)
+    selected_version = str(version or "").strip()
+    if selected_version:
+        return result.for_version(selected_version)
+    return result.for_candidate(result.candidates[0].candidate_id)
 
 
 async def _run_controller_worker_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -239,11 +276,8 @@ def build_rest_router(
 
     @router.post("/api/update/check")
     async def check_update(request: Request, _body: UpdateCheckRequest):
-        from cli import __version__
-
-        local_version = str(__version__).strip()
         try:
-            result = await _run_controller_worker_call(update_check_service.check_secure_update, local_version)
+            result = await _run_controller_worker_call(_check_secure_update_for_runtime)
         except Exception as exc:
             return _finalize_route_result(
                 error_result(str(exc) or "update check failed", http_status=502, error_key="message"),
@@ -266,13 +300,10 @@ def build_rest_router(
                 error_result("update preparation is available only on this device", http_status=403, error_key="message"),
                 enforce_statuses={403},
             )
-        from cli import __version__
-
         context = get_request_context(request)
         context.clear_prepared_update()
-        local_version = str(__version__).strip()
         try:
-            result = await _run_controller_worker_call(update_check_service.check_secure_update, local_version)
+            result = await _run_controller_worker_call(_check_secure_update_for_runtime)
             if result.status != update_check_service.UPDATE_STATUS_AVAILABLE or not result.candidates:
                 return _finalize_route_result(
                     error_result(
@@ -282,13 +313,32 @@ def build_rest_router(
                     ),
                     enforce_statuses={409},
                 )
-            selected_version = str(body.selected_version or result.candidates[0].version).strip()
             try:
-                selected_result = result.for_version(selected_version)
+                selected_result = _select_update_result(
+                    result,
+                    candidate_id=body.selected_candidate_id,
+                    version=body.selected_version,
+                )
             except ValueError as exc:
                 return _finalize_route_result(
                     error_result(str(exc), http_status=400, error_key="message"),
                     enforce_statuses={400},
+                )
+            if (
+                selected_result.selected_identity <= selected_result.local_identity
+                and not body.confirm_revision_change
+            ):
+                action = "reinstall" if selected_result.selected_identity == selected_result.local_identity else "downgrade"
+                return _finalize_route_result(
+                    error_result(
+                        "explicit confirmation is required for revision reinstall or downgrade",
+                        http_status=409,
+                        error_key="message",
+                        confirmation_required=True,
+                        confirmation_action=action,
+                        candidate_id=selected_result.selected_identity.candidate_id,
+                    ),
+                    enforce_statuses={409},
                 )
             prepared = await _run_controller_worker_call(update_check_service.prepare_verified_update, selected_result)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -300,7 +350,43 @@ def build_rest_router(
         return {
             "status": "ready",
             "version": prepared.version,
+            "release_revision": prepared.release_revision,
+            "candidate_id": ReleaseIdentity(prepared.version, prepared.release_revision).candidate_id,
             "installer_name": Path(prepared.installer_path).name,
+        }
+
+    @router.post("/api/update/skip")
+    async def skip_update(request: Request, body: UpdateSkipRequest):
+        client = getattr(request, "client", None)
+        if not is_local_host(getattr(client, "host", None)):
+            return _finalize_route_result(
+                error_result("update skip is available only on this device", http_status=403, error_key="message"),
+                enforce_statuses={403},
+            )
+        try:
+            result = await _run_controller_worker_call(_check_secure_update_for_runtime)
+            if not result.candidates:
+                raise ValueError("no verified update candidate is available")
+            selected_result = _select_update_result(
+                result,
+                candidate_id=body.selected_candidate_id,
+                version=body.selected_version,
+            )
+            await _run_controller_worker_call(
+                record_skipped_update,
+                selected_result.latest_version,
+                release_revision=selected_result.latest_revision,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _finalize_route_result(
+                error_result(str(exc) or "update skip failed", http_status=400, error_key="message"),
+                enforce_statuses={400},
+            )
+        return {
+            "status": "skipped",
+            "version": selected_result.latest_version,
+            "release_revision": selected_result.latest_revision,
+            "candidate_id": selected_result.selected_identity.candidate_id,
         }
 
     @router.post("/api/update/install")
@@ -338,7 +424,12 @@ def build_rest_router(
                 enforce_statuses={500},
             )
         shutdown_callback()
-        return {"status": "installing", "version": prepared.version}
+        return {
+            "status": "installing",
+            "version": prepared.version,
+            "release_revision": prepared.release_revision,
+            "candidate_id": ReleaseIdentity(prepared.version, prepared.release_revision).candidate_id,
+        }
 
     @router.post("/api/scan")
     async def scan_directory(request: Request, body: dict):

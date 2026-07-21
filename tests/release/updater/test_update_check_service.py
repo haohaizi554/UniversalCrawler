@@ -694,7 +694,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertNotIn('"--asset-json"', combined)
         self.assertIn('"shell": False', service_source)
         self.assertIn("record_skipped_update", source)
-        self.assertIn("跳过此版本", source)
+        self.assertIn("跳过此修订", source)
         self.assertNotIn("下载和安装稍后接入", source)
         self.assertNotIn("自动下载和安装流程尚未接入", source)
 
@@ -842,6 +842,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
         record_health.assert_called_once_with(
             current_version="3.7.0",
+            current_revision=0,
             staging_dir=staging_dir,
         )
 
@@ -1131,22 +1132,25 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
             local_version="v3.6.17",
             latest_version="v3.8.0",
             release_url="https://example.test/releases/v3.8.0",
+            language="en-US",
             candidates=(
                 UpdateCandidate(
                     version="3.8.0",
-                    tag_name="v3.8.0",
-                    release_name="Release 3.8.0",
-                    html_url="https://example.test/releases/v3.8.0",
-                    notes="notes 3.8.0",
-                    asset_name="setup-3.8.0.exe",
+                    release_revision=2,
+                    tag_name="v3.8.0-r2",
+                    release_name="Release 3.8.0 revision 2",
+                    html_url="https://example.test/releases/v3.8.0-r2",
+                    notes="notes 3.8.0 r2",
+                    asset_name="setup-3.8.0-r2.exe",
                 ),
                 UpdateCandidate(
-                    version="3.7.0",
-                    tag_name="v3.7.0",
-                    release_name="Release 3.7.0",
-                    html_url="https://example.test/releases/v3.7.0",
-                    notes="notes 3.7.0",
-                    asset_name="setup-3.7.0.exe",
+                    version="3.8.0",
+                    release_revision=1,
+                    tag_name="v3.8.0-r1",
+                    release_name="Release 3.8.0 revision 1",
+                    html_url="https://example.test/releases/v3.8.0-r1",
+                    notes="notes 3.8.0 r1",
+                    asset_name="setup-3.8.0-r1.exe",
                 ),
             ),
         )
@@ -1159,5 +1163,7 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         combo.setCurrentIndex(1)
         labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
 
-        self.assertEqual(dialog.selected_update_version(), "3.7.0")
-        self.assertIn("notes 3.7.0", labels)
+        self.assertEqual(dialog.selected_update_version(), "3.8.0")
+        self.assertEqual(dialog.selected_update_candidate_id(), "v3.8.0-r1")
+        self.assertIn("Revision 1", combo.currentText())
+        self.assertIn("notes 3.8.0 r1", labels)

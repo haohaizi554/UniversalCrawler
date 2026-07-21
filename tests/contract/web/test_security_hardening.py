@@ -315,6 +315,140 @@ class WebSecurityHardeningTests(unittest.TestCase):
         )
         self.assertEqual(remote_response.status_code, 403)
 
+    def test_update_prepare_selects_same_version_revision_by_candidate_id(self):
+        result = UpdateCheckResult(
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="3.6.21",
+            local_revision=0,
+            latest_version="3.6.21",
+            latest_revision=2,
+            tag_name="v3.6.21-r2",
+            release_name="v3.6.21-r2",
+            html_url="https://example.test/v3.6.21-r2",
+            candidates=(
+                UpdateCandidate(
+                    version="3.6.21",
+                    release_revision=2,
+                    tag_name="v3.6.21-r2",
+                    release_name="v3.6.21-r2",
+                    html_url="https://example.test/v3.6.21-r2",
+                ),
+                UpdateCandidate(
+                    version="3.6.21",
+                    release_revision=1,
+                    tag_name="v3.6.21-r1",
+                    release_name="v3.6.21-r1",
+                    html_url="https://example.test/v3.6.21-r1",
+                ),
+            ),
+        )
+        prepared = PreparedUpdate(
+            installer_path=os.fspath(Path(tempfile.gettempdir(), "ucrawl-update.exe")),
+            manifest_path=os.fspath(Path(tempfile.gettempdir(), "latest.json")),
+            signature_path=os.fspath(Path(tempfile.gettempdir(), "latest.json.sig")),
+            version="3.6.21",
+            release_revision=1,
+            log_path=os.fspath(Path(tempfile.gettempdir(), "updater-install.log")),
+        )
+        with (
+            patch("app.services.update_check_service.check_secure_update", return_value=result) as check,
+            patch("app.services.update_check_service.prepare_verified_update", return_value=prepared) as prepare,
+        ):
+            response = self.client.post(
+                "/api/update/prepare",
+                json={"selected_candidate_id": "v3.6.21-r1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["candidate_id"], "v3.6.21-r1")
+        self.assertEqual(prepare.call_args.args[0].latest_revision, 1)
+        self.assertTrue(check.called)
+
+    def test_update_prepare_requires_explicit_confirmation_for_revision_downgrade(self):
+        from shared.release_identity import ReleaseIdentity
+
+        result = UpdateCheckResult(
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="3.6.21",
+            local_revision=2,
+            latest_version="3.6.21",
+            latest_revision=1,
+            tag_name="v3.6.21-r1",
+            release_name="v3.6.21-r1",
+            html_url="https://example.test/v3.6.21-r1",
+            candidates=(
+                UpdateCandidate(
+                    version="3.6.21",
+                    release_revision=1,
+                    tag_name="v3.6.21-r1",
+                    release_name="v3.6.21-r1",
+                    html_url="https://example.test/v3.6.21-r1",
+                ),
+            ),
+        )
+        prepared = PreparedUpdate(
+            installer_path=os.fspath(Path(tempfile.gettempdir(), "ucrawl-update.exe")),
+            manifest_path=os.fspath(Path(tempfile.gettempdir(), "latest.json")),
+            signature_path=os.fspath(Path(tempfile.gettempdir(), "latest.json.sig")),
+            version="3.6.21",
+            release_revision=1,
+            log_path=os.fspath(Path(tempfile.gettempdir(), "updater-install.log")),
+        )
+        with (
+            patch("app.web.rest_router.load_runtime_release_identity", return_value=ReleaseIdentity("3.6.21", 2)),
+            patch("app.services.update_check_service.check_secure_update", return_value=result),
+            patch("app.services.update_check_service.prepare_verified_update", return_value=prepared) as prepare,
+        ):
+            blocked = self.client.post(
+                "/api/update/prepare",
+                json={"selected_candidate_id": "v3.6.21-r1"},
+            )
+            accepted = self.client.post(
+                "/api/update/prepare",
+                json={
+                    "selected_candidate_id": "v3.6.21-r1",
+                    "confirm_revision_change": True,
+                },
+            )
+
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(blocked.json()["confirmation_required"])
+        self.assertEqual(blocked.json()["confirmation_action"], "downgrade")
+        self.assertEqual(accepted.status_code, 200)
+        prepare.assert_called_once()
+
+    def test_update_skip_records_selected_revision(self):
+        result = UpdateCheckResult(
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="3.6.21",
+            latest_version="3.6.21",
+            latest_revision=2,
+            tag_name="v3.6.21-r2",
+            release_name="v3.6.21-r2",
+            html_url="https://example.test/v3.6.21-r2",
+            candidates=(
+                UpdateCandidate(
+                    version="3.6.21",
+                    release_revision=2,
+                    tag_name="v3.6.21-r2",
+                    release_name="v3.6.21-r2",
+                    html_url="https://example.test/v3.6.21-r2",
+                ),
+            ),
+        )
+        with (
+            patch("app.services.update_check_service.check_secure_update", return_value=result),
+            patch("app.web.rest_router.record_skipped_update") as record_skip,
+        ):
+            response = self.client.post(
+                "/api/update/skip",
+                json={"selected_candidate_id": "v3.6.21-r2"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["candidate_id"], "v3.6.21-r2")
+        record_skip.assert_called_once_with("3.6.21", release_revision=2)
+
     def test_update_prepare_rejects_unverified_result_and_clears_stale_package(self):
         result = UpdateCheckResult(
             status="untrusted",

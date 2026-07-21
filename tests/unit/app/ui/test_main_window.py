@@ -437,7 +437,7 @@ class MainWindowTests(unittest.TestCase):
         window._submit_frontend_action.assert_not_called()
 
     def test_update_check_request_uses_latest_worker(self):
-        from cli import __version__
+        from shared.release_identity import ReleaseIdentity
 
         window = self._make_window()
         worker = self.CapturingUpdateCheckWorker()
@@ -450,15 +450,17 @@ class MainWindowTests(unittest.TestCase):
         window._show_basic_message = Mock()
         window._show_update_check_error = Mock()
         window._current_status_version = Mock(return_value="v3.6.17")
+        window._runtime_update_identity = Mock(return_value=ReleaseIdentity("3.6.21", 2))
 
         MainWindow._on_update_check_requested(window, "v0.0.1")
 
         self.assertTrue(window._update_check_running)
         window._set_status_bar_update_checking.assert_called_once_with(True)
-        window._show_update_check_loading.assert_called_once_with(__version__)
+        window._show_update_check_loading.assert_called_once_with("v3.6.21-r2")
         self.assertEqual(len(worker.requests), 1)
         self.assertEqual(worker.requests[0].sequence, 1)
-        self.assertEqual(worker.requests[0].local_version, __version__)
+        self.assertEqual(worker.requests[0].local_version, "3.6.21")
+        self.assertEqual(worker.requests[0].local_revision, 2)
         window._show_basic_message.assert_not_called()
         window._show_update_check_error.assert_not_called()
 

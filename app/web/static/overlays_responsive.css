@@ -66,6 +66,7 @@
 #statusVersion {
   margin-left: auto;
   color: var(--muted);
+  min-width: 92px;
 }
 
 .status-version-button {
@@ -220,6 +221,35 @@
 
 .update-version-grid strong {
   overflow-wrap: anywhere;
+}
+
+.update-candidate-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.update-candidate-panel[hidden] {
+  display: none;
+}
+
+.update-candidate-panel select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 36px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.update-candidate-panel select:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: 1px;
 }
 
 .update-notes {

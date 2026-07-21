@@ -78,11 +78,11 @@
 - Test: `tests/integration/app/web/test_websocket_server.py`
 - Test: `tests/contract/frontend/test_i18n_logs.py`
 
-- [ ] 增加失败测试：候选下拉显示初始版/修订号、默认最新、提交 candidate id、任何清单都保留取消和跳过入口。
-- [ ] 更新 REST 公共结果和 prepare 请求，使用 `candidate_id`，调用方不能伪造本机修订。
-- [ ] GUI/WebUI 使用运行时身份作为当前版本，显示 `vX.Y.Z-rN`；同产品版本的修订在一个选择器中呈现。
-- [ ] 对回退/重装显示明确二次确认；普通升级仍是单次确认，永不自动开始安装。
-- [ ] 补齐双端翻译字典，运行 UI/Web 定向测试、乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：候选下拉显示初始版/修订号、默认最新、提交 candidate id、任何清单都保留取消和跳过入口。
+- [x] 更新 REST 公共结果和 prepare 请求，使用 `candidate_id`，调用方不能伪造本机修订。
+- [x] GUI/WebUI 使用运行时身份作为当前版本，显示 `vX.Y.Z-rN`；同产品版本的修订在一个选择器中呈现。
+- [x] 对回退/重装显示明确二次确认；普通升级仍是单次确认，永不自动开始安装。
+- [x] 补齐双端翻译字典，运行 UI/Web 定向测试、乱码守卫和 `git diff --check`。
 
 ## Task 5: 发布面板计算下一修订并展示真实目标
 

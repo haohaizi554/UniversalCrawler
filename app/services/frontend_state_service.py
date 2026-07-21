@@ -53,7 +53,7 @@ from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
 from shared.settings_metadata import GROUP_DESCRIPTIONS, GROUP_HINTS, GROUP_ICONS
 from shared.failed_page_projection import prepare_failed_item_for_display
-from shared.version import __version__
+from shared.release_identity import load_runtime_release_identity
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 UI_TITLE_STAGE_META_KEY = "ui_title_stage"
@@ -2060,7 +2060,7 @@ class FrontendStateService:
             completed_count=int(completed_count or 0),
             failed_count=int(failed_count or 0),
             active_downloads=active_downloads,
-            version=__version__,
+            version=load_runtime_release_identity().tag,
         )
 
     def _video_bucket_counts(self) -> dict[str, int]:

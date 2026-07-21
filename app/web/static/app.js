@@ -1199,13 +1199,15 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  const version = String(status.version || "").trim();
+  const version = String(status.version || byId("statusVersion").dataset.runtimeVersion || "").trim();
   if (version) byId("statusVersion").textContent = version;
 }
 
 let updateCheckSequence = 0;
 let updateReleaseUrl = "";
 let selectedUpdateVersion = "";
+let selectedUpdateCandidateId = "";
+let updateCandidates = [];
 
 function trustedUpdateReleaseUrl(value) {
   try {
@@ -1219,12 +1221,77 @@ function trustedUpdateReleaseUrl(value) {
 
 function updateCheckStatusLabel(result) {
   const status = String((result && result.status) || "error");
-  const latest = String((result && result.latest_version) || "");
-  if (status === "available") return `${t("检测到新版本")} v${latest.replace(/^v/i, "")}`;
+  const latest = String((result && (result.latest_tag || result.tag_name || result.latest_version)) || "");
+  if (status === "available") return `${t("检测到新版本")} ${latest.startsWith("v") ? latest : `v${latest}`}`;
   if (status === "current") return t("当前已经是最新版本");
   if (status === "local_newer") return t("当前版本高于最新发布版本");
   if (status === "untrusted") return t("检测到版本，但安全更新清单未通过验证");
   return t("检查更新失败");
+}
+
+function updateCandidateLabel(candidate) {
+  const version = String(candidate.version || "").replace(/^v/i, "");
+  const revision = Number(candidate.release_revision || 0);
+  const revisionLabel = revision > 0 ? `${t("修订")} ${revision}` : t("初始版");
+  return `v${version} ${revisionLabel}`;
+}
+
+function applySelectedUpdateCandidate(candidate) {
+  if (!candidate) return;
+  selectedUpdateCandidateId = String(candidate.candidate_id || candidate.tag_name || "");
+  selectedUpdateVersion = String(candidate.version || "");
+  const tag = String(candidate.tag_name || selectedUpdateCandidateId || selectedUpdateVersion || "--");
+  byId("updateLatestVersion").textContent = tag;
+  byId("updateNotes").textContent = candidate.notes || t("未提供更新说明");
+  updateReleaseUrl = trustedUpdateReleaseUrl(candidate.html_url);
+  byId("updateReleaseLink").hidden = !updateReleaseUrl;
+}
+
+function renderUpdateCandidates(result) {
+  const select = byId("updateCandidateSelect");
+  const panel = byId("updateCandidatePanel");
+  updateCandidates = Array.isArray(result.candidates)
+    ? result.candidates.map(candidate => ({
+        ...candidate,
+        release_revision: candidate.release_revision ?? result.latest_revision ?? 0,
+        tag_name: candidate.tag_name || result.latest_tag || result.tag_name || candidate.version || "",
+        candidate_id: candidate.candidate_id || candidate.tag_name || candidate.version || "",
+        html_url: candidate.html_url || result.html_url || "",
+        notes: candidate.notes || result.notes || "",
+      }))
+    : [];
+  if (!updateCandidates.length && result.latest_version) {
+    updateCandidates.push({
+      version: result.latest_version,
+      release_revision: result.latest_revision || 0,
+      tag_name: result.latest_tag || result.tag_name || result.latest_version,
+      candidate_id: result.selected_candidate_id || result.tag_name || result.latest_version,
+      html_url: result.html_url || "",
+      notes: result.notes || "",
+    });
+  }
+  select.replaceChildren();
+  updateCandidates.forEach(candidate => {
+    const option = document.createElement("option");
+    option.value = String(candidate.candidate_id || candidate.tag_name || candidate.version || "");
+    option.textContent = updateCandidateLabel(candidate);
+    select.appendChild(option);
+  });
+  panel.hidden = updateCandidates.length <= 1;
+  select.disabled = updateCandidates.length <= 1;
+  const preferredId = String(result.selected_candidate_id || updateCandidates[0]?.candidate_id || "");
+  if (preferredId) select.value = preferredId;
+  applySelectedUpdateCandidate(
+    updateCandidates.find(candidate => String(candidate.candidate_id || candidate.tag_name || "") === select.value)
+      || updateCandidates[0],
+  );
+}
+
+function selectWebUpdateCandidate() {
+  const selectedId = String(byId("updateCandidateSelect")?.value || "");
+  applySelectedUpdateCandidate(
+    updateCandidates.find(candidate => String(candidate.candidate_id || candidate.tag_name || "") === selectedId),
+  );
 }
 
 function setUpdateModalBusy(busy) {
@@ -1261,6 +1328,8 @@ async function showUpdateCheckModal() {
   const sequence = ++updateCheckSequence;
   updateReleaseUrl = "";
   selectedUpdateVersion = "";
+  selectedUpdateCandidateId = "";
+  updateCandidates = [];
   modal.style.display = "flex";
   setUpdateModalBusy(true);
   byId("updateTitle").textContent = t("检查更新");
@@ -1268,16 +1337,21 @@ async function showUpdateCheckModal() {
   byId("updateLatestLabel").textContent = t("Release 版本");
   byId("updateViewLogBtn").textContent = t("查看日志");
   byId("updateReleaseLink").textContent = t("查看发布页");
+  byId("updateSkipBtn").textContent = t("跳过此修订");
   byId("updatePrepareBtn").textContent = t("下载并验证");
   byId("updateInstallBtn").textContent = t("安装并重启");
   byId("updateCloseBtn").textContent = t("确定");
   byId("updateCloseIcon").setAttribute("aria-label", t("关闭"));
+  byId("updateCandidateLabel").textContent = t("选择要安装的修订");
+  byId("updateCandidatePanel").hidden = true;
+  byId("updateCandidateSelect").replaceChildren();
   byId("updateStatus").dataset.status = "checking";
   byId("updateStatus").textContent = t("正在检查更新...");
   byId("updateLocalVersion").textContent = byId("statusVersion").textContent || "--";
   byId("updateLatestVersion").textContent = "--";
   byId("updateNotes").textContent = "";
   byId("updateReleaseLink").hidden = true;
+  byId("updateSkipBtn").hidden = true;
   byId("updatePrepareBtn").hidden = true;
   byId("updateInstallBtn").hidden = true;
   byId("updateCloseBtn").disabled = false;
@@ -1299,12 +1373,9 @@ async function showUpdateCheckModal() {
     }
     byId("updateStatus").dataset.status = String(result.status || "current");
     byId("updateStatus").textContent = updateCheckStatusLabel(result);
-    byId("updateLocalVersion").textContent = result.local_version || "--";
-    byId("updateLatestVersion").textContent = result.latest_version || "--";
-    byId("updateNotes").textContent = result.notes || t("未提供更新说明");
-    updateReleaseUrl = trustedUpdateReleaseUrl(result.html_url);
-    byId("updateReleaseLink").hidden = !updateReleaseUrl;
-    selectedUpdateVersion = String(result.latest_version || "");
+    byId("updateLocalVersion").textContent = result.local_tag || result.local_version || "--";
+    renderUpdateCandidates(result);
+    byId("updateSkipBtn").hidden = !(result.status === "available" && selectedUpdateCandidateId);
     byId("updatePrepareBtn").hidden = !(result.status === "available" && result.can_prepare);
   } catch (error) {
     if (sequence !== updateCheckSequence) return;
@@ -1322,22 +1393,35 @@ async function showUpdateCheckModal() {
 async function prepareWebUpdate() {
   const modal = byId("updateModal");
   const button = byId("updatePrepareBtn");
-  if (!modal || !button || !selectedUpdateVersion || modal.getAttribute("aria-busy") === "true") return;
+  if (!modal || !button || !selectedUpdateCandidateId || modal.getAttribute("aria-busy") === "true") return;
   const sequence = ++updateCheckSequence;
   setUpdateModalBusy(true);
   button.disabled = true;
   byId("updateStatus").dataset.status = "preparing";
   byId("updateStatus").textContent = t("正在下载并验证更新...");
   try {
-    const response = await fetch("/api/update/prepare", {
+    const requestPrepare = confirmRevisionChange => fetch("/api/update/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         local_version: byId("updateLocalVersion").textContent || "",
         selected_version: selectedUpdateVersion,
+        selected_candidate_id: selectedUpdateCandidateId,
+        confirm_revision_change: Boolean(confirmRevisionChange),
       }),
     });
-    const result = await response.json();
+    let response = await requestPrepare(false);
+    let result = await response.json();
+    if (response.status === 409 && result && result.confirmation_required) {
+      const confirmed = window.confirm(t("所选修订不高于当前安装版本。继续将执行回退或重装，是否继续？"));
+      if (!confirmed) {
+        byId("updateStatus").dataset.status = "available";
+        byId("updateStatus").textContent = t("已取消回退或重装");
+        return;
+      }
+      response = await requestPrepare(true);
+      result = await response.json();
+    }
     if (sequence !== updateCheckSequence) return;
     if (!response.ok || !result || result.status !== "ready") {
       throw new Error((result && (result.message || result.error)) || `HTTP ${response.status}`);
@@ -1357,6 +1441,39 @@ async function prepareWebUpdate() {
       setUpdateModalBusy(false);
       button.disabled = false;
     }
+  }
+}
+
+async function skipWebUpdate() {
+  const modal = byId("updateModal");
+  const button = byId("updateSkipBtn");
+  if (!modal || !button || !selectedUpdateCandidateId || modal.getAttribute("aria-busy") === "true") return;
+  setUpdateModalBusy(true);
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/update/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selected_version: selectedUpdateVersion,
+        selected_candidate_id: selectedUpdateCandidateId,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result || result.status !== "skipped") {
+      throw new Error((result && (result.message || result.error)) || `HTTP ${response.status}`);
+    }
+    byId("updateStatus").dataset.status = "current";
+    byId("updateStatus").textContent = t("已跳过此修订");
+    byId("updatePrepareBtn").hidden = true;
+    button.hidden = true;
+  } catch (error) {
+    byId("updateStatus").dataset.status = "error";
+    byId("updateStatus").textContent = t("跳过更新失败");
+    byId("updateNotes").textContent = String(error && (error.message || error) || "");
+  } finally {
+    setUpdateModalBusy(false);
+    button.disabled = false;
   }
 }
 

@@ -9,7 +9,7 @@ from app.services import frontend_toolbox_adapter as toolbox_adapter
 from shared.frontend_page_definitions import PAGE_DEFINITIONS
 from shared.icon_contract import icon_manifest
 from shared.log_contract import log_contract
-from shared.version import __version__, format_version_label
+from shared.release_identity import load_runtime_release_identity
 
 
 def build_mock_snapshot(
@@ -237,6 +237,6 @@ def build_mock_snapshot(
             "download_speed_bps": 10_905_190,
             "completed_count": 128,
             "failed_count": 7,
-            "version": format_version_label(__version__),
+            "version": load_runtime_release_identity().tag,
         },
     }

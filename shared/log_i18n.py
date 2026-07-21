@@ -749,6 +749,7 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("更新安装包已下载并通过校验", "Update package downloaded and verified", "更新安裝套件已下載並通過校驗"),
     ("更新安装程序启动失败", "Failed to start the update installer", "更新安裝程式啟動失敗"),
     ("已跳过更新版本", "Skipped update version", "已略過更新版本"),
+    ("已跳过更新修订", "Skipped update revision", "已略過更新修訂"),
     ("已调度 select_tasks 测试事件", "select_tasks test event dispatched", "已排程 select_tasks 測試事件"),
     ("收到非法 JSON 消息", "Invalid JSON message received", "收到無效的 JSON 訊息"),
     ("Bilibili 登录状态校验失败", "Bilibili login status check failed", "Bilibili 登入狀態校驗失敗"),

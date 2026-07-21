@@ -142,6 +142,7 @@ class UpdateCheckDialog(ChromedDialog):
         self._initial_details = str(details or "")
         self._candidate_options = self._normalize_candidates(candidates, latest_version=latest_version, release_url=release_url)
         self._selected_version = self._candidate_options[0]["version"] if self._candidate_options else str(latest_version or "")
+        self._selected_candidate_id = self._candidate_options[0]["candidate_id"] if self._candidate_options else ""
         self.details_label: QLabel | None = None
         self.release_link: QLabel | None = None
 
@@ -234,7 +235,7 @@ class UpdateCheckDialog(ChromedDialog):
         panel_layout.setContentsMargins(14, 12, 14, 12)
         panel_layout.setSpacing(8)
 
-        label = QLabel(self._tr("选择要安装的版本"))
+        label = QLabel(self._tr("选择要安装的修订"))
         label.setObjectName("UpdateDetailTitle")
         panel_layout.addWidget(label)
 
@@ -242,7 +243,7 @@ class UpdateCheckDialog(ChromedDialog):
         self.version_combo.setObjectName("UpdateVersionCombo")
         self.version_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         for option in self._candidate_options:
-            self.version_combo.addItem(self._candidate_label(option), option["version"])
+            self.version_combo.addItem(self._candidate_label(option), option["candidate_id"])
         self.version_combo.currentIndexChanged.connect(self._on_candidate_changed)
         panel_layout.addWidget(self.version_combo)
         return panel
@@ -315,13 +316,19 @@ class UpdateCheckDialog(ChromedDialog):
     def selected_update_version(self) -> str:
         return str(self._selected_version or "")
 
+    def selected_update_candidate_id(self) -> str:
+        """返回签名候选的稳定 tag，避免同一版本的多个修订发生歧义。"""
+
+        return str(self._selected_candidate_id or "")
+
     def _on_candidate_changed(self, index: int) -> None:
         if index < 0 or index >= len(self._candidate_options):
             return
         option = self._candidate_options[index]
         self._selected_version = option["version"]
+        self._selected_candidate_id = option["candidate_id"]
         self._release_url = option["release_url"]
-        self.remote_version_value.setText(self._display_version(option["version"]))
+        self.remote_version_value.setText(option["tag"] or self._display_version(option["version"]))
         if self.details_label is not None:
             self.details_label.setText(self._detail_text(option["notes"] or self._initial_details))
         if self.release_link is not None and self._release_url:
@@ -333,16 +340,21 @@ class UpdateCheckDialog(ChromedDialog):
         return format_version_label(version, fallback="-")
 
     @classmethod
-    def _normalize_candidates(cls, candidates: tuple[Any, ...], *, latest_version: str, release_url: str) -> list[dict[str, str]]:
-        options: list[dict[str, str]] = []
+    def _normalize_candidates(cls, candidates: tuple[Any, ...], *, latest_version: str, release_url: str) -> list[dict[str, Any]]:
+        options: list[dict[str, Any]] = []
         for candidate in candidates or ():
             version = str(cls._candidate_value(candidate, "version") or "").strip()
             if not version:
                 continue
+            revision = int(cls._candidate_value(candidate, "release_revision") or 0)
+            tag = str(cls._candidate_value(candidate, "tag_name") or "").strip()
+            candidate_id = str(cls._candidate_value(candidate, "candidate_id") or tag).strip()
             options.append(
                 {
                     "version": version,
-                    "tag": str(cls._candidate_value(candidate, "tag_name") or ""),
+                    "revision": revision,
+                    "candidate_id": candidate_id,
+                    "tag": tag,
                     "name": str(cls._candidate_value(candidate, "release_name") or ""),
                     "release_url": str(cls._candidate_value(candidate, "html_url") or release_url or ""),
                     "notes": str(cls._candidate_value(candidate, "notes") or ""),
@@ -353,6 +365,8 @@ class UpdateCheckDialog(ChromedDialog):
             options.append(
                 {
                     "version": str(latest_version),
+                    "revision": 0,
+                    "candidate_id": str(latest_version),
                     "tag": str(latest_version),
                     "name": str(latest_version),
                     "release_url": str(release_url or ""),
@@ -368,12 +382,18 @@ class UpdateCheckDialog(ChromedDialog):
             return candidate.get(key)
         return getattr(candidate, key, "")
 
-    def _candidate_label(self, option: dict[str, str]) -> str:
+    def _candidate_label(self, option: dict[str, Any]) -> str:
         version = self._display_version(option["version"])
+        revision = int(option.get("revision") or 0)
+        revision_label = (
+            self._tr("初始版")
+            if revision == 0
+            else f"{self._tr('修订')} {revision}"
+        )
         name = option["name"] or option["tag"]
         asset = option["asset"]
-        parts = [version]
-        if name and name not in {version, option["version"]}:
+        parts = [f"{version} {revision_label}"]
+        if name and name not in {version, option["version"], option["tag"]}:
             parts.append(name)
         if asset:
             parts.append(asset)

@@ -631,6 +631,7 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "更新安装包已下载并通过校验", en: "Update package downloaded and verified", tw: "更新安裝套件已下載並通過校驗" },
   { zh: "更新安装程序启动失败", en: "Failed to start the update installer", tw: "更新安裝程式啟動失敗" },
   { zh: "已跳过更新版本", en: "Skipped update version", tw: "已略過更新版本" },
+  { zh: "已跳过更新修订", en: "Skipped update revision", tw: "已略過更新修訂" },
   { zh: "已调度 select_tasks 测试事件", en: "select_tasks test event dispatched", tw: "已排程 select_tasks 測試事件" },
   { zh: "收到非法 JSON 消息", en: "Invalid JSON message received", tw: "收到無效的 JSON 訊息" },
   { zh: "Bilibili 登录状态校验失败", en: "Bilibili login status check failed", tw: "Bilibili 登入狀態校驗失敗" },

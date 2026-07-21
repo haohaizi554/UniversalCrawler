@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 from app.services.icon_registry import ui_icon_path
 from shared.icon_contract import action_icon_file
 from shared.localization import normalize_language, tr
-from shared.version import __version__, format_version_label
+from shared.release_identity import load_runtime_release_identity
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 
@@ -64,6 +64,7 @@ class StatusBarWidget(QFrame):
         self._language = "zh-CN"
         self._metric_captions: dict[str, QLabel] = {}
         self._update_checking = False
+        self._release_identity = load_runtime_release_identity()
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
@@ -93,11 +94,11 @@ class StatusBarWidget(QFrame):
 
         layout.addStretch(1)
 
-        self.lbl_version = QPushButton(format_version_label(__version__))
+        self.lbl_version = QPushButton(self._release_identity.tag)
         self.lbl_version.setObjectName("StatusVersionButton")
         self.lbl_version.setToolTip("检查更新")
         self.lbl_version.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.lbl_version.setFixedWidth(70)
+        self.lbl_version.setFixedWidth(104)
         self.lbl_version.setFlat(True)
         self.lbl_version.clicked.connect(self._emit_update_check_requested)
         layout.addWidget(self.lbl_version, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -191,6 +192,7 @@ class StatusBarWidget(QFrame):
         self.lbl_download.setText(str(merged.get("download_speed") or "0 B/s"))
         self.lbl_completed.setText(str(int(merged.get("completed_count", 0) or 0)))
         self.lbl_failed.setText(str(failed_count))
+        # 新快照携带完整 tag；旧快照或初始化阶段仍回退到安装目录 marker。
         self.lbl_version.setText(
-            format_version_label(merged.get("version") or __version__)
+            str(merged.get("version") or self._release_identity.tag)
         )

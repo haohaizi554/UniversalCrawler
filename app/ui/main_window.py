@@ -50,7 +50,8 @@ from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS  # noqa: F401
 from shared.localization import normalize_language, tr
-from shared.version import __version__, format_version_label
+from shared.release_identity import ReleaseIdentity, load_runtime_release_identity
+from shared.version import format_version_label
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
@@ -74,6 +75,7 @@ from app.utils.safe_slot import safe_slot
 class _UpdateCheckRequest:
     sequence: int
     local_version: str
+    local_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ class _PreparedUpdate:
     signature_path: str
     version: str
     log_path: str
+    release_revision: int = 0
 
 
 class MainWindow(QMainWindow):
@@ -506,14 +509,18 @@ class MainWindow(QMainWindow):
             )
             return
         self._set_status_bar_update_checking(True)
-        from cli import __version__
-
-        local_version = str(__version__).strip()
-        self._last_update_check_local_version = local_version
-        self._show_update_check_loading(local_version)
+        local_identity = self._runtime_update_identity()
+        self._last_update_check_local_version = local_identity.tag
+        self._show_update_check_loading(local_identity.tag)
         worker = self._ensure_update_check_worker()
         self._update_check_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0) + 1
-        worker.submit(_UpdateCheckRequest(sequence=self._update_check_sequence, local_version=local_version))
+        worker.submit(
+            _UpdateCheckRequest(
+                sequence=self._update_check_sequence,
+                local_version=local_identity.version,
+                local_revision=local_identity.revision,
+            )
+        )
 
     def _show_update_check_loading(self, local_version: str) -> None:
         self._dismiss_update_check_loading()
@@ -562,13 +569,27 @@ class MainWindow(QMainWindow):
         text = getattr(label, "text", None)
         if callable(text):
             return str(text())
-        return format_version_label(__version__)
+        return self._runtime_update_identity().tag
+
+    @staticmethod
+    def _runtime_update_identity() -> ReleaseIdentity:
+        """以打包身份文件为准；源码开发态自动兼容为当前版本的初始修订。"""
+
+        return load_runtime_release_identity()
 
     def _record_update_startup_health(self) -> None:
         try:
-            current_version = self._display_version(self._current_status_version()).lstrip("vV")
+            identity_getter = getattr(self, "_runtime_update_identity", None)
+            if callable(identity_getter):
+                current_identity = identity_getter()
+            else:
+                current_identity = ReleaseIdentity(
+                    self._display_version(self._current_status_version()).lstrip("vV"),
+                    0,
+                )
             record_startup_update_health(
-                current_version=current_version,
+                current_version=current_identity.version,
+                current_revision=current_identity.revision,
                 staging_dir=default_update_staging_dir(),
             )
         except Exception as exc:
@@ -602,7 +623,10 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _process_update_check_request(request: _UpdateCheckRequest) -> _UpdateCheckOutcome:
         try:
-            result = check_secure_update(request.local_version)
+            result = check_secure_update(
+                request.local_version,
+                local_revision=request.local_revision,
+            )
         except Exception as exc:
             return _UpdateCheckOutcome(sequence=request.sequence, error=str(exc))
         return _UpdateCheckOutcome(sequence=request.sequence, result=result)
@@ -641,8 +665,8 @@ class MainWindow(QMainWindow):
         )
 
     def _show_update_check_result(self, result: UpdateCheckResult) -> None:
-        local_version = self._display_version(result.local_version)
-        latest_version = self._display_version(result.latest_version)
+        local_version = result.local_identity.tag
+        latest_version = result.selected_identity.tag
         if result.status == UPDATE_STATUS_CURRENT:
             self._show_basic_message(
                 "检查更新",
@@ -699,7 +723,7 @@ class MainWindow(QMainWindow):
             details=result.notes or "更新前建议关闭正在运行的采集任务。安装包会先完成更新清单签名、大小和 SHA-256 校验。",
             primary_text="下载更新",
             secondary_text="稍后",
-            skip_text="" if result.mandatory else "跳过此版本",
+            skip_text="跳过此修订",
             status=UPDATE_STATUS_AVAILABLE,
             local_version=local_version,
             latest_version=latest_version,
@@ -710,24 +734,65 @@ class MainWindow(QMainWindow):
         dialog_result = box.exec()
         if dialog_result == QDialog.DialogCode.Accepted:
             selected_result = result
-            selected_version = box.selected_update_version()
-            if selected_version and result.candidates:
+            selected_candidate_id = box.selected_update_candidate_id()
+            if selected_candidate_id and result.candidates:
                 try:
-                    selected_result = result.for_version(selected_version)
+                    selected_result = result.for_candidate(selected_candidate_id)
                 except ValueError as exc:
                     self._show_update_check_error(str(exc))
                     return
+            if (
+                selected_result.selected_identity <= selected_result.local_identity
+                and not self._confirm_revision_reinstall_or_downgrade(selected_result)
+            ):
+                return
             self._begin_update_download(selected_result)
         elif int(dialog_result) == UpdateCheckDialog.SKIP_CODE:
-            self._skip_update_version(box.selected_update_version() or result.latest_version)
+            selected_result = result
+            selected_candidate_id = box.selected_update_candidate_id()
+            if selected_candidate_id and result.candidates:
+                try:
+                    selected_result = result.for_candidate(selected_candidate_id)
+                except ValueError as exc:
+                    self._show_update_check_error(str(exc))
+                    return
+            self._skip_update_version(
+                selected_result.latest_version,
+                selected_result.latest_revision,
+            )
 
-    def _skip_update_version(self, version: str) -> None:
+    def _skip_update_version(self, version: str, revision: int = 0) -> None:
         try:
-            record_skipped_update(version)
+            record_skipped_update(version, release_revision=revision)
         except Exception as exc:
             self._show_update_check_error(str(exc))
             return
-        self.append_log(f"已跳过更新版本: {version}")
+        self.append_log(f"已跳过更新修订: {ReleaseIdentity(version, revision).tag}")
+
+    def _confirm_revision_reinstall_or_downgrade(self, result: UpdateCheckResult) -> bool:
+        """同身份重装或回退必须再次确认，避免下拉选择误触后直接覆盖安装。"""
+
+        target = result.selected_identity
+        current = result.local_identity
+        action = "重装" if target == current else "回退"
+        box = UpdateCheckDialog(
+            self,
+            title=self._tr("确认{action}").format(action=self._tr(action)),
+            message=self._tr("所选修订 {target} 不高于当前安装版本 {current}。").format(
+                target=target.tag,
+                current=current.tag,
+            ),
+            details=self._tr("继续将执行{action}，不会被标记为强制更新。请确认这是你的明确选择。").format(
+                action=self._tr(action),
+            ),
+            primary_text="继续下载",
+            secondary_text="取消",
+            status="warning",
+            local_version=current.tag,
+            latest_version=target.tag,
+            language=self._current_ui_language(),
+        )
+        return box.exec() == QDialog.DialogCode.Accepted
 
     def _begin_update_download(self, result: UpdateCheckResult) -> None:
         with self._update_download_lock:
@@ -895,6 +960,7 @@ class MainWindow(QMainWindow):
                     signature_path=prepared.signature_path,
                     version=prepared.version,
                     log_path=prepared.log_path,
+                    release_revision=prepared.release_revision,
                 ),
                 restart_argv=self._restart_argv_after_update(),
             )
@@ -934,6 +1000,7 @@ class MainWindow(QMainWindow):
             signature_path=prepared.signature_path,
             version=prepared.version,
             log_path=prepared.log_path,
+            release_revision=prepared.release_revision,
         )
 
     def _show_basic_message(
