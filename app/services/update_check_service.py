@@ -6,13 +6,15 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Any, Callable
@@ -41,7 +43,6 @@ from app.services.secure_updater import (
     UpdateManifestVerifier,
     VerificationError,
     VersionPolicy,
-    compare_semver,
     load_local_update_state,
     log_update_event,
     open_trusted_url,
@@ -51,7 +52,7 @@ from app.services.secure_updater import (
     validate_asset_url,
 )
 from app.utils.runtime_paths import user_cache_root
-from shared.release_identity import ReleaseIdentity, parse_release_tag
+from shared.release_identity import ReleaseIdentity, compare_semver, parse_release_tag
 
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest"
 LATEST_RELEASE_PAGE_URL = "https://github.com/haohaizi554/UniversalCrawler/releases/latest"
@@ -63,6 +64,8 @@ UPDATE_STATUS_CURRENT = "current"
 UPDATE_STATUS_AVAILABLE = "available"
 UPDATE_STATUS_LOCAL_NEWER = "local_newer"
 UPDATE_STATUS_UNTRUSTED = "untrusted"
+REVISION_AUTH_TOKEN_ENV = "UCRAWL_REVISION_AUTH_TOKEN"
+REVISION_AUTH_TTL_SECONDS = 30 * 60
 
 
 class UpdateCheckError(RuntimeError):
@@ -174,6 +177,65 @@ class PreparedUpdate:
     version: str
     log_path: str
     release_revision: int = 0
+    revision_authorization_path: str = ""
+    revision_authorization_token: str = field(default="", repr=False)
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_revision_authorization(
+    *,
+    manifest_path: str | Path,
+    identity: ReleaseIdentity,
+    now: float | None = None,
+) -> tuple[Path, str]:
+    """创建只供 helper 消费一次的本地回退授权，不把原始 token 写入磁盘。"""
+
+    manifest = Path(manifest_path).resolve()
+    if not manifest.is_file():
+        raise VerificationError("revision authorization manifest is missing")
+    issued_at = int(time.time() if now is None else now)
+    token = secrets.token_urlsafe(32)
+    target = manifest.parent / f".ucrawl-revision-auth-{secrets.token_hex(16)}.json"
+    payload = {
+        "schema": 1,
+        "targetVersion": identity.version,
+        "targetRevision": identity.revision,
+        "targetTag": identity.tag,
+        "manifestSha256": _sha256_path(manifest),
+        "tokenSha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "issuedAt": issued_at,
+        "expiresAt": issued_at + REVISION_AUTH_TTL_SECONDS,
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=manifest.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        try:
+            os.chmod(temporary, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = -1
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    return target, token
 
 
 def prepare_verified_update(
@@ -184,6 +246,7 @@ def prepare_verified_update(
     manifest_verifier_cls=UpdateManifestVerifier,
     downloader_cls=Downloader,
     package_verifier_cls=PackageVerifier,
+    allow_downgrade: bool = False,
     cancel_event=None,
     progress_callback=None,
 ) -> PreparedUpdate:
@@ -197,6 +260,11 @@ def prepare_verified_update(
         raise VerificationError("signed manifest version does not match selected update version") from exc
     if not selected_version_matches:
         raise VerificationError("signed manifest version does not match selected update version")
+    revision_change_requires_authorization = manifest.identity <= result.local_identity
+    if revision_change_requires_authorization and not allow_downgrade:
+        raise VerificationError(
+            "revision reinstall or downgrade requires explicit local authorization"
+        )
     try:
         client_is_compatible = compare_semver(result.local_version, manifest.min_client_version) >= 0
     except ValueError as exc:
@@ -216,6 +284,14 @@ def prepare_verified_update(
         trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
         require_os_signature=require_os_signature,
     ).verify(installer_path, asset)
+    authorization_path = ""
+    authorization_token = ""
+    if revision_change_requires_authorization:
+        authorization, authorization_token = _write_revision_authorization(
+            manifest_path=result.manifest_path,
+            identity=manifest.identity,
+        )
+        authorization_path = os.fspath(authorization)
     return PreparedUpdate(
         installer_path=str(installer_path),
         manifest_path=str(result.manifest_path),
@@ -223,6 +299,8 @@ def prepare_verified_update(
         version=manifest.version,
         log_path=str(installer_path.with_name("updater-install.log")),
         release_revision=manifest.release_revision,
+        revision_authorization_path=authorization_path,
+        revision_authorization_token=authorization_token,
     )
 
 
@@ -246,6 +324,16 @@ def launch_prepared_update(
     ):
         if not path.is_file():
             raise UpdateCheckError(f"prepared update {label} is missing")
+    authorization_path = (
+        Path(prepared.revision_authorization_path)
+        if prepared.revision_authorization_path
+        else None
+    )
+    authorization_token = str(prepared.revision_authorization_token or "")
+    if bool(authorization_path) != bool(authorization_token):
+        raise UpdateCheckError("prepared revision authorization is incomplete")
+    if authorization_path is not None and not authorization_path.is_file():
+        raise UpdateCheckError("prepared revision authorization is missing")
     log_path = Path(prepared.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     install_root = Path(sys.executable).resolve().parent
@@ -273,6 +361,8 @@ def launch_prepared_update(
         "--wait-pid",
         str(os.getpid()),
     ]
+    if authorization_path is not None:
+        argv.extend(["--revision-authorization", os.fspath(authorization_path)])
     record_pending_install(
         version=prepared.version,
         release_revision=prepared.release_revision,
@@ -285,6 +375,10 @@ def launch_prepared_update(
     }
     if os.name == "nt":
         process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if authorization_path is not None:
+        environment = os.environ.copy()
+        environment[REVISION_AUTH_TOKEN_ENV] = authorization_token
+        process_kwargs["env"] = environment
     return popen(argv, **process_kwargs)
 
 

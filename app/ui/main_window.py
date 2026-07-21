@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSignalBlocker, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
@@ -93,6 +93,8 @@ class _PreparedUpdate:
     version: str
     log_path: str
     release_revision: int = 0
+    revision_authorization_path: str = ""
+    revision_authorization_token: str = field(default="", repr=False)
 
 
 class MainWindow(QMainWindow):
@@ -741,12 +743,17 @@ class MainWindow(QMainWindow):
                 except ValueError as exc:
                     self._show_update_check_error(str(exc))
                     return
-            if (
+            revision_change = (
                 selected_result.selected_identity <= selected_result.local_identity
-                and not self._confirm_revision_reinstall_or_downgrade(selected_result)
+            )
+            if revision_change and not self._confirm_revision_reinstall_or_downgrade(
+                selected_result
             ):
                 return
-            self._begin_update_download(selected_result)
+            self._begin_update_download(
+                selected_result,
+                allow_downgrade=revision_change,
+            )
         elif int(dialog_result) == UpdateCheckDialog.SKIP_CODE:
             selected_result = result
             selected_candidate_id = box.selected_update_candidate_id()
@@ -794,7 +801,12 @@ class MainWindow(QMainWindow):
         )
         return box.exec() == QDialog.DialogCode.Accepted
 
-    def _begin_update_download(self, result: UpdateCheckResult) -> None:
+    def _begin_update_download(
+        self,
+        result: UpdateCheckResult,
+        *,
+        allow_downgrade: bool = False,
+    ) -> None:
         with self._update_download_lock:
             if self._update_download_shutdown:
                 return
@@ -805,6 +817,7 @@ class MainWindow(QMainWindow):
             sequence = self._update_download_sequence
             cancel_event = threading.Event()
             self._last_update_result = result
+            self._last_update_allow_downgrade = bool(allow_downgrade)
             self._prepared_update = None
             self._update_download_cancel_event = cancel_event
 
@@ -828,7 +841,7 @@ class MainWindow(QMainWindow):
 
         worker = threading.Thread(
             target=self._run_update_download,
-            args=(sequence, result, cancel_event),
+            args=(sequence, result, cancel_event, bool(allow_downgrade)),
             name="update-download-worker",
             daemon=True,
         )
@@ -852,10 +865,12 @@ class MainWindow(QMainWindow):
         sequence: int,
         result: UpdateCheckResult,
         cancel_event: threading.Event,
+        allow_downgrade: bool = False,
     ) -> None:
         try:
             prepared = self._download_verified_update(
                 result,
+                allow_downgrade=allow_downgrade,
                 cancel_event=cancel_event,
                 progress_callback=lambda progress: self._emit_update_download_event(
                     self._update_download_progress,
@@ -945,7 +960,12 @@ class MainWindow(QMainWindow):
         if not isinstance(result, UpdateCheckResult):
             self._show_update_check_error("没有可重试的更新任务。")
             return
-        self._begin_update_download(result)
+        self._begin_update_download(
+            result,
+            allow_downgrade=bool(
+                self.__dict__.get("_last_update_allow_downgrade", False)
+            ),
+        )
 
     def _install_prepared_update(self) -> None:
         prepared = self.__dict__.get("_prepared_update")
@@ -961,6 +981,8 @@ class MainWindow(QMainWindow):
                     version=prepared.version,
                     log_path=prepared.log_path,
                     release_revision=prepared.release_revision,
+                    revision_authorization_path=prepared.revision_authorization_path,
+                    revision_authorization_token=prepared.revision_authorization_token,
                 ),
                 restart_argv=self._restart_argv_after_update(),
             )
@@ -981,6 +1003,7 @@ class MainWindow(QMainWindow):
     def _download_verified_update(
         result: UpdateCheckResult,
         *,
+        allow_downgrade: bool = False,
         cancel_event: threading.Event | None = None,
         progress_callback=None,
     ) -> _PreparedUpdate:
@@ -991,6 +1014,7 @@ class MainWindow(QMainWindow):
             manifest_verifier_cls=UpdateManifestVerifier,
             downloader_cls=Downloader,
             package_verifier_cls=PackageVerifier,
+            allow_downgrade=allow_downgrade,
             cancel_event=cancel_event,
             progress_callback=progress_callback,
         )
@@ -1001,6 +1025,8 @@ class MainWindow(QMainWindow):
             version=prepared.version,
             log_path=prepared.log_path,
             release_revision=prepared.release_revision,
+            revision_authorization_path=prepared.revision_authorization_path,
+            revision_authorization_token=prepared.revision_authorization_token,
         )
 
     def _show_basic_message(

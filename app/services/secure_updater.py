@@ -36,8 +36,7 @@ from defusedxml.common import DefusedXmlException
 
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_cache_root, user_logs_root
-from shared.release_identity import ReleaseIdentity, SemVer, compare_semver
-
+from shared.release_identity import ReleaseIdentity, SemVer, compare_semver  # noqa: F401 - 兼容导出
 
 APP_ID = "ucrawl.universalcrawlerpro"
 DEFAULT_CHANNEL = "stable"

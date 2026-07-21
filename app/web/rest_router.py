@@ -340,7 +340,14 @@ def build_rest_router(
                     ),
                     enforce_statuses={409},
                 )
-            prepared = await _run_controller_worker_call(update_check_service.prepare_verified_update, selected_result)
+            prepare_kwargs = {}
+            if selected_result.selected_identity <= selected_result.local_identity:
+                prepare_kwargs["allow_downgrade"] = True
+            prepared = await _run_controller_worker_call(
+                update_check_service.prepare_verified_update,
+                selected_result,
+                **prepare_kwargs,
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             return _finalize_route_result(
                 error_result(str(exc) or "update preparation failed", http_status=502, error_key="message"),

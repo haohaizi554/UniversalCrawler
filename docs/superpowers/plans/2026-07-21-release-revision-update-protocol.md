@@ -143,9 +143,9 @@
 **Files:**
 - Modify: only files required by failing regressions
 
-- [ ] 运行更新链路和发布链路完整定向套件。
-- [ ] 运行 GUI/WebUI 契约、i18n、架构预算与浏览器静态契约测试。
-- [ ] 运行 `python -m pytest -q`；若环境性测试不能执行，保留完整失败证据并确认不是本次回归。
-- [ ] 运行 `python -m compileall app shared entry packaging -q`、`python -m pytest tests/test_mojibake_guard.py -q` 和 `git diff --check`。
-- [ ] 运行 `python scripts/update_bootstrap.py scan-secrets`，检查 `git diff --cached --name-only` 和 `git diff --cached`，确认无私钥、PFX/P12、密码、token 或 secret 文件/内容。
+- [x] 运行更新链路和发布链路完整定向套件。
+- [x] 运行 GUI/WebUI 契约、i18n、架构预算与浏览器静态契约测试。
+- [x] 运行 `python -m pytest -q`；若环境性测试不能执行，保留完整失败证据并确认不是本次回归。
+- [x] 运行 `python -m compileall app shared entry packaging -q`、`python -m pytest tests/architecture/test_mojibake.py -q` 和 `git diff --check`。
+- [x] 运行 `python scripts/update_bootstrap.py scan-secrets`，检查 `git diff --cached --name-only` 和 `git diff --cached`，确认无私钥、PFX/P12、密码、token 或 secret 文件/内容。
 - [ ] 用中文提交说明创建最终提交，确认工作树状态后推送当前 `main`。

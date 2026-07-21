@@ -1312,6 +1312,86 @@ def test_updater_helper_rejects_manifest_for_another_revision(tmp_path, monkeypa
         )
 
 
+def test_revision_change_authorization_is_manifest_bound_and_single_use(tmp_path):
+    from app.services.update_check_service import _write_revision_authorization
+    from entry import updater_helper
+    from shared.release_identity import ReleaseIdentity
+
+    manifest = tmp_path / "latest.json"
+    manifest.write_bytes(b'{"signed":"manifest"}')
+    identity = ReleaseIdentity("3.7.0", 2)
+    authorization_path, token = _write_revision_authorization(
+        manifest_path=manifest,
+        identity=identity,
+    )
+
+    updater_helper._consume_revision_authorization(
+        authorization_path=authorization_path,
+        token=token,
+        manifest_path=manifest,
+        target_identity=identity,
+    )
+
+    assert not authorization_path.exists()
+    with pytest.raises(VerificationError, match="authorization"):
+        updater_helper._consume_revision_authorization(
+            authorization_path=authorization_path,
+            token=token,
+            manifest_path=manifest,
+            target_identity=identity,
+        )
+
+
+def test_revision_change_authorization_rejects_tampered_manifest(tmp_path):
+    from app.services.update_check_service import _write_revision_authorization
+    from entry import updater_helper
+    from shared.release_identity import ReleaseIdentity
+
+    manifest = tmp_path / "latest.json"
+    manifest.write_bytes(b'{"signed":"manifest"}')
+    identity = ReleaseIdentity("3.7.0", 2)
+    authorization_path, token = _write_revision_authorization(
+        manifest_path=manifest,
+        identity=identity,
+    )
+    manifest.write_bytes(b'{"signed":"different"}')
+
+    with pytest.raises(VerificationError, match="manifest"):
+        updater_helper._consume_revision_authorization(
+            authorization_path=authorization_path,
+            token=token,
+            manifest_path=manifest,
+            target_identity=identity,
+        )
+
+    assert not authorization_path.exists()
+
+
+def test_updater_helper_requires_authorization_only_for_non_forward_transition(tmp_path):
+    from entry import updater_helper
+    from shared.release_identity import ReleaseIdentity
+
+    manifest = tmp_path / "latest.json"
+    manifest.write_bytes(b"signed manifest")
+
+    updater_helper._authorize_release_transition(
+        current_identity=ReleaseIdentity("3.7.0", 1),
+        target_identity=ReleaseIdentity("3.7.0", 2),
+        manifest_path=manifest,
+        authorization_path=None,
+        token="",
+    )
+
+    with pytest.raises(VerificationError, match="one-time local authorization"):
+        updater_helper._authorize_release_transition(
+            current_identity=ReleaseIdentity("3.7.0", 2),
+            target_identity=ReleaseIdentity("3.7.0", 2),
+            manifest_path=manifest,
+            authorization_path=None,
+            token="",
+        )
+
+
 def test_updater_helper_rejects_signed_manifest_for_another_version(tmp_path, monkeypatch):
     from entry import updater_helper
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -33,7 +35,11 @@ from app.services.secure_updater import (
     VerificationError,
     log_update_event,
 )
-from shared.release_identity import ReleaseIdentity
+from app.services.update_check_service import (
+    REVISION_AUTH_TOKEN_ENV,
+    REVISION_AUTH_TTL_SECONDS,
+)
+from shared.release_identity import ReleaseIdentity, load_runtime_release_identity
 
 _ALLOWED_RESTART_EXECUTABLES = frozenset(
     {
@@ -64,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--install-dir", default="", help="当前冻结应用安装目录")
     parser.add_argument("--restart-argv-json", default="", help="安装成功后用于重启应用的 argv JSON 数组")
     parser.add_argument("--wait-pid", type=int, default=0, help="运行安装器前等待此进程退出")
+    parser.add_argument(
+        "--revision-authorization",
+        default="",
+        help="本地用户确认回退或重装后生成的一次性授权文件",
+    )
     parser.add_argument(
         "--complete-install",
         action="store_true",
@@ -96,6 +107,108 @@ def _load_verified_asset(
             f"{expected_identity.tag}"
         )
     return AssetSelector(os_name=os_name, arch=arch).select(manifest)
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _consume_revision_authorization(
+    *,
+    authorization_path: str | Path,
+    token: str,
+    manifest_path: str | Path,
+    target_identity: ReleaseIdentity,
+    now: float | None = None,
+) -> None:
+    """校验并销毁与清单摘要绑定的一次性本地回退授权。"""
+
+    authorization = Path(authorization_path).resolve()
+    manifest = Path(manifest_path).resolve()
+    try:
+        if (
+            not authorization.name.startswith(".ucrawl-revision-auth-")
+            or authorization.suffix != ".json"
+            or authorization.is_symlink()
+            or not authorization.is_file()
+            or authorization.stat().st_size > 16 * 1024
+        ):
+            raise VerificationError("revision authorization is missing or invalid")
+        payload = json.loads(authorization.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != 1:
+            raise VerificationError("revision authorization payload is invalid")
+        payload_identity = ReleaseIdentity(
+            str(payload.get("targetVersion") or ""),
+            payload.get("targetRevision"),
+        )
+        if (
+            payload_identity != target_identity
+            or str(payload.get("targetTag") or "") != target_identity.tag
+        ):
+            raise VerificationError("revision authorization target does not match")
+        issued_at = payload.get("issuedAt")
+        expires_at = payload.get("expiresAt")
+        if (
+            isinstance(issued_at, bool)
+            or not isinstance(issued_at, int)
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or expires_at <= issued_at
+            or expires_at - issued_at > REVISION_AUTH_TTL_SECONDS
+        ):
+            raise VerificationError("revision authorization lifetime is invalid")
+        current_time = int(time.time() if now is None else now)
+        if issued_at > current_time + 60 or expires_at < current_time:
+            raise VerificationError("revision authorization has expired")
+        token_digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        if not token or not hmac.compare_digest(
+            token_digest,
+            str(payload.get("tokenSha256") or ""),
+        ):
+            raise VerificationError("revision authorization token does not match")
+        if not manifest.is_file() or not hmac.compare_digest(
+            _sha256_path(manifest),
+            str(payload.get("manifestSha256") or ""),
+        ):
+            raise VerificationError("revision authorization manifest does not match")
+    except VerificationError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise VerificationError("revision authorization is missing or invalid") from exc
+    finally:
+        authorization.unlink(missing_ok=True)
+
+
+def _authorize_release_transition(
+    *,
+    current_identity: ReleaseIdentity,
+    target_identity: ReleaseIdentity,
+    manifest_path: str | Path,
+    authorization_path: str | Path | None,
+    token: str,
+) -> None:
+    """升级无需额外授权；重装和回退必须消费当前会话生成的授权。"""
+
+    if target_identity > current_identity:
+        if authorization_path or token:
+            if authorization_path:
+                Path(authorization_path).unlink(missing_ok=True)
+            raise VerificationError("revision authorization is not valid for an upgrade")
+        return
+    if not authorization_path or not token:
+        raise VerificationError(
+            "revision reinstall or downgrade requires one-time local authorization"
+        )
+    _consume_revision_authorization(
+        authorization_path=authorization_path,
+        token=token,
+        manifest_path=manifest_path,
+        target_identity=target_identity,
+    )
 
 
 def _load_restart_argv(value: str) -> list[str]:
@@ -339,6 +452,16 @@ def _launch_install(args: argparse.Namespace) -> int:
         expected_revision=int(args.release_revision),
     )
     install_dir = _resolve_install_dir(args.install_dir)
+    target_identity = ReleaseIdentity(str(args.version), int(args.release_revision))
+    current_identity = load_runtime_release_identity(install_dir)
+    authorization_token = os.environ.pop(REVISION_AUTH_TOKEN_ENV, "")
+    _authorize_release_transition(
+        current_identity=current_identity,
+        target_identity=target_identity,
+        manifest_path=args.manifest,
+        authorization_path=str(args.revision_authorization or "") or None,
+        token=authorization_token,
+    )
     restart_argv = _load_restart_argv(args.restart_argv_json)
     restart_argv = _validate_restart_argv(restart_argv, install_dir)
     _wait_for_process_exit(args.wait_pid)

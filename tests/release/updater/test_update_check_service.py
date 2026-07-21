@@ -751,6 +751,52 @@ class UpdateCheckServiceTests(unittest.TestCase):
         )
         self.assertEqual(record_pending.call_args.kwargs["release_revision"], 2)
 
+    def test_launch_revision_change_keeps_one_time_token_out_of_helper_argv(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.update_check_service import REVISION_AUTH_TOKEN_ENV
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            installer = root / "update.exe"
+            manifest = root / "latest.json"
+            signature = root / "latest.json.sig"
+            authorization = root / ".ucrawl-revision-auth-test.json"
+            for path in (installer, manifest, signature, authorization):
+                path.write_bytes(b"verified")
+            app_exe = root / "CrawlerWebPortal.exe"
+            helper_exe = root / "updater_helper.exe"
+            app_exe.write_bytes(b"app")
+            helper_exe.write_bytes(b"helper")
+            token = "one-time-local-token"
+            prepared = PreparedUpdate(
+                installer_path=os.fspath(installer),
+                manifest_path=os.fspath(manifest),
+                signature_path=os.fspath(signature),
+                version="3.6.18",
+                log_path=os.fspath(root / "install.log"),
+                release_revision=1,
+                revision_authorization_path=os.fspath(authorization),
+                revision_authorization_token=token,
+            )
+            popen = Mock()
+            with (
+                patch("app.services.update_check_service.record_pending_install"),
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(app_exe)),
+            ):
+                launch_prepared_update(
+                    prepared,
+                    restart_argv=[str(app_exe)],
+                    popen=popen,
+                )
+
+        argv = popen.call_args.args[0]
+        self.assertIn("--revision-authorization", argv)
+        self.assertIn(os.fspath(authorization), argv)
+        self.assertNotIn(token, argv)
+        self.assertEqual(popen.call_args.kwargs["env"][REVISION_AUTH_TOKEN_ENV], token)
+
     def test_update_ui_describes_only_mandatory_verification_layers(self):
         dialog_source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")
         main_source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
@@ -823,6 +869,73 @@ class UpdateCheckServiceTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(VerificationError, "minimum client version"):
                     MainWindow._download_verified_update(result)
+
+    def test_prepare_reinstall_requires_confirmation_and_creates_one_time_authorization(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import VerificationError
+        from app.services.update_check_service import prepare_verified_update
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path, signature_path, public_pem = _signed_manifest(
+                root,
+                overrides={"releaseRevision": 2, "tag": "v3.7.0-r2"},
+            )
+            installer = root / "installer.exe"
+            result = UpdateCheckResult(
+                status=UPDATE_STATUS_AVAILABLE,
+                local_version="3.7.0",
+                local_revision=2,
+                latest_version="3.7.0",
+                latest_revision=2,
+                tag_name="v3.7.0-r2",
+                release_name="v3.7.0-r2",
+                html_url="https://github.com/owner/repo/releases/tag/v3.7.0-r2",
+                manifest_path=str(manifest_path),
+                signature_path=str(signature_path),
+            )
+
+            class FakeDownloader:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def download(self, *_args, **_kwargs):
+                    installer.write_bytes(b"verified installer")
+                    return installer
+
+            class FakePackageVerifier:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def verify(self, *_args, **_kwargs):
+                    return None
+
+            with self.assertRaisesRegex(VerificationError, "explicit local authorization"):
+                prepare_verified_update(
+                    result,
+                    public_key_pem=public_pem,
+                    downloader_cls=FakeDownloader,
+                    package_verifier_cls=FakePackageVerifier,
+                )
+
+            prepared = prepare_verified_update(
+                result,
+                public_key_pem=public_pem,
+                downloader_cls=FakeDownloader,
+                package_verifier_cls=FakePackageVerifier,
+                allow_downgrade=True,
+            )
+
+            authorization_path = Path(prepared.revision_authorization_path)
+            self.assertTrue(authorization_path.is_file())
+            self.assertTrue(prepared.revision_authorization_token)
+            self.assertNotIn(
+                prepared.revision_authorization_token,
+                authorization_path.read_text(encoding="utf-8"),
+            )
+            authorization_path.unlink()
 
     def test_main_window_startup_health_passes_update_staging_directory(self):
         from types import SimpleNamespace
