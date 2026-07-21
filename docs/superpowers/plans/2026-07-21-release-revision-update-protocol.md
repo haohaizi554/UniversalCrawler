@@ -56,12 +56,12 @@
 - Test: `tests/release/updater/test_update_check_service.py`
 - Test: `tests/release/updater/test_updater_helper.py`
 
-- [ ] 增加失败测试：同版本多修订聚合、默认选择最高身份、指定候选不歧义、Release tag 与清单不一致被排除、helper 校验修订。
-- [ ] 运行定向测试，确认当前实现仅按版本比较而失败。
-- [ ] 为候选增加稳定 `candidate_id` 和完整 identity；按版本、修订降序排序并检测同身份冲突。
-- [ ] 自动检查只把高于本机身份的候选标记为可更新，手动流程保留已验签的其他修订供显式选择。
-- [ ] 下载元数据目录、准备结果、helper 参数和交接 JSON 全部携带修订，避免同版本资产互相覆盖。
-- [ ] 运行本任务测试、`py_compile`、乱码守卫和 `git diff --check`。
+- [x] 增加失败测试：同版本多修订聚合、默认选择最高身份、指定候选不歧义、Release tag 与清单不一致被排除、helper 校验修订。
+- [x] 运行定向测试，确认当前实现仅按版本比较而失败。
+- [x] 为候选增加稳定 `candidate_id` 和完整 identity；按版本、修订降序排序并检测同身份冲突。
+- [x] 自动检查只把高于本机身份的候选标记为可更新，手动流程保留已验签的其他修订供显式选择。
+- [x] 下载元数据目录、准备结果、helper 参数和交接 JSON 全部携带修订，避免同版本资产互相覆盖。
+- [x] 运行本任务测试、`py_compile`、乱码守卫和 `git diff --check`。
 
 ## Task 4: GUI 与 WebUI 增加修订选择并移除强制更新交互
 

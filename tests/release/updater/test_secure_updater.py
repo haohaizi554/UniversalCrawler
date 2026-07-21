@@ -1292,6 +1292,26 @@ def test_updater_helper_loads_asset_from_signed_manifest(tmp_path, monkeypatch):
     assert asset.name == "UniversalCrawlerPro_Setup_3.7.0.exe"
 
 
+def test_updater_helper_rejects_manifest_for_another_revision(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    manifest_path, signature_path, public_pem = _signed_manifest(
+        tmp_path,
+        overrides={"releaseRevision": 2, "tag": "v3.7.0-r2"},
+    )
+    monkeypatch.setattr(updater_helper, "UPDATE_PUBLIC_KEY_PEM", public_pem)
+
+    with pytest.raises(VerificationError, match="release identity"):
+        updater_helper._load_verified_asset(
+            manifest_path=manifest_path,
+            signature_path=signature_path,
+            expected_version="3.7.0",
+            expected_revision=1,
+            os_name="windows",
+            arch="x64",
+        )
+
+
 def test_updater_helper_rejects_signed_manifest_for_another_version(tmp_path, monkeypatch):
     from entry import updater_helper
 

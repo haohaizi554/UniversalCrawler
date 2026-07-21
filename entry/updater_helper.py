@@ -31,9 +31,9 @@ from app.services.secure_updater import (
     UpdateAsset,
     UpdateManifestVerifier,
     VerificationError,
-    compare_semver,
     log_update_event,
 )
+from shared.release_identity import ReleaseIdentity
 
 _ALLOWED_RESTART_EXECUTABLES = frozenset(
     {
@@ -59,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", default="", help="已验证更新清单路径")
     parser.add_argument("--signature", default="", help="更新清单 Ed25519 签名路径")
     parser.add_argument("--version", default="", help="待安装版本")
+    parser.add_argument("--release-revision", type=int, default=0, help="待安装发布修订号")
     parser.add_argument("--log-path", default="", help="安装器日志输出路径")
     parser.add_argument("--install-dir", default="", help="当前冻结应用安装目录")
     parser.add_argument("--restart-argv-json", default="", help="安装成功后用于重启应用的 argv JSON 数组")
@@ -77,6 +78,7 @@ def _load_verified_asset(
     manifest_path: str | Path,
     signature_path: str | Path,
     expected_version: str,
+    expected_revision: int = 0,
     os_name: str | None = None,
     arch: str | None = None,
 ) -> UpdateAsset:
@@ -86,9 +88,12 @@ def _load_verified_asset(
         Path(manifest_path),
         Path(signature_path),
     )
-    if compare_semver(manifest.version, expected_version) != 0:
+    expected_identity = ReleaseIdentity(expected_version, expected_revision)
+    if manifest.identity != expected_identity:
         raise VerificationError(
-            f"signed manifest version {manifest.version} does not match requested version {expected_version}"
+            "signed manifest release identity "
+            f"{manifest.identity.tag} does not match requested version/release identity "
+            f"{expected_identity.tag}"
         )
     return AssetSelector(os_name=os_name, arch=arch).select(manifest)
 
@@ -149,6 +154,7 @@ def _write_restart_handoff(
     restart_argv: list[str],
     install_dir: Path,
     version: str,
+    release_revision: int,
     log_path: Path,
 ) -> Path:
     """原子写入 Inno 安装完成后由新 helper 消费的一次性交接文件。"""
@@ -162,6 +168,7 @@ def _write_restart_handoff(
         "restart_argv": restart_argv,
         "install_dir": str(install_dir),
         "version": str(version),
+        "release_revision": int(release_revision),
         "log_path": str(log_path),
     }
     try:
@@ -199,6 +206,8 @@ def _post_install_restart(handoff_path: Path) -> int:
     )
     restart_argv = _validate_restart_argv(restart_argv, current_install_dir)
     version = str(payload.get("version") or "")
+    release_revision = int(payload.get("release_revision") or 0)
+    identity = ReleaseIdentity(version, release_revision)
     process_kwargs: dict[str, object] = {
         "shell": False,
         "cwd": str(current_install_dir),
@@ -209,12 +218,18 @@ def _post_install_restart(handoff_path: Path) -> int:
     _best_effort_update_log(
         "update.install.exit",
         "installer completed and invoked post-install helper",
-        version=version,
+        version=identity.version,
+        revision=identity.revision,
         exit_code=0,
     )
     subprocess.Popen(restart_argv, **process_kwargs)
     handoff_path.unlink(missing_ok=True)
-    _best_effort_update_log("update.install.restart", "restart command launched", version=version)
+    _best_effort_update_log(
+        "update.install.restart",
+        "restart command launched",
+        version=identity.version,
+        revision=identity.revision,
+    )
     return 0
 
 
@@ -321,6 +336,7 @@ def _launch_install(args: argparse.Namespace) -> int:
         manifest_path=args.manifest,
         signature_path=args.signature,
         expected_version=str(args.version),
+        expected_revision=int(args.release_revision),
     )
     install_dir = _resolve_install_dir(args.install_dir)
     restart_argv = _load_restart_argv(args.restart_argv_json)
@@ -339,6 +355,7 @@ def _launch_install(args: argparse.Namespace) -> int:
             restart_argv=restart_argv,
             install_dir=install_dir,
             version=str(args.version),
+            release_revision=int(args.release_revision),
             log_path=log_path,
         )
     try:

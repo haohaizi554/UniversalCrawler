@@ -51,6 +51,7 @@ from app.services.secure_updater import (
     validate_asset_url,
 )
 from app.utils.runtime_paths import user_cache_root
+from shared.release_identity import ReleaseIdentity, parse_release_tag
 
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest"
 LATEST_RELEASE_PAGE_URL = "https://github.com/haohaizi554/UniversalCrawler/releases/latest"
@@ -78,12 +79,25 @@ class UpdateCandidate:
     tag_name: str
     release_name: str
     html_url: str
+    release_revision: int = 0
     notes: str = ""
     mandatory: bool = False
     asset_name: str = ""
     installer_type: str = ""
     manifest_path: str = ""
     signature_path: str = ""
+
+    @property
+    def identity(self) -> ReleaseIdentity:
+        return ReleaseIdentity(self.version, self.release_revision)
+
+    @property
+    def candidate_id(self) -> str:
+        return self.identity.candidate_id
+
+    @property
+    def display_label(self) -> str:
+        return self.identity.display_label()
 
 
 @dataclass(frozen=True)
@@ -94,6 +108,8 @@ class UpdateCheckResult:
     tag_name: str
     release_name: str
     html_url: str
+    local_revision: int = 0
+    latest_revision: int = 0
     notes: str = ""
     mandatory: bool = False
     asset_name: str = ""
@@ -102,25 +118,52 @@ class UpdateCheckResult:
     signature_path: str = ""
     candidates: tuple[UpdateCandidate, ...] = ()
 
-    def for_version(self, version: str) -> "UpdateCheckResult":
-        """只允许切换到已验证 candidates 中的版本，避免前端注入任意版本元数据。"""
-        normalized = normalize_version(version)
+    @property
+    def local_identity(self) -> ReleaseIdentity:
+        return ReleaseIdentity(self.local_version, self.local_revision)
+
+    @property
+    def selected_identity(self) -> ReleaseIdentity:
+        return ReleaseIdentity(self.latest_version, self.latest_revision)
+
+    def for_candidate(self, candidate_id: str) -> "UpdateCheckResult":
+        """按验签后生成的稳定 ID 选择候选，避免同 SemVer 修订互相混淆。"""
+
+        selected_id = str(candidate_id or "").strip()
         for candidate in self.candidates:
-            if normalize_version(candidate.version) == normalized:
-                return replace(
-                    self,
-                    latest_version=candidate.version,
-                    tag_name=candidate.tag_name,
-                    release_name=candidate.release_name,
-                    html_url=candidate.html_url,
-                    notes=candidate.notes,
-                    mandatory=candidate.mandatory,
-                    asset_name=candidate.asset_name,
-                    installer_type=candidate.installer_type,
-                    manifest_path=candidate.manifest_path,
-                    signature_path=candidate.signature_path,
-                )
+            if candidate.candidate_id == selected_id:
+                return self._replace_candidate(candidate)
+        raise ValueError(f"unknown update candidate: {candidate_id}")
+
+    def for_version(self, version: str) -> "UpdateCheckResult":
+        """兼容旧调用；同版本有多个修订时必须改用 ``for_candidate``。"""
+        normalized = normalize_version(version)
+        matches = [
+            candidate
+            for candidate in self.candidates
+            if normalize_version(candidate.version) == normalized
+        ]
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous update candidate version: {version}")
+        if matches:
+            return self._replace_candidate(matches[0])
         raise ValueError(f"unknown update candidate version: {version}")
+
+    def _replace_candidate(self, candidate: UpdateCandidate) -> "UpdateCheckResult":
+        return replace(
+            self,
+            latest_version=candidate.version,
+            latest_revision=candidate.release_revision,
+            tag_name=candidate.tag_name,
+            release_name=candidate.release_name,
+            html_url=candidate.html_url,
+            notes=candidate.notes,
+            mandatory=False,
+            asset_name=candidate.asset_name,
+            installer_type=candidate.installer_type,
+            manifest_path=candidate.manifest_path,
+            signature_path=candidate.signature_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -130,6 +173,7 @@ class PreparedUpdate:
     signature_path: str
     version: str
     log_path: str
+    release_revision: int = 0
 
 
 def prepare_verified_update(
@@ -148,7 +192,7 @@ def prepare_verified_update(
     verifier = manifest_verifier_cls(public_key_pem=public_key_pem)
     manifest = verifier.load_verified(Path(result.manifest_path), Path(result.signature_path))
     try:
-        selected_version_matches = compare_semver(manifest.version, result.latest_version) == 0
+        selected_version_matches = manifest.identity == result.selected_identity
     except ValueError as exc:
         raise VerificationError("signed manifest version does not match selected update version") from exc
     if not selected_version_matches:
@@ -178,6 +222,7 @@ def prepare_verified_update(
         signature_path=str(result.signature_path),
         version=manifest.version,
         log_path=str(installer_path.with_name("updater-install.log")),
+        release_revision=manifest.release_revision,
     )
 
 
@@ -217,6 +262,8 @@ def launch_prepared_update(
         os.fspath(signature_path),
         "--version",
         prepared.version,
+        "--release-revision",
+        str(prepared.release_revision),
         "--log-path",
         os.fspath(log_path),
         "--install-dir",
@@ -228,6 +275,7 @@ def launch_prepared_update(
     ]
     record_pending_install(
         version=prepared.version,
+        release_revision=prepared.release_revision,
         installer_path=os.fspath(installer_path),
         log_path=os.fspath(log_path),
     )
@@ -245,6 +293,10 @@ def normalize_version(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
+    try:
+        return parse_release_tag(raw).version
+    except ValueError:
+        pass
     match = re.search(r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z._-]+)?", raw)
     if match:
         return match.group(0)
@@ -394,19 +446,22 @@ def _release_html_url(tag_name: str, page_url: str) -> str:
 def check_for_update(
     local_version: Any,
     *,
+    local_revision: int = 0,
     fetcher: Callable[[], dict[str, Any]] = fetch_latest_release_payload,
 ) -> UpdateCheckResult:
     payload = fetcher()
     tag_name = str(payload.get("tag_name") or "").strip()
     release_name = str(payload.get("name") or "").strip()
-    latest_version = normalize_version(tag_name or release_name)
+    latest_identity = _release_identity_from_text(tag_name or release_name)
+    latest_version = latest_identity.version
     normalized_local = normalize_version(local_version)
     if not normalized_local:
         raise UpdateCheckError("Local version is empty")
     if not latest_version:
         raise UpdateCheckError("Latest release did not include a version tag")
 
-    comparison = compare_versions(normalized_local, latest_version)
+    local_identity = ReleaseIdentity(normalized_local, local_revision)
+    comparison = -1 if local_identity < latest_identity else (1 if local_identity > latest_identity else 0)
     if comparison < 0:
         status = UPDATE_STATUS_AVAILABLE
     elif comparison > 0:
@@ -421,12 +476,15 @@ def check_for_update(
         tag_name=tag_name,
         release_name=release_name,
         html_url=str(payload.get("html_url") or "").strip(),
+        local_revision=local_identity.revision,
+        latest_revision=latest_identity.revision,
     )
 
 
 def check_secure_update(
     local_version: Any,
     *,
+    local_revision: int = 0,
     public_key_pem: str | None = None,
     manifest_path: str | Path | None = None,
     signature_path: str | Path | None = None,
@@ -441,6 +499,7 @@ def check_secure_update(
     state: LocalUpdateState | None = None,
     release_client: GitHubReleaseClient | None = None,
     selected_version: str | None = None,
+    selected_candidate_id: str | None = None,
     max_candidates: int = 10,
 ) -> UpdateCheckResult:
     """检查签名 manifest，并选择与当前平台匹配的更新资产。
@@ -455,6 +514,10 @@ def check_secure_update(
     normalized_local = normalize_version(local_version)
     if not normalized_local:
         raise UpdateCheckError("Local version is empty")
+    try:
+        local_identity = ReleaseIdentity(normalized_local, local_revision)
+    except ValueError as exc:
+        raise UpdateCheckError(str(exc)) from exc
 
     metadata_dir = user_cache_root() / "updates" / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
@@ -505,11 +568,12 @@ def check_secure_update(
                 return replace(readonly_result, status=UPDATE_STATUS_UNTRUSTED)
             return readonly_result
 
-    ranked_candidates = _sort_candidates_desc(verified_candidates)
+    ranked_candidates = _sort_candidates_desc(_deduplicate_candidates(verified_candidates))
     if (
         ranked_candidates
         and managed_state.last_seen_version
-        and compare_versions(ranked_candidates[0].version, managed_state.last_seen_version) < 0
+        and ranked_candidates[0].identity
+        < ReleaseIdentity(managed_state.last_seen_version, managed_state.last_seen_revision)
     ):
         raise UpdateCheckError(
             "Latest verified update candidate is older than last seen version "
@@ -521,6 +585,7 @@ def check_secure_update(
         if _candidate_is_available(
             candidate,
             current_version=normalized_local,
+            current_revision=local_identity.revision,
             channel=channel,
             manual=manual,
             state=managed_state,
@@ -529,30 +594,43 @@ def check_secure_update(
     if state is None:
         if ranked_candidates and (
             not managed_state.last_seen_version
-            or compare_versions(ranked_candidates[0].version, managed_state.last_seen_version) > 0
+            or ranked_candidates[0].identity
+            > ReleaseIdentity(managed_state.last_seen_version, managed_state.last_seen_revision)
         ):
-            managed_state.last_seen_version = normalize_version(ranked_candidates[0].version)
+            managed_state.last_seen_version = ranked_candidates[0].identity.version
+            managed_state.last_seen_revision = ranked_candidates[0].identity.revision
         save_local_update_state(managed_state)
 
-    selected_candidate = _select_update_candidate(available_candidates, selected_version=selected_version)
+    selection_pool = (
+        ranked_candidates
+        if selected_candidate_id is not None or selected_version is not None
+        else available_candidates
+    )
+    selected_candidate = _select_update_candidate(
+        selection_pool,
+        selected_candidate_id=selected_candidate_id,
+        selected_version=selected_version,
+    )
     if selected_candidate is not None:
         log_update_event(
             "update.check.available",
             "signed update is available",
             version=selected_candidate.version,
-            mandatory=selected_candidate.mandatory,
+            revision=selected_candidate.release_revision,
+            mandatory=False,
         )
         return _result_from_candidate(
             selected_candidate,
             status=UPDATE_STATUS_AVAILABLE,
             local_version=normalized_local,
-            candidates=available_candidates,
+            local_revision=local_identity.revision,
+            candidates=ranked_candidates if manual else available_candidates,
         )
 
     if not ranked_candidates:
         raise UpdateCheckError("No signed update candidates were available")
     latest_candidate = ranked_candidates[0]
-    if compare_versions(normalized_local, latest_candidate.version) > 0:
+    if local_identity > latest_candidate.identity:
         status = UPDATE_STATUS_LOCAL_NEWER
     else:
         status = UPDATE_STATUS_CURRENT
@@ -566,7 +644,8 @@ def check_secure_update(
         latest_candidate,
         status=status,
         local_version=normalized_local,
-        candidates=available_candidates,
+        local_revision=local_identity.revision,
+        candidates=ranked_candidates if manual else available_candidates,
     )
 
 
@@ -582,6 +661,10 @@ def _candidate_from_verified_metadata(
     release_name: str = "",
 ) -> UpdateCandidate:
     manifest = verifier.load_verified(Path(manifest_path), Path(signature_path))
+    if tag_name and tag_name != manifest.tag:
+        raise UpdateCheckError(
+            f"Release tag {tag_name} does not match signed manifest tag {manifest.tag}"
+        )
     asset = selector.select(manifest)
     if compare_versions(local_version, manifest.min_client_version) < 0:
         raise UpdateCheckError(
@@ -593,8 +676,9 @@ def _candidate_from_verified_metadata(
         tag_name=tag_name or manifest.tag,
         release_name=release_name or manifest.tag or manifest.version,
         html_url=release_url,
+        release_revision=manifest.release_revision,
         notes=manifest.notes,
-        mandatory=manifest.mandatory,
+        mandatory=False,
         asset_name=asset.name,
         installer_type=asset.installer_type,
         manifest_path=str(manifest_path),
@@ -773,7 +857,7 @@ def _metadata_targets(
     *,
     content_digest: str = "",
 ) -> tuple[Path, Path]:
-    label = normalize_version(location.tag_name or location.release_name or "") or f"candidate-{index}"
+    label = str(location.tag_name or location.release_name or "").strip() or f"candidate-{index}"
     safe_label = sanitize_filename(label)
     generation = f"-{content_digest[:16]}" if content_digest else ""
     return (
@@ -784,7 +868,9 @@ def _metadata_targets(
 
 def _sort_candidates_desc(candidates: tuple[UpdateCandidate, ...]) -> tuple[UpdateCandidate, ...]:
     def compare_candidates(left: UpdateCandidate, right: UpdateCandidate) -> int:
-        return -compare_versions(left.version, right.version)
+        if left.identity == right.identity:
+            return 0
+        return -1 if left.identity > right.identity else 1
 
     return tuple(
         sorted(
@@ -798,17 +884,23 @@ def _candidate_is_available(
     candidate: UpdateCandidate,
     *,
     current_version: str,
+    current_revision: int,
     channel: str,
     manual: bool,
     state: LocalUpdateState,
 ) -> bool:
     policy_state = LocalUpdateState(
+        last_seen_version=state.last_seen_version,
+        last_seen_revision=state.last_seen_revision,
         skipped_version=state.skipped_version,
+        skipped_revision=state.skipped_revision,
         install_attempt_limit=state.install_attempt_limit,
     )
     policy = VersionPolicy(channel=channel, state=policy_state).evaluate(
         candidate.version,
+        update_revision=candidate.release_revision,
         current_version=current_version,
+        current_revision=current_revision,
         manual=manual,
         mandatory=candidate.mandatory,
     )
@@ -818,16 +910,25 @@ def _candidate_is_available(
 def _select_update_candidate(
     candidates: tuple[UpdateCandidate, ...],
     *,
+    selected_candidate_id: str | None,
     selected_version: str | None,
 ) -> UpdateCandidate | None:
     if not candidates:
         return None
+    if selected_candidate_id:
+        selected_id = str(selected_candidate_id).strip()
+        for candidate in candidates:
+            if candidate.candidate_id == selected_id:
+                return candidate
+        raise UpdateCheckError(f"Selected update candidate is not available: {selected_candidate_id}")
     if not selected_version:
         return candidates[0]
     normalized = normalize_version(selected_version)
-    for candidate in candidates:
-        if normalize_version(candidate.version) == normalized:
-            return candidate
+    matches = [candidate for candidate in candidates if normalize_version(candidate.version) == normalized]
+    if len(matches) > 1:
+        raise UpdateCheckError(f"Selected update version is ambiguous: {selected_version}")
+    if matches:
+        return matches[0]
     raise UpdateCheckError(f"Selected update version is not available: {selected_version}")
 
 
@@ -836,6 +937,7 @@ def _result_from_candidate(
     *,
     status: str,
     local_version: str,
+    local_revision: int,
     candidates: tuple[UpdateCandidate, ...],
 ) -> UpdateCheckResult:
     return UpdateCheckResult(
@@ -845,14 +947,55 @@ def _result_from_candidate(
         tag_name=candidate.tag_name,
         release_name=candidate.release_name,
         html_url=candidate.html_url,
+        local_revision=local_revision,
+        latest_revision=candidate.release_revision,
         notes=candidate.notes,
-        mandatory=candidate.mandatory,
+        mandatory=False,
         asset_name=candidate.asset_name,
         installer_type=candidate.installer_type,
         manifest_path=candidate.manifest_path,
         signature_path=candidate.signature_path,
         candidates=candidates,
     )
+
+
+def _deduplicate_candidates(
+    candidates: tuple[UpdateCandidate, ...],
+) -> tuple[UpdateCandidate, ...]:
+    """折叠相同签名元数据，并拒绝同一身份指向不同清单的远端冲突。"""
+
+    unique: dict[ReleaseIdentity, UpdateCandidate] = {}
+    digests: dict[ReleaseIdentity, tuple[str, str]] = {}
+    for candidate in candidates:
+        identity = candidate.identity
+        try:
+            digest = (
+                hashlib.sha256(Path(candidate.manifest_path).read_bytes()).hexdigest(),
+                hashlib.sha256(Path(candidate.signature_path).read_bytes()).hexdigest(),
+            )
+        except OSError as exc:
+            raise UpdateCheckError(f"verified candidate metadata disappeared: {identity.tag}") from exc
+        if identity in unique:
+            if digests[identity] != digest:
+                raise UpdateCheckError(f"conflicting signed manifests for release identity {identity.tag}")
+            continue
+        unique[identity] = candidate
+        digests[identity] = digest
+    return tuple(unique.values())
+
+
+def _release_identity_from_text(value: Any) -> ReleaseIdentity:
+    raw = str(value or "").strip()
+    try:
+        return parse_release_tag(raw)
+    except ValueError:
+        version = normalize_version(raw)
+        if not version:
+            raise UpdateCheckError("Latest release did not include a version tag")
+        try:
+            return ReleaseIdentity(version, 0)
+        except ValueError as exc:
+            raise UpdateCheckError(str(exc)) from exc
 
 
 def _download_metadata_file(url: str, target: Path, *, timeout: float = 8.0, max_bytes: int = 2_000_000) -> Path:

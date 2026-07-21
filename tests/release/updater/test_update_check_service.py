@@ -13,6 +13,8 @@ from app.services.update_check_service import (
     UPDATE_STATUS_CURRENT,
     UPDATE_STATUS_LOCAL_NEWER,
     PreparedUpdate,
+    UpdateCandidate,
+    UpdateCheckResult,
     UpdateCheckError,
     check_for_update,
     check_secure_update,
@@ -273,6 +275,106 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertEqual(selected.latest_version, "3.7.0")
         self.assertEqual(selected.asset_name, "UniversalCrawlerPro_Setup_3.7.0.exe")
         self.assertIn("3.7.0", selected.manifest_path)
+
+    def test_secure_update_orders_same_version_revisions_and_selects_by_candidate_id(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        key = ECC.generate(curve="Ed25519")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            blobs = {}
+            locations = []
+            public_pem = ""
+            for revision in (1, 2):
+                tag = f"v3.7.0-r{revision}"
+                manifest, signature, public_pem = _signed_manifest(
+                    root / tag,
+                    key=key,
+                    overrides={"releaseRevision": revision, "tag": tag},
+                )
+                base_url = f"https://github.com/owner/repo/releases/download/{tag}/latest.json"
+                blobs[base_url] = manifest.read_bytes()
+                blobs[f"{base_url}.sig"] = signature.read_bytes()
+                locations.append(
+                    ManifestLocations(
+                        manifest_url=base_url,
+                        signature_url=f"{base_url}.sig",
+                        release_url=f"https://github.com/owner/repo/releases/tag/{tag}",
+                        tag_name=tag,
+                        release_name=tag,
+                    )
+                )
+
+            class FakeReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return tuple(locations)
+
+            def fake_urlopen(request, timeout, **_kwargs):
+                return _FakeBytesResponse(blobs[request.full_url])
+
+            with (
+                patch("app.services.update_check_service.open_trusted_url", side_effect=fake_urlopen),
+                patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
+            ):
+                result = check_secure_update(
+                    "3.7.0",
+                    local_revision=0,
+                    public_key_pem=public_pem,
+                    release_client=FakeReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+        self.assertEqual([item.candidate_id for item in result.candidates], ["v3.7.0-r2", "v3.7.0-r1"])
+        self.assertEqual(result.latest_revision, 2)
+        selected = result.for_candidate("v3.7.0-r1")
+        self.assertEqual(selected.latest_revision, 1)
+        self.assertEqual(selected.tag_name, "v3.7.0-r1")
+
+    def test_update_result_rejects_ambiguous_version_only_selection(self):
+        candidates = (
+            UpdateCandidate(version="3.7.0", release_revision=2, tag_name="v3.7.0-r2", release_name="", html_url=""),
+            UpdateCandidate(version="3.7.0", release_revision=1, tag_name="v3.7.0-r1", release_name="", html_url=""),
+        )
+        result = UpdateCheckResult(
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="3.6.21",
+            latest_version="3.7.0",
+            tag_name="v3.7.0-r2",
+            release_name="",
+            html_url="",
+            latest_revision=2,
+            candidates=candidates,
+        )
+
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            result.for_version("3.7.0")
+
+    def test_verified_candidate_rejects_release_tag_manifest_mismatch(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import AssetSelector, UpdateManifestVerifier
+        from app.services.update_check_service import _candidate_from_verified_metadata
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            manifest, signature, public_pem = _signed_manifest(
+                Path(temp_dir),
+                overrides={"releaseRevision": 2, "tag": "v3.7.0-r2"},
+            )
+            with self.assertRaisesRegex(UpdateCheckError, "Release tag"):
+                _candidate_from_verified_metadata(
+                    verifier=UpdateManifestVerifier(public_key_pem=public_pem),
+                    selector=AssetSelector(os_name="windows", arch="x64"),
+                    local_version="3.6.21",
+                    manifest_path=manifest,
+                    signature_path=signature,
+                    tag_name="v3.7.0-r1",
+                )
 
     def test_secure_update_reuses_cached_candidate_metadata_when_release_list_is_not_modified(self):
         from tempfile import TemporaryDirectory
@@ -617,6 +719,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
                 signature_path=os.fspath(signature),
                 version="3.6.18",
                 log_path=os.fspath(root / "install.log"),
+                release_revision=2,
             )
             popen = Mock()
             with (
@@ -637,13 +740,16 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertIn("--signature", argv)
         self.assertIn(os.fspath(signature), argv)
         self.assertIn("--install-dir", argv)
+        self.assertIn("--release-revision", argv)
+        revision_index = argv.index("--release-revision")
+        self.assertEqual(argv[revision_index + 1], "2")
         self.assertFalse(popen.call_args.kwargs["shell"])
         self.assertTrue(popen.call_args.kwargs["close_fds"])
         self.assertEqual(
             popen.call_args.kwargs["creationflags"],
             getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        record_pending.assert_called_once()
+        self.assertEqual(record_pending.call_args.kwargs["release_revision"], 2)
 
     def test_update_ui_describes_only_mandatory_verification_layers(self):
         dialog_source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")
