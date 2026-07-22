@@ -207,6 +207,31 @@ def log_event(
     return EVENT_PREFIX + json.dumps(payload)
 
 
+def upload_progress_event(sequence: int = 1) -> str:
+    payload = {
+        "kind": "upload_progress",
+        "sequence": sequence,
+        "timestamp": "2026-07-19T00:00:00Z",
+        "stage": "uploading",
+        "progress": 85,
+        "message": "",
+        "data": {
+            "asset_name": "UniversalCrawlerPro_Setup.exe",
+            "asset_index": 1,
+            "asset_count": 2,
+            "bytes_sent": 50,
+            "bytes_total": 100,
+            "overall_bytes_sent": 150,
+            "overall_bytes_total": 300,
+            "bytes_per_second": 5 * 1024 * 1024,
+            "attempt": 1,
+            "state": "uploading",
+            "retry_delay_seconds": 0.0,
+        },
+    }
+    return EVENT_PREFIX + json.dumps(payload)
+
+
 def error_event(sequence: int = 1, progress: int = 35) -> str:
     payload = {
         "kind": "error",
@@ -1020,6 +1045,69 @@ def test_partial_lines_are_buffered_flood_is_bounded_and_stage_is_immediate(qapp
     controller.flush_log_batch()
     assert sum(len(batch) for batch in batches) == 12
     assert all(len(batch) <= 200 for batch in batches)
+
+
+def test_upload_progress_event_bypasses_log_queue_and_reaches_ui_signal(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+    payloads: list[dict[str, object]] = []
+    log_batches: list[list[str]] = []
+    controller.upload_progress_changed.connect(lambda data: payloads.append(dict(data)))
+    controller.log_lines_ready.connect(lambda lines: log_batches.append(list(lines)))
+
+    controller.feed_stdout(upload_progress_event() + "\n")
+    controller.flush_log_batch()
+
+    assert payloads == [
+        {
+            "asset_name": "UniversalCrawlerPro_Setup.exe",
+            "asset_index": 1,
+            "asset_count": 2,
+            "bytes_sent": 50,
+            "bytes_total": 100,
+            "overall_bytes_sent": 150,
+            "overall_bytes_total": 300,
+            "bytes_per_second": 5 * 1024 * 1024,
+            "attempt": 1,
+            "state": "uploading",
+            "retry_delay_seconds": 0.0,
+        }
+    ]
+    assert log_batches == []
+
+
+def test_panel_shows_upload_percent_speed_and_retry_context(qapp):
+    window = make_panel(qapp)
+    try:
+        window._on_stage_changed("uploading", 85, "")
+        window._on_upload_progress(
+            {
+                "asset_name": "UniversalCrawlerPro_Setup.exe",
+                "asset_index": 1,
+                "asset_count": 2,
+                "bytes_sent": 50 * 1024 * 1024,
+                "bytes_total": 100 * 1024 * 1024,
+                "overall_bytes_sent": 150 * 1024 * 1024,
+                "overall_bytes_total": 300 * 1024 * 1024,
+                "bytes_per_second": 5 * 1024 * 1024,
+                "attempt": 2,
+                "state": "uploading",
+                "retry_delay_seconds": 0.0,
+            }
+        )
+
+        assert window.progress_bar.value() == 50
+        assert window.upload_progress_label.isVisibleTo(window)
+        assert "UniversalCrawlerPro_Setup.exe" in window.upload_progress_label.text()
+        assert "150.0 MB / 300.0 MB" in window.upload_progress_label.text()
+        assert "5.0 MB/s" in window.upload_progress_label.text()
+        assert "第 2 次尝试" in window.upload_progress_label.text()
+
+        window._on_stage_changed("verifying", 95, "")
+
+        assert window.progress_bar.value() == 95
+        assert window.upload_progress_label.isHidden()
+    finally:
+        window.shutdown()
 
 
 def test_structured_log_event_is_visible_and_does_not_break_terminal_result(qapp):

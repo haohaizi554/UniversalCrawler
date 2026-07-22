@@ -22,6 +22,7 @@ from release_tool.publisher import (
     GitHubReleasePublisher,
     PublishError,
     ReleaseAssetInfo,
+    ReleaseUploadProgress,
 )
 
 
@@ -294,6 +295,110 @@ def test_upload_skips_remote_asset_with_same_name_size_and_hash(tmp_path):
 
     assert publisher.executed_uploads == []
     assert run.call_count == 1
+
+
+def test_upload_reports_real_bytes_and_processes_assets_sequentially(tmp_path):
+    first = write_asset(tmp_path / "portable.zip", b"123456")
+    second = write_asset(tmp_path / "installer.exe", b"abcd")
+    calls: list[tuple[str, Path]] = []
+    progress: list[ReleaseUploadProgress] = []
+
+    def upload_request(upload_url, path, on_progress):
+        calls.append((upload_url, path))
+        size = path.stat().st_size
+        on_progress(size // 2, size, 2.5 * 1024 * 1024)
+        on_progress(size, size, 4.0 * 1024 * 1024)
+
+    run = Mock(return_value=releases_response(release_payload()))
+    publisher = make_publisher(
+        run,
+        upload_request=upload_request,
+        upload_progress=progress.append,
+    )
+
+    publisher.upload_assets("v3.6.22", [first, second], repair=False)
+
+    assert [path.name for _url, path in calls] == ["portable.zip", "installer.exe"]
+    uploading = [event for event in progress if event.state == "uploading"]
+    assert any(
+        event.asset_name == "portable.zip"
+        and event.bytes_sent == 3
+        and event.bytes_per_second == 2.5 * 1024 * 1024
+        for event in uploading
+    )
+    assert progress[-1].state == "completed"
+    assert progress[-1].overall_bytes_sent == 10
+    assert progress[-1].overall_bytes_total == 10
+    assert publisher.executed_uploads == [(str(first.resolve()), str(second.resolve()))]
+
+
+def test_upload_recovers_when_server_committed_asset_before_disconnect(tmp_path):
+    asset = write_asset(tmp_path / "installer.exe", b"same")
+    remote_asset = ReleaseAssetInfo.from_path(asset)
+    progress: list[ReleaseUploadProgress] = []
+    attempts = 0
+
+    def upload_request(_upload_url, path, on_progress):
+        nonlocal attempts
+        attempts += 1
+        on_progress(path.stat().st_size, path.stat().st_size, 1024.0)
+        raise OSError("connection reset after request body")
+
+    run = Mock(
+        side_effect=[
+            releases_response(release_payload()),
+            releases_response(release_payload(assets=[remote_asset.to_json()])),
+        ]
+    )
+    publisher = make_publisher(
+        run,
+        upload_request=upload_request,
+        upload_progress=progress.append,
+    )
+
+    publisher.upload_assets("v3.6.22", [asset], repair=False)
+
+    assert attempts == 1
+    assert progress[-1].state == "recovered"
+    assert progress[-1].overall_bytes_sent == asset.stat().st_size
+    assert publisher.executed_uploads == [(str(asset.resolve()),)]
+
+
+def test_upload_retries_current_file_after_transient_disconnect(tmp_path):
+    asset = write_asset(tmp_path / "installer.exe", b"12345678")
+    progress: list[ReleaseUploadProgress] = []
+    attempts = 0
+
+    def upload_request(_upload_url, path, on_progress):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            on_progress(4, path.stat().st_size, 2048.0)
+            raise OSError("connection reset")
+        on_progress(path.stat().st_size, path.stat().st_size, 4096.0)
+
+    run = Mock(
+        side_effect=[
+            releases_response(release_payload()),
+            releases_response(release_payload()),
+        ]
+    )
+    publisher = make_publisher(
+        run,
+        upload_request=upload_request,
+        upload_progress=progress.append,
+    )
+
+    with patch("time.sleep") as sleep:
+        publisher.upload_assets("v3.6.22", [asset], repair=False)
+
+    assert attempts == 2
+    sleep.assert_called_once_with(1.0)
+    retrying = [event for event in progress if event.state == "retrying"]
+    assert len(retrying) == 1
+    assert retrying[0].attempt == 1
+    assert retrying[0].retry_delay_seconds == 1.0
+    assert progress[-1].state == "completed"
 
 
 def test_upload_rejects_mismatched_asset_without_repair(tmp_path):

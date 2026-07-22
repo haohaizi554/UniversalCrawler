@@ -99,6 +99,20 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("uses: actions/cache@v5", browser_block)
         self.assertIn("playwright-${{ runner.os }}-chromium-", browser_block)
 
+    def test_browser_report_upload_is_non_blocking(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
+        source = workflow.read_text(encoding="utf-8")
+        browser_block = source.split("  browser-tests:", 1)[1].split("  required-check:", 1)[0]
+        upload_block = browser_block.split("      - name: Upload browser report", 1)[1].split(
+            "  required-check:",
+            1,
+        )[0]
+
+        self.assertIn("if: always()", upload_block)
+        self.assertIn("continue-on-error: true", upload_block)
+        self.assertIn("uses: actions/upload-artifact@v7", upload_block)
+        self.assertIn("artifacts/browser-tests.xml", upload_block)
+
     def test_performance_benchmarks_run_without_coverage_instrumentation(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
