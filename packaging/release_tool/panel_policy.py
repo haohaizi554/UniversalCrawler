@@ -82,9 +82,9 @@ _SAME_RELEASE_DEFAULTS = PanelOptionDefaults(
     rotate_trust_anchor=False,
     sign_manifest=True,
     commit_version_changes=False,
-    # 同版本修订没有版本文件提交，但先把当前干净 HEAD 推到 main，GitHub
-    # 才能可靠地为该源码创建新的不可变 revision tag。
-    push_main=True,
+    # 同版本修订不改源码版本号；后续 tag push 会上传源码对象并绑定 revision tag，
+    # 不需要强制更新 main。
+    push_main=False,
     create_or_reuse_tag=True,
     create_or_update_release=True,
     upload_release_assets=True,

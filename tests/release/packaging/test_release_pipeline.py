@@ -1118,6 +1118,101 @@ def test_source_identity_refuses_to_push_when_head_moves_after_verified_commit(t
     assert not any(call[0] == "push" for call in git_calls)
 
 
+def test_source_identity_skips_main_push_when_remote_already_matches():
+    tool = _load_tool()
+    expected_commit = "a" * 40
+    git_calls: list[list[str]] = []
+
+    def fake_git(argv):
+        git_calls.append(list(argv))
+        if argv[0] == "status":
+            return ""
+        if argv[:2] == ["rev-parse", "HEAD"]:
+            return expected_commit
+        if argv[:3] == ["ls-remote", "--exit-code", "origin"]:
+            return f"{expected_commit}\trefs/heads/main"
+        return ""
+
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        push_main=True,
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_git_tag_exists", return_value=False),
+        patch.object(tool, "_run_git", side_effect=fake_git),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is None
+    assert not any(call[0] == "push" for call in git_calls)
+
+
+def test_same_release_tag_creation_pushes_tag_without_main_push():
+    tool = _load_tool()
+    expected_commit = "a" * 40
+    git_calls: list[list[str]] = []
+    ensured: list[tuple[str, str]] = []
+
+    class FakePublisher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_tag(self, tag: str, commit: str) -> None:
+            ensured.append((tag, commit))
+
+    def fake_git(argv):
+        git_calls.append(list(argv))
+        if argv[0] == "status":
+            return ""
+        if argv[:2] == ["rev-parse", "HEAD"]:
+            return expected_commit
+        if argv[:3] == ["rev-parse", "--verify", "refs/tags/v3.6.21-r1^{commit}"]:
+            raise subprocess.CalledProcessError(1, argv)
+        return ""
+
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        push_main=False,
+        create_or_reuse_tag=True,
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "GitHubReleasePublisher", FakePublisher),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_git_tag_exists", return_value=False),
+        patch.object(tool, "_run_git", side_effect=fake_git),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is None
+    assert ["tag", "v3.6.21-r1", expected_commit] in git_calls
+    assert ["push", "origin", "refs/tags/v3.6.21-r1:refs/tags/v3.6.21-r1"] in git_calls
+    assert ensured == [("v3.6.21-r1", expected_commit)]
+    assert ["push", "origin", f"{expected_commit}:refs/heads/main"] not in git_calls
+
+
 def test_rotated_trust_anchor_is_included_in_exact_release_commit(tmp_path):
     tool = _load_tool()
     expected_paths = (

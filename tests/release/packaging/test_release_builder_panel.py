@@ -454,7 +454,7 @@ def test_equal_remote_version_recommends_same_release_with_safe_defaults(qapp):
         assert window.mode_same_button.isChecked() is True
         assert window.check_sign_manifest.isChecked() is True
         assert window.check_commit_version.isChecked() is False
-        assert window.check_push_main.isChecked() is True
+        assert window.check_push_main.isChecked() is False
         assert window.check_create_tag.isChecked() is True
         assert window.check_create_release.isChecked() is True
         assert window.check_upload_assets.isChecked() is True

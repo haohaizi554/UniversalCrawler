@@ -669,6 +669,22 @@ def _validate_final_publish_window(tag: str, source_commit: str) -> None:
         )
 
 
+def _remote_ref_commit(ref: str) -> str | None:
+    """读取远端 ref 指向的 commit；不存在时返回 None，避免把探测性 404 当失败。"""
+
+    try:
+        output = _run_git(["ls-remote", "--exit-code", "origin", ref])
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    fields = output.split()
+    if not fields:
+        return None
+    commit = fields[0].strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return None
+    return commit
+
+
 def _sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -1371,17 +1387,21 @@ def _build_pipeline_hooks(
         _validate_release_baseline_clean()
         if _run_git(["rev-parse", "HEAD"]).lower() != verified_commit:
             raise SystemExit("HEAD changed after the release version commit was verified")
-        _run_git(
-            [
-                "push",
-                "origin",
-                f"{verified_commit}:refs/heads/main",
-            ]
-        )
-        remote_main = _run_git(
-            ["ls-remote", "--exit-code", "origin", "refs/heads/main"]
-        ).split()
-        if not remote_main or remote_main[0].lower() != verified_commit:
+        if _remote_ref_commit("refs/heads/main") == verified_commit:
+            return
+        try:
+            _run_git(
+                [
+                    "push",
+                    "origin",
+                    f"{verified_commit}:refs/heads/main",
+                ]
+            )
+        except subprocess.CalledProcessError as exc:
+            if _remote_ref_commit("refs/heads/main") == verified_commit:
+                return
+            raise SystemExit("failed to push verified release commit to main") from exc
+        if _remote_ref_commit("refs/heads/main") != verified_commit:
             raise SystemExit("remote main does not match the verified release commit")
 
     def ensure_tag(_request: BuildRequest, commit: str) -> None:
@@ -1412,6 +1432,11 @@ def _build_pipeline_hooks(
                     f"不可变 release tag {tag} 已指向其他源码；"
                     "请刷新远端状态并使用下一个修订号。"
                 )
+        try:
+            _run_git(["push", "origin", f"refs/tags/{tag}:refs/tags/{tag}"])
+        except subprocess.CalledProcessError as exc:
+            if _remote_ref_commit(f"refs/tags/{tag}") != source_commit.lower():
+                raise SystemExit(f"failed to publish release tag {tag}") from exc
         publisher.ensure_tag(tag, source_commit)
 
     def ensure_release(_request: BuildRequest) -> None:
