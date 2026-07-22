@@ -12,17 +12,19 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from shared.release_identity import parse_release_tag
 
 from .events import redact_release_text
+from .upload_transport import GitHubAssetUploadTransport, UploadTransportError
 
 
 GITHUB_HOST = "github.com"
 DEFAULT_METADATA_TIMEOUT_SECONDS = 60.0
 DEFAULT_UPLOAD_TIMEOUT_SECONDS = 2 * 60 * 60.0
 _METADATA_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+_UPLOAD_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -104,10 +106,74 @@ class ReleaseAssetInfo:
 
 
 @dataclass(frozen=True)
+class ReleaseUploadProgress:
+    """Structured byte progress for one asset and the complete upload batch."""
+
+    asset_name: str
+    asset_index: int
+    asset_count: int
+    bytes_sent: int
+    bytes_total: int
+    overall_bytes_sent: int
+    overall_bytes_total: int
+    bytes_per_second: float
+    attempt: int
+    state: str
+    retry_delay_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        integer_values = (
+            self.asset_index,
+            self.asset_count,
+            self.bytes_sent,
+            self.bytes_total,
+            self.overall_bytes_sent,
+            self.overall_bytes_total,
+            self.attempt,
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in integer_values):
+            raise ValueError("upload progress counters must be integers")
+        if self.asset_index < 1 or self.asset_count < self.asset_index or self.attempt < 1:
+            raise ValueError("upload progress index is invalid")
+        if min(self.bytes_sent, self.bytes_total, self.overall_bytes_sent, self.overall_bytes_total) < 0:
+            raise ValueError("upload progress bytes must be non-negative")
+        if self.bytes_sent > self.bytes_total or self.overall_bytes_sent > self.overall_bytes_total:
+            raise ValueError("upload progress exceeds its total")
+        if not math.isfinite(self.bytes_per_second) or self.bytes_per_second < 0:
+            raise ValueError("upload speed must be finite and non-negative")
+        if not math.isfinite(self.retry_delay_seconds) or self.retry_delay_seconds < 0:
+            raise ValueError("upload retry delay must be finite and non-negative")
+        if self.state not in {"uploading", "retrying", "completed", "recovered", "skipped"}:
+            raise ValueError("upload progress state is invalid")
+
+    def to_event_data(self) -> dict[str, object]:
+        return {
+            "asset_name": self.asset_name,
+            "asset_index": self.asset_index,
+            "asset_count": self.asset_count,
+            "bytes_sent": self.bytes_sent,
+            "bytes_total": self.bytes_total,
+            "overall_bytes_sent": self.overall_bytes_sent,
+            "overall_bytes_total": self.overall_bytes_total,
+            "bytes_per_second": self.bytes_per_second,
+            "attempt": self.attempt,
+            "state": self.state,
+            "retry_delay_seconds": self.retry_delay_seconds,
+        }
+
+
+@dataclass(frozen=True)
 class _LocalAsset:
     path: Path
     info: ReleaseAssetInfo
     snapshot: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class _RemoteAsset:
+    info: ReleaseAssetInfo
+    asset_id: int | None = None
+    state: str = "uploaded"
 
 
 class GitHubReleasePublisher:
@@ -123,6 +189,9 @@ class GitHubReleasePublisher:
         project_root: str | Path | None = None,
         metadata_timeout_seconds: float = DEFAULT_METADATA_TIMEOUT_SECONDS,
         upload_timeout_seconds: float = DEFAULT_UPLOAD_TIMEOUT_SECONDS,
+        upload_request: Callable[[str, Path, Callable[[int, int, float], None]], None]
+        | None = None,
+        upload_progress: Callable[[ReleaseUploadProgress], None] | None = None,
     ) -> None:
         owner, name = _repository_components(repository)
         metadata_timeout = _checked_timeout(metadata_timeout_seconds)
@@ -139,6 +208,13 @@ class GitHubReleasePublisher:
         self.project_root = (Path(project_root) if project_root is not None else Path.cwd()).resolve()
         self._metadata_timeout_seconds = metadata_timeout
         self._upload_timeout_seconds = upload_timeout
+        self._github_token_cache = ""
+        self._upload_progress = upload_progress or (lambda _progress: None)
+        self._upload_request = upload_request or GitHubAssetUploadTransport(
+            environment=self.environment,
+            token_provider=self._github_token,
+            request_timeout_seconds=upload_timeout,
+        ).upload
         self.executed_uploads: list[tuple[str, ...]] = []
 
     def ensure_tag(self, tag: str, commit: str) -> None:
@@ -190,19 +266,36 @@ class GitHubReleasePublisher:
         *,
         repair: bool,
     ) -> None:
-        """Upload assets in batches, skipping only digest-verified matches."""
+        """Upload assets sequentially, resuming a batch at verified file boundaries."""
 
         checked_tag = _checked_tag(tag)
         local_assets = _local_assets(assets)
-        remote_assets = _assets_by_name(self._release_assets(checked_tag))
-        normal_uploads: list[_LocalAsset] = []
+        release = self._read_release(checked_tag)
+        if release is None:
+            raise PublishError("invalid release asset response")
+        remote_assets = _remote_assets_by_name(_remote_assets_from_release(release))
+        pending: list[tuple[int, _LocalAsset]] = []
+        overall_total = sum(asset.info.size for asset in local_assets)
+        completed_bytes = 0
 
-        for local in local_assets:
-            remote = remote_assets.get(local.info.name)
+        for index, local in enumerate(local_assets, start=1):
+            remote_asset = remote_assets.get(local.info.name)
+            remote = remote_asset.info if remote_asset is not None else None
             if remote is None:
-                normal_uploads.append(local)
+                pending.append((index, local))
                 continue
             if remote.size == local.info.size and remote.digest and remote.digest == local.info.digest:
+                completed_bytes += local.info.size
+                self._emit_upload_progress(
+                    local,
+                    asset_index=index,
+                    asset_count=len(local_assets),
+                    completed_bytes=completed_bytes - local.info.size,
+                    bytes_sent=local.info.size,
+                    overall_total=overall_total,
+                    attempt=1,
+                    state="skipped",
+                )
                 continue
             if remote.size == local.info.size and not remote.digest:
                 raise PublishError(
@@ -214,7 +307,20 @@ class GitHubReleasePublisher:
                 "immutable release requires a new revision"
             )
 
-        self._upload(checked_tag, normal_uploads)
+        if not pending:
+            return
+        upload_url_value = release.get("upload_url")
+        if not isinstance(upload_url_value, str) or not upload_url_value.strip():
+            raise PublishError("invalid release asset response")
+        upload_url = _checked_repository_upload_url(upload_url_value, self._repository_path)
+        self._upload(
+            checked_tag,
+            upload_url,
+            pending,
+            asset_count=len(local_assets),
+            overall_total=overall_total,
+            completed_bytes=completed_bytes,
+        )
 
     def verify_assets(
         self,
@@ -302,31 +408,214 @@ class GitHubReleasePublisher:
             release = self._read_release(tag)
             if release is None:
                 raise ValueError("release is missing")
-            assets = release.get("assets")
-            if not isinstance(assets, list):
-                raise ValueError("assets is not a list")
-            parsed = []
-            for asset in assets:
-                if not isinstance(asset, Mapping):
-                    raise ValueError("release asset is not an object")
-                parsed.append(ReleaseAssetInfo.from_json(asset))
-            return tuple(parsed)
+            return tuple(asset.info for asset in _remote_assets_from_release(release))
         except (TypeError, ValueError, KeyError, PublishError):
             invalid = True
         if invalid:
             raise PublishError("invalid release asset response")
+        raise AssertionError("unreachable")
 
-    def _upload(self, tag: str, assets: Sequence["_LocalAsset"]) -> None:
+    def _upload(
+        self,
+        tag: str,
+        upload_url: str,
+        assets: Sequence[tuple[int, "_LocalAsset"]],
+        *,
+        asset_count: int,
+        overall_total: int,
+        completed_bytes: int,
+    ) -> None:
         if not assets:
             return
-        _assert_upload_snapshots(assets, phase="before")
-        argv = ["gh", "release", "upload", "--repo", self.repository]
-        argv.extend(["--", tag, *(str(asset.path) for asset in assets)])
-        completed = self._execute(argv, timeout_seconds=self._upload_timeout_seconds)
-        _assert_upload_snapshots(assets, phase="after")
-        if completed.returncode:
+        uploaded: list[str] = []
+        for asset_index, asset in assets:
+            self._upload_one(
+                tag,
+                upload_url,
+                asset,
+                asset_index=asset_index,
+                asset_count=asset_count,
+                completed_bytes=completed_bytes,
+                overall_total=overall_total,
+            )
+            completed_bytes += asset.info.size
+            uploaded.append(str(asset.path))
+        self.executed_uploads.append(tuple(uploaded))
+
+    def _upload_one(
+        self,
+        tag: str,
+        upload_url: str,
+        asset: _LocalAsset,
+        *,
+        asset_index: int,
+        asset_count: int,
+        completed_bytes: int,
+        overall_total: int,
+    ) -> None:
+        for attempt in range(1, len(_UPLOAD_RETRY_DELAYS_SECONDS) + 2):
+            _assert_upload_snapshots((asset,), phase="before")
+            last_sent = 0
+            last_rate = 0.0
+
+            def on_progress(bytes_sent: int, bytes_total: int, bytes_per_second: float) -> None:
+                nonlocal last_sent, last_rate
+                if bytes_total != asset.info.size:
+                    raise ValueError("upload transport reported an unexpected asset size")
+                last_sent = max(0, min(int(bytes_sent), bytes_total))
+                last_rate = max(0.0, float(bytes_per_second))
+                self._emit_upload_progress(
+                    asset,
+                    asset_index=asset_index,
+                    asset_count=asset_count,
+                    completed_bytes=completed_bytes,
+                    bytes_sent=last_sent,
+                    overall_total=overall_total,
+                    bytes_per_second=last_rate,
+                    attempt=attempt,
+                    state="uploading",
+                )
+
+            transient = False
+            try:
+                self._upload_request(upload_url, asset.path, on_progress)
+                _assert_upload_snapshots((asset,), phase="after")
+            except UploadTransportError as error:
+                transient = error.transient
+            except OSError:
+                transient = True
+            else:
+                self._emit_upload_progress(
+                    asset,
+                    asset_index=asset_index,
+                    asset_count=asset_count,
+                    completed_bytes=completed_bytes,
+                    bytes_sent=asset.info.size,
+                    overall_total=overall_total,
+                    attempt=attempt,
+                    state="completed",
+                )
+                return
+
+            _assert_upload_snapshots((asset,), phase="after")
+            reconciliation = self._reconcile_failed_upload(tag, asset)
+            if reconciliation is True:
+                self._emit_upload_progress(
+                    asset,
+                    asset_index=asset_index,
+                    asset_count=asset_count,
+                    completed_bytes=completed_bytes,
+                    bytes_sent=asset.info.size,
+                    overall_total=overall_total,
+                    attempt=attempt,
+                    state="recovered",
+                )
+                return
+            if reconciliation is None:
+                transient = True
+            if not transient or attempt > len(_UPLOAD_RETRY_DELAYS_SECONDS):
+                raise PublishError("GitHub command failed") from None
+
+            delay = _UPLOAD_RETRY_DELAYS_SECONDS[attempt - 1]
+            self._emit_upload_progress(
+                asset,
+                asset_index=asset_index,
+                asset_count=asset_count,
+                completed_bytes=completed_bytes,
+                bytes_sent=last_sent,
+                overall_total=overall_total,
+                bytes_per_second=last_rate,
+                attempt=attempt,
+                state="retrying",
+                retry_delay_seconds=delay,
+            )
+            self.output(
+                f"上传 {asset.info.name} 时连接中断，{delay:g} 秒后从当前文件开头重试"
+            )
+            time.sleep(delay)
+
+        raise AssertionError("unreachable")
+
+    def _reconcile_failed_upload(self, tag: str, asset: _LocalAsset) -> bool | None:
+        release = self._read_release(tag)
+        if release is None:
             raise PublishError("GitHub command failed")
-        self.executed_uploads.append(tuple(str(asset.path) for asset in assets))
+        remote = _remote_assets_by_name(_remote_assets_from_release(release)).get(asset.info.name)
+        if remote is None:
+            return False
+        if (
+            remote.info.size == asset.info.size
+            and remote.info.digest
+            and remote.info.digest == asset.info.digest
+        ):
+            return True
+        # GitHub may leave a zero-byte "starter" asset after a broken POST. It is
+        # safe to remove only that unfinished placeholder before retrying.
+        if remote.state == "starter" and remote.asset_id is not None:
+            self._run(
+                self._api_command(
+                    "DELETE",
+                    f"repos/{self._repository_path}/releases/assets/{remote.asset_id}",
+                )
+            )
+            return None
+        if remote.info.size == asset.info.size and not remote.info.digest:
+            raise PublishError(
+                f"remote asset {asset.info.name} digest is unavailable; "
+                "immutable release requires a new revision"
+            )
+        raise PublishError(
+            f"remote asset {asset.info.name} differs; immutable release requires a new revision"
+        )
+
+    def _emit_upload_progress(
+        self,
+        asset: _LocalAsset,
+        *,
+        asset_index: int,
+        asset_count: int,
+        completed_bytes: int,
+        bytes_sent: int,
+        overall_total: int,
+        attempt: int,
+        state: str,
+        bytes_per_second: float = 0.0,
+        retry_delay_seconds: float = 0.0,
+    ) -> None:
+        self._upload_progress(
+            ReleaseUploadProgress(
+                asset_name=asset.info.name,
+                asset_index=asset_index,
+                asset_count=asset_count,
+                bytes_sent=bytes_sent,
+                bytes_total=asset.info.size,
+                overall_bytes_sent=min(overall_total, completed_bytes + bytes_sent),
+                overall_bytes_total=overall_total,
+                bytes_per_second=bytes_per_second,
+                attempt=attempt,
+                state=state,
+                retry_delay_seconds=retry_delay_seconds,
+            )
+        )
+
+    def _github_token(self) -> str:
+        if self._github_token_cache:
+            return self._github_token_cache
+        values = {key.casefold(): value.strip() for key, value in self.environment.items()}
+        token = values.get("gh_token", "") or values.get("github_token", "")
+        if not token:
+            completed = self._execute(
+                ["gh", "auth", "token", "--hostname", GITHUB_HOST],
+                timeout_seconds=self._metadata_timeout_seconds,
+                emit_output=False,
+            )
+            if completed.returncode:
+                raise PublishError("GitHub authentication is unavailable")
+            token = completed.stdout.strip()
+        if not token:
+            raise PublishError("GitHub authentication is unavailable")
+        self._github_token_cache = token
+        return token
 
     def _release_command(self, command: str, tag: str, title: str, notes_path: Path) -> list[str]:
         argv = [
@@ -499,6 +788,41 @@ def _assets_by_name(assets: Sequence[ReleaseAssetInfo]) -> dict[str, ReleaseAsse
     return result
 
 
+def _remote_assets_from_release(release: Mapping[str, object]) -> tuple[_RemoteAsset, ...]:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("assets is not a list")
+    parsed: list[_RemoteAsset] = []
+    for payload in assets:
+        if not isinstance(payload, Mapping):
+            raise ValueError("release asset is not an object")
+        asset_id = payload.get("id")
+        if asset_id is not None and (
+            isinstance(asset_id, bool) or not isinstance(asset_id, int) or asset_id <= 0
+        ):
+            raise ValueError("release asset id is invalid")
+        state = payload.get("state", "uploaded")
+        if not isinstance(state, str) or state not in {"uploaded", "starter"}:
+            raise ValueError("release asset state is invalid")
+        parsed.append(
+            _RemoteAsset(
+                info=ReleaseAssetInfo.from_json(payload),
+                asset_id=asset_id,
+                state=state,
+            )
+        )
+    return tuple(parsed)
+
+
+def _remote_assets_by_name(assets: Sequence[_RemoteAsset]) -> dict[str, _RemoteAsset]:
+    result: dict[str, _RemoteAsset] = {}
+    for asset in assets:
+        if asset.info.name in result:
+            raise PublishError("duplicate release asset name")
+        result[asset.info.name] = asset
+    return result
+
+
 def _resolved_regular_file(path: str | Path, *, label: str, reject_dash: bool = False) -> Path:
     value = str(path)
     if reject_dash and value == "-":
@@ -584,6 +908,36 @@ def _repository_components(repository: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _checked_repository_upload_url(value: str, repository_path: str) -> str:
+    endpoint = str(value).split("{", 1)[0].strip()
+    parsed = urlsplit(endpoint)
+    parts = parsed.path.split("/")
+    repository_parts = repository_path.split("/")
+    valid_path = (
+        len(parts) == 7
+        and parts[1] == "repos"
+        and len(repository_parts) == 2
+        and parts[2].casefold() == repository_parts[0].casefold()
+        and parts[3].casefold() == repository_parts[1].casefold()
+        and parts[4] == "releases"
+        and parts[5].isdigit()
+        and int(parts[5]) > 0
+        and parts[6] == "assets"
+    )
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "uploads.github.com"
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not valid_path
+    ):
+        raise PublishError("invalid release asset response")
+    return value
+
+
 def _is_safe_component(value: str) -> bool:
     return bool(
         _COMPONENT_PATTERN.fullmatch(value)
@@ -593,4 +947,9 @@ def _is_safe_component(value: str) -> bool:
     )
 
 
-__all__ = ["GitHubReleasePublisher", "PublishError", "ReleaseAssetInfo"]
+__all__ = [
+    "GitHubReleasePublisher",
+    "PublishError",
+    "ReleaseAssetInfo",
+    "ReleaseUploadProgress",
+]

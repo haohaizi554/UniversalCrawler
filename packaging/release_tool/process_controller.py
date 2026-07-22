@@ -45,7 +45,9 @@ WRITER_HARD_CLOSE_TIMEOUT_SECONDS = 30.0
 WRITER_CLOSE_POLL_MS = 50
 TASKKILL_CONFIRMATION_MS = 250
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
-_SUPPORTED_EVENT_KINDS = frozenset({"stage", "log", "error", "result"})
+_SUPPORTED_EVENT_KINDS = frozenset(
+    {"stage", "log", "upload_progress", "error", "result"}
+)
 
 
 def _default_stream_factory(path: Path, *args: Any, **kwargs: Any):
@@ -147,6 +149,7 @@ class ReleaseProcessController(QObject):
     """Own one release child process until every lifecycle resource is closed."""
 
     log_lines_ready = pyqtSignal(object)
+    upload_progress_changed = pyqtSignal(object)
     stage_changed = pyqtSignal(str, int, str)
     error_reported = pyqtSignal(str)
     running_changed = pyqtSignal(bool)
@@ -569,6 +572,11 @@ class ReleaseProcessController(QObject):
                 self._pending_logs.append(safe_message)
                 if not self._log_timer.isActive():
                     self._log_timer.start()
+            return
+        if event.kind == "upload_progress":
+            # Progress is already coalesced by the uploader. Keeping it out of
+            # the log queue prevents large transfers from starving log paints.
+            self.upload_progress_changed.emit(dict(event.data))
             return
         self.stage_changed.emit(
             event.stage.value,

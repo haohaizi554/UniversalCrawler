@@ -62,7 +62,10 @@ from release_tool.models import (  # noqa: E402
 )
 from release_tool.modes import resolve_release_mode  # noqa: E402
 from release_tool.proxy import ProxySelection, build_proxy_environment  # noqa: E402
-from release_tool.publisher import GitHubReleasePublisher  # noqa: E402
+from release_tool.publisher import (  # noqa: E402
+    GitHubReleasePublisher,
+    ReleaseUploadProgress,
+)
 from release_tool.runner import (  # noqa: E402
     CancellationToken,
     ReleasePipelineHooks,
@@ -1103,6 +1106,23 @@ def _build_pipeline_hooks(
                 progress = state["active_progress"]
             emit("log", stage=stage, progress=progress, message=message)
 
+    def emit_upload_progress(progress_event: ReleaseUploadProgress) -> None:
+        """Forward byte-level progress without routing it through the log queue."""
+
+        if emitter is None:
+            return
+        emit = getattr(emitter, "emit", None)
+        if callable(emit):
+            with active_stage_lock:
+                stage = state["active_stage"]
+                progress = state["active_progress"]
+            emit(
+                "upload_progress",
+                stage=stage,
+                progress=progress,
+                data=progress_event.to_event_data(),
+            )
+
     def resolve_release_context() -> tuple[dict[str, str], GitHubReleasePublisher]:
         child_environment = state["child_environment"]
         publisher = state["publisher"]
@@ -1135,6 +1155,7 @@ def _build_pipeline_hooks(
             child_environment,
             emit_log,
             project_root=PROJECT_ROOT,
+            upload_progress=emit_upload_progress,
         )
         state["child_environment"] = child_environment
         state["publisher"] = publisher

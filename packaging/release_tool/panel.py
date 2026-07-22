@@ -232,6 +232,71 @@ def _localize_release_message(message: str) -> str:
     return text
 
 
+def _format_transfer_size(value: object) -> str:
+    try:
+        size = max(0.0, float(value))
+    except (TypeError, ValueError):
+        size = 0.0
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit = units[0]
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            break
+        size /= 1024.0
+    return f"{size:.1f} {unit}"
+
+
+def _upload_progress_view(payload: Mapping[str, object]) -> tuple[int, str]:
+    """Build a compact, stable label from a validated protocol payload."""
+
+    def integer(key: str, default: int = 0) -> int:
+        value = payload.get(key, default)
+        if isinstance(value, bool):
+            return default
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return default
+
+    def number(key: str) -> float:
+        value = payload.get(key, 0.0)
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0
+
+    asset_name = Path(str(payload.get("asset_name") or "当前文件")).name
+    asset_index = max(1, integer("asset_index", 1))
+    asset_count = max(asset_index, integer("asset_count", asset_index))
+    overall_sent = integer("overall_bytes_sent")
+    overall_total = integer("overall_bytes_total")
+    attempt = max(1, integer("attempt", 1))
+    state = str(payload.get("state") or "uploading")
+    percent = int(round(overall_sent * 100 / overall_total)) if overall_total else 0
+    percent = max(0, min(100, percent))
+    prefix = f"文件 {asset_index}/{asset_count} · {asset_name}"
+    totals = f"{_format_transfer_size(overall_sent)} / {_format_transfer_size(overall_total)}"
+
+    if state == "retrying":
+        delay = number("retry_delay_seconds")
+        return (
+            percent,
+            f"{prefix} · 网络中断，{delay:g} 秒后重试当前文件（将从文件开头继续）",
+        )
+    if state == "skipped":
+        return percent, f"{prefix} · 远端文件校验一致，已断点跳过 · {totals}"
+    if state == "recovered":
+        return percent, f"{prefix} · 已确认远端完整，继续下一项 · {totals}"
+    if state == "completed":
+        return percent, f"{prefix} · 上传完成 · {totals}"
+
+    speed = _format_transfer_size(number("bytes_per_second"))
+    attempt_text = f" · 第 {attempt} 次尝试" if attempt > 1 else ""
+    return percent, f"{prefix} · {totals} · {speed}/s{attempt_text}"
+
+
 class _ReleaseSectionCard(QGroupBox):
     """Numbered release-builder card with a stable content owner."""
 
@@ -1287,6 +1352,11 @@ class ReleaseBuilderWindow(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
+        self.upload_progress_label = QLabel()
+        self.upload_progress_label.setObjectName("ReleaseUploadProgress")
+        self.upload_progress_label.setWordWrap(True)
+        self.upload_progress_label.hide()
+        layout.addWidget(self.upload_progress_label)
         tools = QHBoxLayout()
         self.copy_log_button = QPushButton("复制选中内容")
         self.export_log_button = QPushButton("导出日志副本")
@@ -1372,6 +1442,9 @@ class ReleaseBuilderWindow(QWidget):
 
     def _connect_controller(self) -> None:
         self.process_controller.log_lines_ready.connect(self.log_panel.append_logs)
+        self.process_controller.upload_progress_changed.connect(
+            self._on_upload_progress
+        )
         self.process_controller.stage_changed.connect(self._on_stage_changed)
         self.process_controller.error_reported.connect(self._on_process_error)
         self.process_controller.running_changed.connect(self._on_running_changed)
@@ -1641,6 +1714,21 @@ class ReleaseBuilderWindow(QWidget):
             _localize_release_message(message)
             or _STAGE_LABELS.get(stage, stage)
         )
+        if stage == ReleaseStage.UPLOADING.value:
+            self.upload_progress_label.setText("正在准备上传发布资产...")
+            self.upload_progress_label.show()
+        else:
+            self.upload_progress_label.clear()
+            self.upload_progress_label.hide()
+
+    @pyqtSlot(object)
+    def _on_upload_progress(self, payload: object) -> None:
+        if not isinstance(payload, Mapping):
+            return
+        percent, text = _upload_progress_view(payload)
+        self.progress_bar.setValue(percent)
+        self.upload_progress_label.setText(text)
+        self.upload_progress_label.show()
 
     @pyqtSlot(str)
     def _on_process_error(self, message: str) -> None:
@@ -1657,6 +1745,7 @@ class ReleaseBuilderWindow(QWidget):
 
     @pyqtSlot(object)
     def _on_process_completed(self, result: ReleaseResult) -> None:
+        self.upload_progress_label.hide()
         if result.succeeded:
             message = "发布构建成功"
             if self.process_controller.audit_log_warning:

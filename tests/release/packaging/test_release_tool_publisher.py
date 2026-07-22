@@ -24,6 +24,7 @@ from release_tool.publisher import (
     ReleaseAssetInfo,
     ReleaseUploadProgress,
 )
+from release_tool.upload_transport import UploadTransportError
 
 
 def write_asset(path: Path, content: bytes) -> Path:
@@ -41,7 +42,14 @@ def completed(argv, *, stdout="", stderr="", returncode=0):
 
 
 def release_payload(tag="v3.6.22", *, assets=()):
-    return {"tag_name": tag, "assets": list(assets)}
+    return {
+        "tag_name": tag,
+        "upload_url": (
+            "https://uploads.github.com/repos/haohaizi554/UniversalCrawler/"
+            "releases/1/assets{?name,label}"
+        ),
+        "assets": list(assets),
+    }
 
 
 def releases_response(*releases):
@@ -401,6 +409,44 @@ def test_upload_retries_current_file_after_transient_disconnect(tmp_path):
     assert progress[-1].state == "completed"
 
 
+def test_upload_removes_unfinished_starter_asset_before_retry(tmp_path):
+    asset = write_asset(tmp_path / "installer.exe", b"12345678")
+    attempts = 0
+
+    def upload_request(_upload_url, path, on_progress):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            on_progress(0, path.stat().st_size, 0.0)
+            raise UploadTransportError("HTTP 422", transient=False)
+        on_progress(path.stat().st_size, path.stat().st_size, 4096.0)
+
+    starter_asset = {
+        "id": 42,
+        "name": asset.name,
+        "size": 0,
+        "digest": "",
+        "state": "starter",
+    }
+    run = Mock(
+        side_effect=[
+            releases_response(release_payload()),
+            releases_response(release_payload(assets=[starter_asset])),
+            completed([]),
+        ]
+    )
+    publisher = make_publisher(run, upload_request=upload_request)
+
+    with patch("time.sleep") as sleep:
+        publisher.upload_assets("v3.6.22", [asset], repair=False)
+
+    assert attempts == 2
+    sleep.assert_called_once_with(1.0)
+    delete_command = run.call_args_list[2].args[0]
+    assert delete_command[delete_command.index("--method") + 1] == "DELETE"
+    assert delete_command[-1].endswith("/releases/assets/42")
+
+
 def test_upload_rejects_mismatched_asset_without_repair(tmp_path):
     asset = write_asset(tmp_path / "installer.exe", b"local")
     remote_asset = ReleaseAssetInfo(name="installer.exe", size=asset.stat().st_size, digest="sha256:" + "0" * 64)
@@ -610,16 +656,25 @@ def test_remote_asset_duplicate_names_are_rejected_before_lookup_collapse(tmp_pa
         publisher.verify_assets("v3.6.22", [asset])
 
 
-def test_upload_requires_regular_absolute_assets_and_uses_boundary(tmp_path):
+def test_upload_requires_regular_absolute_assets_and_uses_trusted_endpoint(tmp_path):
     asset = write_asset(tmp_path / "installer.exe", b"same")
-    run = Mock(side_effect=[releases_response(release_payload()), completed([])])
-    publisher = make_publisher(run)
+    uploaded: list[tuple[str, Path]] = []
+
+    def upload_request(upload_url, path, _on_progress):
+        uploaded.append((upload_url, path))
+
+    run = Mock(return_value=releases_response(release_payload()))
+    publisher = make_publisher(run, upload_request=upload_request)
 
     publisher.upload_assets("v3.6.22", [asset], repair=False)
 
-    upload = run.call_args_list[1].args[0]
-    assert upload[upload.index("--") + 2] == str(asset.resolve())
-    assert "--repo" in upload
+    assert uploaded == [
+        (
+            "https://uploads.github.com/repos/haohaizi554/UniversalCrawler/"
+            "releases/1/assets{?name,label}",
+            asset.resolve(),
+        )
+    ]
 
 
 def test_upload_rechecks_asset_snapshot_before_invoking_cli(tmp_path):
@@ -638,24 +693,14 @@ def test_upload_rechecks_asset_snapshot_before_invoking_cli(tmp_path):
     assert run.call_count == 1
 
 
-def test_upload_rechecks_asset_snapshot_after_cli_returns(tmp_path):
+def test_upload_rechecks_asset_snapshot_after_transport_returns(tmp_path):
     asset = write_asset(tmp_path / "installer.exe", b"same")
 
-    def upload(*_args, **_kwargs):
+    def upload_request(*_args, **_kwargs):
         asset.write_bytes(b"mutated after upload")
-        return completed([])
 
-    calls = 0
-
-    def run_process(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return releases_response(release_payload())
-        return upload(*args, **kwargs)
-
-    run = Mock(side_effect=run_process)
-    publisher = make_publisher(run)
+    run = Mock(return_value=releases_response(release_payload()))
+    publisher = make_publisher(run, upload_request=upload_request)
 
     with pytest.raises(ValueError, match="changed after upload"):
         publisher.upload_assets("v3.6.22", [asset], repair=False)
