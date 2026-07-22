@@ -215,6 +215,30 @@ def test_scan_project_excludes_xml_from_code_statistics(tmp_path):
     assert [item["path"] for item in result["largest_files"]] == ["main.py"]
 
 
+def test_scan_project_excludes_graphify_output_directory(tmp_path):
+    """Graphify 生成物不应污染项目文件数、代码量和大文件榜单。"""
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    generated_dir = tmp_path / "graphify-out"
+    nested_dir = generated_dir / "cache"
+    nested_dir.mkdir(parents=True)
+    (generated_dir / "run_ast.py").write_text(
+        "print('generated')\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "stat-index.json").write_text(
+        '{"generated": true}\n',
+        encoding="utf-8",
+    )
+
+    result = scan_project(tmp_path)
+
+    assert result["total_dirs"] == 0
+    assert result["total_files"] == 1
+    assert result["code_files"] == 1
+    assert result["totals"]["all"]["files"] == 1
+    assert [item["path"] for item in result["largest_files"]] == ["main.py"]
+
+
 def test_scan_project_counts_python_test_case_definitions(tmp_path):
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()

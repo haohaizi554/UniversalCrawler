@@ -29,6 +29,7 @@ EXCLUDE_DIRS = {
     "build",
     "target",
     "out",
+    "graphify-out",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
