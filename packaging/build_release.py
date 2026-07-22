@@ -648,6 +648,16 @@ def _validate_git_release_state(tag: str) -> str:
     return head.lower()
 
 
+def _git_tag_exists(tag: str) -> bool:
+    """只判断本地 tag 是否存在；新修订 tag 允许在发布流程后续创建。"""
+
+    try:
+        _run_git(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
 def _validate_final_publish_window(tag: str, source_commit: str) -> None:
     """在原子发布前重验 live tag/HEAD，禁止 staging 使用过期源码身份。"""
 
@@ -1149,7 +1159,7 @@ def _build_pipeline_hooks(
             and _new_release_requires_clean_baseline(request)
         ):
             _validate_release_baseline_clean()
-        if formal_build and mode is ReleaseMode.SAME_RELEASE_REPAIR:
+        if formal_build and mode is ReleaseMode.SAME_RELEASE_REPAIR and _git_tag_exists(tag):
             # 同版本修订依赖既有 tag 绑定源码。先在 preflight 拒绝错配，
             # 避免读取私钥、生成签名或构建数 GB 资产后才发现目标不可发布。
             _validate_git_release_state(tag)

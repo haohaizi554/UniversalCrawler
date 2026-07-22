@@ -898,6 +898,7 @@ def test_same_release_tag_mismatch_fails_before_resolving_signing_material(tmp_p
     with (
         patch.object(tool, "_release_build_lock", side_effect=fake_lock),
         patch.object(tool, "_validate_release_baseline_clean"),
+        patch.object(tool, "_git_tag_exists", return_value=True),
         patch.object(
             tool,
             "_validate_git_release_state",
@@ -915,6 +916,49 @@ def test_same_release_tag_mismatch_fails_before_resolving_signing_material(tmp_p
     assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
     validate_tag.assert_called_once_with("v3.6.21-r1")
     resolve_key.assert_not_called()
+
+
+def test_same_release_new_revision_does_not_require_target_tag_before_signing(tmp_path):
+    tool = _load_tool()
+    private_key = tmp_path / "manifest-private.pem"
+    private_key.write_text(
+        ECC.generate(curve="Ed25519").export_key(format="PEM"),
+        encoding="utf-8",
+    )
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        apply_version=False,
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        same_release_repair=True,
+        private_key_path=str(private_key),
+        sign_manifest=True,
+    )
+
+    @contextmanager
+    def fake_lock(_project_root):
+        yield "release-token"
+
+    with (
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_validate_release_baseline_clean"),
+        patch.object(tool, "_git_tag_exists", return_value=False) as tag_exists,
+        patch.object(tool, "_validate_git_release_state") as validate_tag,
+        patch.object(
+            tool,
+            "_manifest_public_key_from_private",
+            side_effect=ValueError("stop after preflight"),
+        ),
+    ):
+        hooks = tool._build_pipeline_hooks(request, {}, emitter=None)
+        result = run_release_request(request, hooks, Mock(), CancellationToken())
+
+    assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    assert result.error == "stop after preflight"
+    tag_exists.assert_called_once_with("v3.6.21-r1")
+    validate_tag.assert_not_called()
 
 
 def test_formal_new_release_rejects_a_pre_staged_unrelated_file_before_version_apply(tmp_path):
