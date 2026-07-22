@@ -1149,6 +1149,10 @@ def _build_pipeline_hooks(
             and _new_release_requires_clean_baseline(request)
         ):
             _validate_release_baseline_clean()
+        if formal_build and mode is ReleaseMode.SAME_RELEASE_REPAIR:
+            # 同版本修订依赖既有 tag 绑定源码。先在 preflight 拒绝错配，
+            # 避免读取私钥、生成签名或构建数 GB 资产后才发现目标不可发布。
+            _validate_git_release_state(tag)
 
     def resolve_request_signing_material(
         _request: BuildRequest,

@@ -897,11 +897,12 @@ def test_same_release_tag_mismatch_fails_before_resolving_signing_material(tmp_p
 
     with (
         patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_validate_release_baseline_clean"),
         patch.object(
             tool,
             "_validate_git_release_state",
             side_effect=SystemExit("release tag points to a different source commit"),
-        ),
+        ) as validate_tag,
         patch.object(
             tool,
             "_manifest_public_key_from_private",
@@ -912,6 +913,7 @@ def test_same_release_tag_mismatch_fails_before_resolving_signing_material(tmp_p
         result = run_release_request(request, hooks, Mock(), CancellationToken())
 
     assert result.failed_stage is tool.ReleaseStage.PREFLIGHT
+    validate_tag.assert_called_once_with("v3.6.21-r1")
     resolve_key.assert_not_called()
 
 
