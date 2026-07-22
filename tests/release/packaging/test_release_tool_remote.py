@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from urllib.error import HTTPError
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -309,3 +309,63 @@ def test_open_json_rejects_responses_larger_than_the_bound(monkeypatch):
             environment={},
             timeout_seconds=2,
         )
+
+
+def test_open_json_retries_a_transient_proxy_disconnect(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return b'{"tag_name":"v3.6.21"}'
+
+    class Opener:
+        calls = 0
+
+        def open(self, _request, *, timeout):
+            assert timeout == 2
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionResetError(10054, "connection forcibly closed")
+            return Response()
+
+    opener = Opener()
+    monkeypatch.setattr(remote, "build_opener", lambda _handler: opener)
+
+    with patch("time.sleep") as sleep:
+        payload = remote._open_json(
+            remote.Request("https://api.github.com/repos/owner/repo/releases/latest"),
+            environment={},
+            timeout_seconds=2,
+        )
+
+    assert payload == {"tag_name": "v3.6.21"}
+    assert opener.calls == 2
+    sleep.assert_called_once_with(1.0)
+
+
+def test_open_json_does_not_retry_a_rate_limit_response(monkeypatch):
+    error = HTTPError(
+        "https://api.github.com/repos/owner/repo/releases/latest",
+        429,
+        "rate limited",
+        hdrs=None,
+        fp=None,
+    )
+    opener = Mock()
+    opener.open.side_effect = error
+    monkeypatch.setattr(remote, "build_opener", lambda _handler: opener)
+
+    with patch("time.sleep") as sleep, pytest.raises(HTTPError) as caught:
+        remote._open_json(
+            remote.Request("https://api.github.com/repos/owner/repo/releases/latest"),
+            environment={},
+            timeout_seconds=2,
+        )
+
+    assert caught.value is error
+    assert opener.open.call_count == 1
+    sleep.assert_not_called()

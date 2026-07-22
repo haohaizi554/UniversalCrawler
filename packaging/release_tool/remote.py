@@ -8,9 +8,10 @@ import math
 import os
 import re
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, _parse_proxy, build_opener
 
@@ -26,6 +27,19 @@ MAX_RELEASE_PAGE_BYTES = 256_000
 MAX_RELEASE_RESULTS = 30
 MAX_GIT_TAG_RESULTS = 512
 MAX_GIT_OUTPUT_CHARS = 512_000
+_READ_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+_TRANSIENT_HTTP_CODES = frozenset({408, 425, 500, 502, 503, 504})
+_TRANSIENT_NETWORK_FRAGMENTS = (
+    "connection refused",
+    "connection reset",
+    "connection was forcibly closed",
+    "i/o timeout",
+    "temporary failure",
+    "timed out",
+    "tls handshake timeout",
+    "unexpected eof",
+    "wsarecv",
+)
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -329,7 +343,7 @@ def _open_json(
         no_proxy=no_proxy,
     )
     opener = build_opener(handler)
-    with opener.open(request, timeout=timeout_seconds) as response:
+    with _open_with_retry(opener, request, timeout_seconds=timeout_seconds) as response:
         content = response.read(MAX_RESPONSE_BYTES + 1)
     if len(content) > MAX_RESPONSE_BYTES:
         raise ValueError("GitHub response exceeds the configured size limit")
@@ -355,7 +369,7 @@ def _open_latest_release_tag(
         no_proxy=values.get("no_proxy", ""),
     )
     opener = build_opener(handler, _TrustedGitHubRedirectHandler({"github.com"}))
-    with opener.open(request, timeout=timeout_seconds) as response:
+    with _open_with_retry(opener, request, timeout_seconds=timeout_seconds) as response:
         final_url = str(response.geturl() or page_url)
         tag = _release_tag_from_url(final_url, owner=owner, name=name)
         if tag:
@@ -367,6 +381,33 @@ def _open_latest_release_tag(
     if not tag:
         raise ValueError("GitHub release page has no release tag")
     return tag
+
+
+def _open_with_retry(opener, request: Request, *, timeout_seconds: float):
+    """为只读 GitHub 请求吸收代理瞬断，不重试鉴权或限流响应。"""
+
+    for attempt in range(len(_READ_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return opener.open(request, timeout=timeout_seconds)
+        except Exception as error:
+            if (
+                attempt >= len(_READ_RETRY_DELAYS_SECONDS)
+                or not _is_transient_read_error(error)
+            ):
+                raise
+            time.sleep(_READ_RETRY_DELAYS_SECONDS[attempt])
+    raise AssertionError("unreachable")
+
+
+def _is_transient_read_error(error: Exception) -> bool:
+    if isinstance(error, HTTPError):
+        return error.code in _TRANSIENT_HTTP_CODES
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return True
+    if isinstance(error, URLError) and isinstance(error.reason, Exception):
+        return _is_transient_read_error(error.reason)
+    message = str(getattr(error, "reason", error)).casefold()
+    return any(fragment in message for fragment in _TRANSIENT_NETWORK_FRAGMENTS)
 
 
 def _release_tag_from_url(url: str, *, owner: str, name: str) -> str:

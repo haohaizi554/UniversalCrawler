@@ -6,7 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -118,6 +118,107 @@ def test_expected_missing_release_probe_does_not_flood_publish_log(tmp_path):
     publisher.ensure_release("v3.6.22", "中文修订", write_notes(tmp_path / "notes.md"), repair=False)
 
     assert lines == []
+    assert run.call_count == 3
+
+
+def test_metadata_probe_retries_transient_proxy_disconnect(tmp_path):
+    lines = []
+    transient_failure = completed(
+        [],
+        stderr=(
+            'Get "https://api.github.com/repos/haohaizi554/UniversalCrawler/'
+            'releases/tags/v3.6.22": read tcp 127.0.0.1:64929->127.0.0.1:7890: '
+            "wsarecv: An existing connection was forcibly closed by the remote host."
+        ),
+        returncode=1,
+    )
+    run = Mock(
+        side_effect=[
+            transient_failure,
+            releases_response(release_payload()),
+        ]
+    )
+    publisher = make_publisher(run, output=lines.append)
+
+    with patch("time.sleep") as sleep:
+        publisher.ensure_release(
+            "v3.6.22",
+            "Release",
+            write_notes(tmp_path / "notes.md"),
+            repair=False,
+        )
+
+    assert run.call_count == 2
+    sleep.assert_called_once_with(1.0)
+    assert lines == ["GitHub 网络连接暂时中断，1 秒后重试（1/2）"]
+
+
+def test_metadata_probe_stops_after_bounded_transient_retries(tmp_path):
+    run = Mock(
+        return_value=completed(
+            [],
+            stderr="error connecting to api.github.com: connection reset by peer",
+            returncode=1,
+        )
+    )
+    publisher = make_publisher(run)
+
+    with patch("time.sleep") as sleep, pytest.raises(
+        PublishError,
+        match="^GitHub command failed$",
+    ):
+        publisher.ensure_release(
+            "v3.6.22",
+            "Release",
+            write_notes(tmp_path / "notes.md"),
+            repair=False,
+        )
+
+    assert run.call_count == 3
+    assert [call.args for call in sleep.call_args_list] == [(1.0,), (2.0,)]
+
+
+def test_successful_metadata_response_is_never_retried_for_body_text(tmp_path):
+    payload = release_payload()
+    payload["body"] = "Support note: connection reset by peer"
+    run = Mock(return_value=releases_response(payload))
+    publisher = make_publisher(run)
+
+    with patch("time.sleep") as sleep:
+        publisher.ensure_release(
+            "v3.6.22",
+            "Release",
+            write_notes(tmp_path / "notes.md"),
+            repair=False,
+        )
+
+    assert run.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_metadata_probe_does_not_retry_rate_limit_response(tmp_path):
+    run = Mock(
+        return_value=completed(
+            [],
+            stdout="HTTP/2 429 Too Many Requests\r\n\r\n{}",
+            returncode=1,
+        )
+    )
+    publisher = make_publisher(run)
+
+    with patch("time.sleep") as sleep, pytest.raises(
+        PublishError,
+        match="^GitHub command failed$",
+    ):
+        publisher.ensure_release(
+            "v3.6.22",
+            "Release",
+            write_notes(tmp_path / "notes.md"),
+            repair=False,
+        )
+
+    assert run.call_count == 1
+    sleep.assert_not_called()
 
 
 def test_publisher_redacts_subprocess_output_and_raises_for_nonzero_exit(tmp_path):

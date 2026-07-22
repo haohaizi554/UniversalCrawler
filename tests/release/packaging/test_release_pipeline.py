@@ -640,6 +640,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     identity_ready = False
     tag_ready = False
     version_staged = False
+    remote_main_commit = "a" * 40
 
     class FakePublisher:
         def __init__(self, *_args, **_kwargs):
@@ -664,7 +665,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
             calls.append("remote_verify")
 
     def fake_git(argv):
-        nonlocal identity_ready, tag_ready, version_staged
+        nonlocal identity_ready, tag_ready, version_staged, remote_main_commit
         git_commands.append(list(argv))
         command = argv[0]
         calls.append(f"git:{command}")
@@ -675,6 +676,8 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
             version_staged = True
         if command == "tag":
             tag_ready = True
+        if command == "push" and argv[-1].endswith(":refs/heads/main"):
+            remote_main_commit = source_commit
         if command == "rev-parse":
             if "--verify" in argv and not tag_ready:
                 raise subprocess.CalledProcessError(1, ["git", *argv])
@@ -684,7 +687,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
         if command == "diff-tree":
             return "shared/version.py"
         if command == "ls-remote":
-            return f"{source_commit}\trefs/heads/main"
+            return f"{remote_main_commit}\trefs/heads/main"
         return ""
 
     def validate_identity(tag):

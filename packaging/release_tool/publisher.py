@@ -8,6 +8,7 @@ import math
 import re
 import stat
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +22,28 @@ from .events import redact_release_text
 GITHUB_HOST = "github.com"
 DEFAULT_METADATA_TIMEOUT_SECONDS = 60.0
 DEFAULT_UPLOAD_TIMEOUT_SECONDS = 2 * 60 * 60.0
+_METADATA_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_TRANSIENT_HTTP_STATUS_PATTERN = re.compile(
+    r"\bHTTP(?:/\S+)?\s+(?:408|425|500|502|503|504)\b",
+    re.IGNORECASE,
+)
+_TRANSIENT_GITHUB_FAILURE_FRAGMENTS = (
+    "connection refused",
+    "connection reset by peer",
+    "connection was forcibly closed",
+    "context deadline exceeded",
+    "error connecting to api.github.com",
+    "i/o timeout",
+    "proxyconnect tcp",
+    "read tcp",
+    "temporary failure",
+    "tls handshake timeout",
+    "unexpected eof",
+    "wsarecv",
+)
 
 
 class PublishError(RuntimeError):
@@ -263,6 +283,7 @@ class GitHubReleasePublisher:
             ),
             timeout_seconds=self._metadata_timeout_seconds,
             emit_output=False,
+            retry_transient=True,
         )
         status, body = _included_response(completed.stdout)
         if status == 404:
@@ -325,7 +346,10 @@ class GitHubReleasePublisher:
         return argv
 
     def _api_json(self, method: str, endpoint: str, *extra: str) -> object:
-        completed = self._run(self._api_command(method, endpoint, *extra))
+        completed = self._run(
+            self._api_command(method, endpoint, *extra),
+            retry_transient=method.casefold() == "get",
+        )
         return _json_payload(completed.stdout)
 
     def _api_command(self, method: str, endpoint: str, *extra: str) -> list[str]:
@@ -340,8 +364,17 @@ class GitHubReleasePublisher:
             *extra,
         ]
 
-    def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        completed = self._execute(argv, timeout_seconds=self._metadata_timeout_seconds)
+    def _run(
+        self,
+        argv: Sequence[str],
+        *,
+        retry_transient: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        completed = self._execute(
+            argv,
+            timeout_seconds=self._metadata_timeout_seconds,
+            retry_transient=retry_transient,
+        )
         if completed.returncode:
             raise PublishError("GitHub command failed")
         return completed
@@ -352,36 +385,61 @@ class GitHubReleasePublisher:
         *,
         timeout_seconds: float,
         emit_output: bool = True,
+        retry_transient: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        timeout_error: subprocess.TimeoutExpired | None = None
-        os_error = False
-        try:
-            completed = self._run_process(
-                list(argv),
-                cwd=str(Path(self.project_root)),
-                env=dict(self.environment),
-                capture_output=True,
-                text=True,
-                # gh 的管道输出固定为 UTF-8；Windows 默认 GBK 会在中文
-                # Release 标题或说明处令 subprocess 的 reader 线程崩溃。
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                check=False,
-                timeout=timeout_seconds,
+        retry_delays = _METADATA_RETRY_DELAYS_SECONDS if retry_transient else ()
+        for attempt in range(len(retry_delays) + 1):
+            timeout_error: subprocess.TimeoutExpired | None = None
+            os_error = False
+            try:
+                completed = self._run_process(
+                    list(argv),
+                    cwd=str(Path(self.project_root)),
+                    env=dict(self.environment),
+                    capture_output=True,
+                    text=True,
+                    # gh 的管道输出固定为 UTF-8；Windows 默认 GBK 会在中文
+                    # Release 标题或说明处令 subprocess 的 reader 线程崩溃。
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                timeout_error = error
+            except OSError:
+                os_error = True
+
+            can_retry = attempt < len(retry_delays) and (
+                timeout_error is not None
+                or (
+                    not os_error
+                    and completed.returncode != 0
+                    and _is_transient_github_failure(
+                        completed.stdout,
+                        completed.stderr,
+                    )
+                )
             )
-        except subprocess.TimeoutExpired as error:
-            timeout_error = error
-        except OSError:
-            os_error = True
-        if timeout_error is not None:
-            self._emit_streams(timeout_error.output, timeout_error.stderr)
-            raise PublishError("GitHub command failed")
-        if os_error:
-            raise PublishError("GitHub command failed")
-        if emit_output:
-            self._emit_streams(completed.stdout, completed.stderr)
-        return completed
+            if can_retry:
+                delay = retry_delays[attempt]
+                self.output(
+                    f"GitHub 网络连接暂时中断，{delay:g} 秒后重试"
+                    f"（{attempt + 1}/{len(retry_delays)}）"
+                )
+                time.sleep(delay)
+                continue
+            if timeout_error is not None:
+                self._emit_streams(timeout_error.output, timeout_error.stderr)
+                raise PublishError("GitHub command failed")
+            if os_error:
+                raise PublishError("GitHub command failed")
+            if emit_output:
+                self._emit_streams(completed.stdout, completed.stderr)
+            return completed
+
+        raise AssertionError("unreachable")
 
     def _emit_streams(self, *streams: object) -> None:
         for stream in streams:
@@ -395,6 +453,16 @@ def _normalise_digest(value: str) -> str:
     if not _DIGEST_PATTERN.fullmatch(digest):
         raise ValueError("release asset digest must be a sha256 digest")
     return digest
+
+
+def _is_transient_github_failure(*streams: object) -> bool:
+    """只识别适合自动重试的网络/服务端瞬态错误。"""
+
+    message = "\n".join(str(stream or "") for stream in streams).casefold()
+    return bool(
+        _TRANSIENT_HTTP_STATUS_PATTERN.search(message)
+        or any(fragment in message for fragment in _TRANSIENT_GITHUB_FAILURE_FRAGMENTS)
+    )
 
 
 def _local_assets(
