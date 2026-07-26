@@ -359,6 +359,11 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         logs.time_filter.setCurrentIndex(all_time_index)
         shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
         self._wait_for_log_rows(logs, 1)
+        # The table query and detail builder run on independent workers.
+        self._wait_until(
+            lambda: logs.detail_platform_value.text() == "\u2699\ufe0f System",
+            message="translated log detail was not rendered",
+        )
 
         self.assertTrue(logs._tab_buttons["all"].text().startswith("All logs"))
         self.assertTrue(logs.footer_stats.text().startswith("Total 1 / matched 1 / showing 1"))
