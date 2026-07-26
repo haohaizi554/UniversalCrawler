@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
 MODULE_PATH = PROJECT_ROOT / "app" / "core" / "tools" / "builtin" / "download_residue.py"
 CONTRACTS_PATH = PROJECT_ROOT / "app" / "core" / "tools" / "contracts.py"
 

@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = ROOT / "app" / "web" / "static"
 TOOLBOX_JS = STATIC_DIR / "toolbox_controller.js"
 TOOLBOX_CSS = STATIC_DIR / "toolbox.css"
