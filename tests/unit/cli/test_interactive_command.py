@@ -56,6 +56,7 @@ class InteractiveCommandTests(unittest.TestCase):
         inputs: list[object],
         cookie_data: dict | None = None,
         cookie_path: str = "auth.json",
+        runner_cls_override=None,
     ):
         from cli.interactive.workflow import run_interactive
 
@@ -71,7 +72,7 @@ class InteractiveCommandTests(unittest.TestCase):
             for platform in sdk.list_platforms.return_value
         ]
         sdk_cls = Mock(return_value=sdk)
-        runner_cls = Mock(return_value=runner)
+        runner_cls = runner_cls_override or Mock(return_value=runner)
         if cookie_data is None:
             cookie_data = {"sessionid_ss": "cookie-value"}
 
@@ -103,6 +104,44 @@ class InteractiveCommandTests(unittest.TestCase):
             )
 
         return result, sdk_cls, runner_cls, cfg_set
+
+    def test_interactive_reaches_real_runner_init_with_local_profile(self):
+        from cli.interactive.workflow import CLIRunner
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = [
+            {
+                "id": "douyin",
+                "name": "Douyin",
+                "search_placeholder": "query",
+            }
+        ]
+        runner_result = {
+            "status": "ok",
+            "elapsed": 0.1,
+            "items": [],
+        }
+
+        with patch.object(
+            CLIRunner, "run", autospec=True, return_value=runner_result
+        ) as run:
+            result, _sdk_cls, _runner_cls, _cfg_set = self._run(
+                self._make_args(),
+                sdk=sdk,
+                runner=Mock(),
+                inputs=["1", "cats", "1", "", "y", ""],
+                cookie_path="dy_auth.json",
+                runner_cls_override=CLIRunner,
+            )
+
+        self.assertEqual(result, 0)
+        profile = run.call_args.args[0].execution_profile
+        self.assertEqual(profile.host_surface, "cli")
+        self.assertTrue(profile.owner_id)
+        self.assertEqual(
+            profile.approved_roots,
+            frozenset({Path(r"D:\Downloads\UCP").resolve()}),
+        )
 
     def test_unknown_plugin_gets_generic_guide(self):
         from cli.interactive.catalog import guide_for

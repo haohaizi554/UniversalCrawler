@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 class SearchCommandRuntimeTests(unittest.TestCase):
     def _make_env(self):
@@ -113,6 +114,40 @@ class SearchCommandRuntimeTests(unittest.TestCase):
         self.assertEqual(runner_kwargs["save_dir"], "downloads")
         self.assertFalse(runner_kwargs["download"])
         self.assertEqual(runner_kwargs["selection_strategy"], "selection")
+        profile = runner_kwargs["execution_profile"]
+        self.assertEqual(profile.host_surface, "cli")
+        self.assertEqual(profile.approved_roots, frozenset({Path("downloads").resolve()}))
+
+    def test_run_search_command_reaches_real_runner_init_with_one_profile(self):
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.search_command_runtime import run_search_command
+
+        env = self._make_env()
+        env.CLIRunner_cls = CLIRunner
+        env.selection_factory.from_cli_args.return_value = "selection"
+        args = self._make_search_args(save_dir="custom-downloads")
+
+        with patch(
+            "shared.search_command_runtime.compose_runtime_config",
+            return_value={"timeout": 10},
+        ) as compose_config, patch.object(
+            CLIRunner,
+            "run",
+            autospec=True,
+            return_value={"status": "ok", "items": []},
+        ) as run:
+            outcome, _result = run_search_command(args, env=env)
+
+        self.assertEqual(outcome, "ok")
+        runner = run.call_args.args[0]
+        profile = runner.execution_profile
+        self.assertIs(compose_config.call_args.kwargs["execution_profile"], profile)
+        self.assertEqual(profile.host_surface, "cli")
+        self.assertTrue(profile.owner_id)
+        self.assertEqual(
+            profile.approved_roots,
+            frozenset({Path("custom-downloads").resolve()}),
+        )
 
     def test_missing_search_source_is_usage_error_before_dependencies(self):
         from shared.search_command_runtime import run_search_command
@@ -298,7 +333,11 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         args = self._make_download_args()
         args.title = "Demo"
 
-        outcome, result, error = run_download_command(args, env=env)
+        with patch(
+            "shared.download_command_runtime.compose_runtime_config",
+            return_value={},
+        ) as compose_config:
+            outcome, result, error = run_download_command(args, env=env)
 
         self.assertEqual(outcome, "ok")
         self.assertEqual(result, {"status": "ok"})
@@ -308,6 +347,10 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
             "https://example.com/video",
         )
         self.assertEqual(sdk.download_video.call_args.kwargs["title"], "Demo")
+        profile = env.UcrawlSDK_cls.call_args.kwargs["execution_profile"]
+        self.assertIs(compose_config.call_args.kwargs["execution_profile"], profile)
+        self.assertEqual(profile.host_surface, "cli")
+        self.assertEqual(profile.approved_roots, frozenset({Path("downloads").resolve()}))
 
     def test_download_validation_is_usage_error_before_sdk_construction(self):
         from shared.download_command_runtime import run_download_command

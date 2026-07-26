@@ -14,6 +14,7 @@ from app.utils.runtime_paths import resolve_resource_file
 from app.web.rest_router import build_rest_router
 from app.web.session_runtime import configured_allowed_origins
 from app.web.ws_router import build_ws_router
+from shared.execution_profile import public_web_profile
 from shared.runtime_adapters import run_cli_search
 from shared.release_identity import load_runtime_release_identity
 from shared.version import __version__
@@ -105,9 +106,39 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
             run_cli_search=run_cli_search,
         )
 
+    composition_holder = {}
+
+    def _workflow_factory(session_controller, broadcast):
+        def _execution_profile_factory():
+            composition = composition_holder.get("composition")
+            if composition is None:
+                raise RuntimeError("web application composition is not ready")
+            registry = composition.session_registry
+            with registry._lock:
+                context = next(
+                    (
+                        candidate
+                        for candidate in registry._contexts.values()
+                        if candidate.controller is session_controller
+                    ),
+                    None,
+                )
+            if context is None:
+                raise RuntimeError("web session context is no longer active")
+            return public_web_profile(
+                owner_id=context.session_id,
+                approved_roots=context.approved_roots_snapshot(),
+            )
+
+        return WebWorkflowService(
+            session_controller,
+            broadcast,
+            execution_profile_factory=_execution_profile_factory,
+        )
+
     composition = build_web_app_composition(
         controller_factory=WebController,
-        workflow_factory=WebWorkflowService,
+        workflow_factory=_workflow_factory,
         session_cookie_name=SESSION_COOKIE_NAME,
         session_token_cookie_name=SESSION_TOKEN_COOKIE_NAME,
         csrf_cookie_name=CSRF_COOKIE_NAME,
@@ -117,6 +148,7 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
         access_token=access_token,
         access_cookie_name=ACCESS_COOKIE_NAME,
     )
+    composition_holder["composition"] = composition
     publish_app_state(
         app,
         composition=composition,

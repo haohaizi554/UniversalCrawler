@@ -97,6 +97,63 @@ class WebSecurityHardeningTests(unittest.TestCase):
         )
         get_plugin.assert_not_called()
 
+    def test_workflow_profiles_are_isolated_by_session_owner_and_roots(self):
+        from app.core.plugin_registry import registry
+        from app.web.server import create_app
+
+        app = create_app()
+        client_a = TestClient(app)
+        client_b = TestClient(app)
+        client_a.get("/api/session/bootstrap")
+        client_b.get("/api/session/bootstrap")
+        cookie_name = app.state.web_session_cookie_name
+        context_a = app.state.web_session_registry.get_or_create(
+            client_a.cookies.get(cookie_name)
+        )
+        context_b = app.state.web_session_registry.get_or_create(
+            client_b.cookies.get(cookie_name)
+        )
+        context_a.approve_directory("session-a-downloads")
+        context_b.approve_directory("session-b-downloads")
+        observed_profiles = []
+
+        def capture_profile(_payload, config, _source, *, execution_profile):
+            observed_profiles.append(execution_profile)
+            return config
+
+        with patch.object(registry, "get_plugin", return_value=object()), patch(
+            "app.web.workflows.validate_config_types", return_value=None
+        ), patch(
+            "app.web.workflows.merge_default_config", return_value={}
+        ), patch(
+            "app.web.workflows.merge_convenience_params",
+            side_effect=capture_profile,
+        ), patch.object(context_a.controller, "start_crawl"), patch.object(
+            context_b.controller, "start_crawl"
+        ):
+            response_a = client_a.post(
+                "/api/crawl/start", json={"source": "douyin", "keyword": "a"}
+            )
+            response_b = client_b.post(
+                "/api/crawl/start", json={"source": "douyin", "keyword": "b"}
+            )
+
+        self.assertEqual(response_a.status_code, 200)
+        self.assertEqual(response_b.status_code, 200)
+        self.assertEqual(len(observed_profiles), 2)
+        profile_a, profile_b = observed_profiles
+        self.assertIsNot(profile_a, profile_b)
+        self.assertEqual(profile_a.owner_id, context_a.session_id)
+        self.assertEqual(profile_b.owner_id, context_b.session_id)
+        self.assertEqual(
+            profile_a.approved_roots,
+            frozenset(Path(root).resolve() for root in context_a.approved_roots_snapshot()),
+        )
+        self.assertEqual(
+            profile_b.approved_roots,
+            frozenset(Path(root).resolve() for root in context_b.approved_roots_snapshot()),
+        )
+
     def test_production_app_uses_composed_rest_and_websocket_routers(self):
         pending = list(self.client.app.routes)
         registered_routes = []

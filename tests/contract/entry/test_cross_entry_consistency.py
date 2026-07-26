@@ -100,8 +100,6 @@ class SearchEntryConsistencyTests(unittest.TestCase):
                 "downloads",
                 "--config",
                 '{"author":"alice"}',
-                "--proxy",
-                "Clash (7890)",
                 "--run-timeout",
                 "60",
                 "--preload-choices",
@@ -156,7 +154,6 @@ class SearchEntryConsistencyTests(unittest.TestCase):
                 selection={"strategy": "preload", "choices": [[0], [1, 2]]},
                 run_timeout=60,
                 download=False,
-                proxy="Clash (7890)",
                 author="alice",
             )
 
@@ -188,7 +185,6 @@ class SearchEntryConsistencyTests(unittest.TestCase):
                     "keyword": "ABC-123",
                     "save_dir": "downloads",
                     "config": {"author": "alice"},
-                    "proxy": "Clash (7890)",
                     "run_timeout": 60,
                     "selection": {"strategy": "preload", "choices": [[0], [1, 2]]},
                     "download": False,
@@ -208,7 +204,6 @@ class SearchEntryConsistencyTests(unittest.TestCase):
         expected_config = {
             "timeout": 10,
             "author": "alice",
-            "proxy": "http://127.0.0.1:7890",
             "folder_name": "alice",
             "use_subdir": True,
         }
@@ -257,8 +252,6 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
                 "45",
                 "--config",
                 '{"author":"alice"}',
-                "--proxy",
-                "Clash (7890)",
                 "--file-name",
                 "demo",
             ]
@@ -329,7 +322,6 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
                     "save_dir": "downloads",
                     "timeout": 45,
                     "config": {"author": "alice"},
-                    "proxy": "Clash (7890)",
                     "file_name": "demo",
                 },
                 headers=_auth_headers(client),
@@ -344,7 +336,6 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         api_config = self._api_download_config()
         expected_config = {
             "author": "alice",
-            "proxy": "http://127.0.0.1:7890",
             "folder_name": "alice",
             "use_subdir": True,
             "file_name": "demo",
@@ -573,7 +564,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
         sdk = Mock()
         sdk.download_video.return_value = expected
         cli_env = DownloadCommandEnv(
-            UcrawlSDK_cls=lambda save_dir: sdk,
+            UcrawlSDK_cls=lambda save_dir, execution_profile: sdk,
             get_default_save_dir=lambda: "downloads",
             build_missav_proxy_url=lambda proxy: proxy,
             validate_config_types=lambda config: None,

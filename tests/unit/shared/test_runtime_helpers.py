@@ -282,11 +282,18 @@ class RuntimeAdaptersTests(unittest.TestCase):
         from shared.runtime_adapters import build_sdk
 
         sdk = Mock()
+        profile = _local_profile()
         with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk) as sdk_cls:
-            built = build_sdk(save_dir="downloads")
+            built = build_sdk(
+                save_dir="downloads",
+                execution_profile=profile,
+            )
 
         self.assertIs(built, sdk)
-        sdk_cls.assert_called_once_with(save_dir="downloads")
+        sdk_cls.assert_called_once_with(
+            save_dir="downloads",
+            execution_profile=profile,
+        )
 
 class SharedSelectionRuntimeTests(unittest.TestCase):
     def test_parse_preloaded_choices_rejects_non_nested_sequence(self):

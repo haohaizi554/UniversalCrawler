@@ -1,9 +1,11 @@
 import asyncio
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from app.models.video_item import VideoItem
+from shared.execution_profile import public_web_profile
 
 class _FakeController:
     def __init__(self):
@@ -62,7 +64,14 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             self.events.append((event_type, data))
 
         self.controller = _FakeController()
-        self.service = WebWorkflowService(self.controller, _broadcast)
+        self.service = WebWorkflowService(
+            self.controller,
+            _broadcast,
+            execution_profile_factory=lambda: public_web_profile(
+                owner_id="workflow-test",
+                approved_roots=(Path(self.controller.current_save_dir),),
+            ),
+        )
 
     async def test_start_crawl_rejects_invalid_selection_payload(self):
         result = await self.service.start_crawl(
@@ -78,6 +87,53 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("无效选择策略", result["error"])
         self.assertEqual(self.events[-1], ("crawl_state", {"is_running": False}))
         self.controller.start_crawl.assert_not_called()
+
+    async def test_direct_download_reuses_factory_profile_for_merge_and_sdk(self):
+        from app.web.workflows import WebWorkflowService
+
+        profile = public_web_profile(
+            owner_id="session-direct",
+            approved_roots=(Path("downloads"),),
+        )
+        profile_factory = Mock(return_value=profile)
+        service = WebWorkflowService(
+            self.controller,
+            AsyncMock(),
+            execution_profile_factory=profile_factory,
+        )
+        fake_sdk = MagicMock()
+        fake_sdk.download_video.return_value = {
+            "status": "ok",
+            "title": "done.mp4",
+            "local_path": "downloads/done.mp4",
+            "content_type": "video",
+            "meta": {},
+        }
+
+        with patch(
+            "app.web.workflows.validate_direct_download_url", return_value=None
+        ), patch(
+            "app.core.plugin_registry.registry.get_plugin", return_value=object()
+        ), patch(
+            "app.web.workflows.validate_config_types", return_value=None
+        ), patch(
+            "app.web.workflows.get_platform_defaults", return_value={}
+        ), patch(
+            "app.web.workflows.merge_convenience_params"
+        ) as merge_params, patch(
+            "app.web.workflows.build_sdk", return_value=fake_sdk
+        ) as build_sdk:
+            result = await service.direct_download(
+                {"url": "https://example.com/video", "source": "douyin"},
+                log_error=False,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        profile_factory.assert_called_once_with()
+        self.assertIs(
+            merge_params.call_args.kwargs["execution_profile"], profile
+        )
+        self.assertIs(build_sdk.call_args.kwargs["execution_profile"], profile)
 
     async def test_start_crawl_merges_config_and_updates_save_dir(self):
         with (
@@ -234,7 +290,14 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         from app.web.workflows import WebWorkflowService
 
-        service = WebWorkflowService(self.controller, _broadcast)
+        service = WebWorkflowService(
+            self.controller,
+            _broadcast,
+            execution_profile_factory=lambda: public_web_profile(
+                owner_id="workflow-progress-test",
+                approved_roots=(Path(self.controller.current_save_dir),),
+            ),
+        )
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         loop = asyncio.get_running_loop()
 

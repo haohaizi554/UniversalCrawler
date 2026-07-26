@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
+from shared.execution_profile import ExecutionProfile, local_execution_profile
 from shared.runtime_options import compose_runtime_config
 
 @dataclass(slots=True)
@@ -127,8 +130,25 @@ def resolve_command_timeout(
     value = current if current is not None else legacy
     return value, legacy is not None
 
-def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
+def _local_cli_profile(save_dir: str) -> ExecutionProfile:
+    return local_execution_profile(
+        host_surface="cli",
+        owner_id=f"cli-pid-{os.getpid()}",
+        approved_roots=(Path(save_dir).expanduser().resolve(),),
+        tool_permissions=(),
+        allow_external_plugins=True,
+    )
+
+
+def build_config(
+    args: argparse.Namespace,
+    *,
+    env: SearchCommandEnv,
+    execution_profile: ExecutionProfile | None = None,
+) -> dict:
     source = resolve_source(args)
+    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
+    execution_profile = execution_profile or _local_cli_profile(save_dir)
     user_config: dict = {}
     config_json = getattr(args, "config", None)
     if config_json:
@@ -169,6 +189,7 @@ def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
         convenience_body=convenience_body,
         defaults_factory=env.get_platform_defaults,
         proxy_normalizer=env.build_missav_proxy_url,
+        execution_profile=execution_profile,
     )
     # CLI 的 HTTP 超时允许小数；共享 Web 便捷参数桥为兼容旧请求只把 int
     # 解释为 spider timeout，因此在 CLI 边界完成最高优先级覆盖。
@@ -213,7 +234,9 @@ def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tu
     if error:
         return "usage", {"status": "error", "error": error.removeprefix("❌ ").strip()}
 
-    config = build_config(args, env=env)
+    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
+    execution_profile = _local_cli_profile(save_dir)
+    config = build_config(args, env=env, execution_profile=execution_profile)
     try:
         strategy = build_selection_strategy(args, env=env)
     except (TypeError, ValueError) as exc:
@@ -225,13 +248,14 @@ def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tu
     runner = env.CLIRunner_cls(
         source=source,
         keyword=resolve_keyword(args),
-        save_dir=getattr(args, "save_dir", None) or env.get_default_save_dir(),
+        save_dir=save_dir,
         selection_strategy=strategy,
         config=config,
         verbose=not getattr(args, "quiet", False),
         log_to_stderr=not getattr(args, "quiet", False),
         timeout=command_timeout,
         download=not getattr(args, "no_download", False),
+        execution_profile=execution_profile,
     )
     result = runner.run()
     status = str(result.get("status", "error"))

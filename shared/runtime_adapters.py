@@ -34,8 +34,11 @@ def run_cli_search(
     )
     return runner.run()
 
-def build_sdk(*, save_dir: str):
+def build_sdk(*, save_dir: str, execution_profile: ExecutionProfile):
     """通过宿主无关函数创建既有 SDK 对象。"""
     from shared.sdk_runtime import UcrawlSDK
 
-    return UcrawlSDK(save_dir=save_dir)
+    return UcrawlSDK(
+        save_dir=save_dir,
+        execution_profile=execution_profile,
+    )

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
+from shared.execution_profile import ExecutionProfile, local_execution_profile
 from shared.runtime_options import compose_runtime_config
 
 @dataclass(slots=True)
@@ -89,7 +92,25 @@ def parse_user_config(args: argparse.Namespace, *, env: DownloadCommandEnv) -> t
         return None, f"❌ {config_err}"
     return dict(parsed), None
 
-def build_config(args: argparse.Namespace, *, source: str, env: DownloadCommandEnv) -> tuple[dict | None, str | None]:
+def _local_cli_profile(save_dir: str) -> ExecutionProfile:
+    return local_execution_profile(
+        host_surface="cli",
+        owner_id=f"cli-pid-{os.getpid()}",
+        approved_roots=(Path(save_dir).expanduser().resolve(),),
+        tool_permissions=(),
+        allow_external_plugins=True,
+    )
+
+
+def build_config(
+    args: argparse.Namespace,
+    *,
+    source: str,
+    env: DownloadCommandEnv,
+    execution_profile: ExecutionProfile | None = None,
+) -> tuple[dict | None, str | None]:
+    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
+    execution_profile = execution_profile or _local_cli_profile(save_dir)
     user_config, error = parse_user_config(args, env=env)
     if error:
         return None, error
@@ -122,6 +143,7 @@ def build_config(args: argparse.Namespace, *, source: str, env: DownloadCommandE
         convenience_body=convenience_body,
         defaults_factory=lambda _source: {},
         proxy_normalizer=env.build_missav_proxy_url,
+        execution_profile=execution_profile,
     )
 
     if config:
@@ -158,12 +180,21 @@ def run_download_command(
         valid_ids = env.list_platform_ids()
         return "usage", None, f"❌ 无效平台: {source}。支持: {valid_ids}"
 
-    config, config_error = build_config(args, source=source, env=env)
+    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
+    execution_profile = _local_cli_profile(save_dir)
+    config, config_error = build_config(
+        args,
+        source=source,
+        env=env,
+        execution_profile=execution_profile,
+    )
     if config_error:
         return "usage", None, config_error
 
-    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
-    sdk = env.UcrawlSDK_cls(save_dir=save_dir)
+    sdk = env.UcrawlSDK_cls(
+        save_dir=save_dir,
+        execution_profile=execution_profile,
+    )
     try:
         result = sdk.download_video(
             url=url,

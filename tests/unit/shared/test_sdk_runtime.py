@@ -8,6 +8,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 class UcrawlSDKInitTests(unittest.TestCase):
@@ -236,6 +237,33 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
             instance.run.return_value = expected
             result = sdk.search("douyin", "kw")
         self.assertEqual(result, expected)
+
+    def test_search_reaches_real_runner_init_with_one_sdk_profile(self):
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.sdk_runtime import UcrawlSDK, compose_runtime_config
+
+        sdk = UcrawlSDK(save_dir="sdk-downloads")
+        with patch(
+            "shared.sdk_runtime.compose_runtime_config",
+            wraps=compose_runtime_config,
+        ) as compose_config, patch.object(
+            CLIRunner,
+            "run",
+            autospec=True,
+            return_value={"status": "ok", "items": []},
+        ) as run:
+            result = sdk.search("douyin", "cats", download=False)
+
+        self.assertEqual(result["status"], "ok")
+        runner = run.call_args.args[0]
+        profile = runner.execution_profile
+        self.assertIs(compose_config.call_args.kwargs["execution_profile"], profile)
+        self.assertEqual(profile.host_surface, "sdk")
+        self.assertTrue(profile.owner_id)
+        self.assertEqual(
+            profile.approved_roots,
+            frozenset({Path("sdk-downloads").resolve()}),
+        )
 
     def test_search_merges_default_config(self):
         """SDK 的 default_config 必须合并到 CLIRunner 的 config。"""

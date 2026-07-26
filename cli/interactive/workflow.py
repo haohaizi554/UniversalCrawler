@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from cli.exit_codes import CliExitCode, exit_code_for_status
 from cli.interactive import configuration, prompts
 from cli.interactive.catalog import guide_for
 from shared.cli_runner_runtime import CLIRunner
+from shared.execution_profile import local_execution_profile
 from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeSelection
 from shared.runtime_options import get_default_save_dir, get_platform_defaults
@@ -385,6 +387,13 @@ def _run_interactive_loop(
             )
         print(f"\n{prompts.BOLD}正在搜索...{prompts.RESET}\n")
         try:
+            execution_profile = local_execution_profile(
+                host_surface="cli",
+                owner_id=f"interactive-cli-pid-{os.getpid()}",
+                approved_roots=(Path(save_dir).expanduser().resolve(),),
+                tool_permissions=(),
+                allow_external_plugins=True,
+            )
             runner = runner_cls(
                 source=platform_id,
                 keyword=keyword,
@@ -395,6 +404,7 @@ def _run_interactive_loop(
                 log_to_stderr=not getattr(args, "quiet", False),
                 timeout=command_timeout,
                 download=download,
+                execution_profile=execution_profile,
             )
             result = runner.run()
         except Exception as exc:

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from shared.cli_runner_runtime import CLIRunner
+from shared.execution_profile import ExecutionProfile, local_execution_profile
 from shared.selection_base import SelectionStrategy, is_selection_strategy
 
 # 保持 CLI/SDK 输出实时刷新，便于长任务反馈
@@ -66,6 +68,7 @@ class UcrawlSDK:
         save_dir: str | None = None,
         verbose: bool = False,
         config: dict | None = None,
+        execution_profile: ExecutionProfile | None = None,
     ):
         """初始化 SDK。
 
@@ -83,7 +86,33 @@ class UcrawlSDK:
         if config is not None and not isinstance(config, dict):
             raise TypeError("config 必须是字典或 None")
         self.default_config = dict(config or {})
+        if execution_profile is not None and not isinstance(
+            execution_profile, ExecutionProfile
+        ):
+            raise TypeError("execution_profile must be an ExecutionProfile or None")
+        self._execution_profile_supplied = execution_profile is not None
+        self.execution_profile = execution_profile or self._local_execution_profile(
+            self.save_dir
+        )
         self._tools_api = None
+
+    @staticmethod
+    def _local_execution_profile(save_dir: str) -> ExecutionProfile:
+        return local_execution_profile(
+            host_surface="sdk",
+            owner_id=f"sdk-pid-{os.getpid()}",
+            approved_roots=(Path(save_dir).expanduser().resolve(),),
+            tool_permissions=(),
+            allow_external_plugins=True,
+        )
+
+    def _execution_profile_for_save_dir(self, save_dir: str) -> ExecutionProfile:
+        if self._execution_profile_supplied:
+            return self.execution_profile
+        resolved_root = Path(save_dir).expanduser().resolve()
+        if resolved_root in self.execution_profile.approved_roots:
+            return self.execution_profile
+        return self._local_execution_profile(save_dir)
 
     def __enter__(self) -> "UcrawlSDK":
         return self
@@ -208,6 +237,8 @@ class UcrawlSDK:
         # 配置优先级为持久化/兜底平台默认、SDK 实例默认、本次调用配置。
         # 本次显式传入 None 的键最终删除，不能意外恢复较低优先级的值。
         explicit_none_keys = {k for k, v in config.items() if v is None}
+        effective_save_dir = save_dir or self.save_dir
+        execution_profile = self._execution_profile_for_save_dir(effective_save_dir)
         merged_config = compose_runtime_config(
             source,
             base_config=self.default_config,
@@ -216,18 +247,20 @@ class UcrawlSDK:
             explicit_none_keys=explicit_none_keys,
             defaults_factory=get_platform_defaults,
             proxy_normalizer=build_missav_proxy_url,
+            execution_profile=execution_profile,
         )
 
         runner = self._get_runner_class()(
             source=source,
             keyword=keyword,
-            save_dir=save_dir or self.save_dir,
+            save_dir=effective_save_dir,
             selection_strategy=strategy,
             config=merged_config,
             verbose=self.verbose,
             log_to_stderr=self.verbose,
             timeout=effective_run_timeout,
             download=download,
+            execution_profile=execution_profile,
         )
         return runner.run()
 
@@ -342,6 +375,8 @@ class UcrawlSDK:
         # 元数据配置来源按平台持久化/兜底默认、SDK 实例默认、本次 config 合并；
         # 高优先级的显式 None 会删除同名低优先级值。
         explicit_none_keys = {k for k, v in (config or {}).items() if v is None}
+        effective_save_dir = save_dir or self.save_dir
+        execution_profile = self._execution_profile_for_save_dir(effective_save_dir)
         merged = compose_runtime_config(
             source,
             base_config=self.default_config,
@@ -350,11 +385,15 @@ class UcrawlSDK:
             explicit_none_keys=explicit_none_keys,
             defaults_factory=get_platform_defaults,
             proxy_normalizer=build_missav_proxy_url,
+            execution_profile=execution_profile,
         )
 
         # 直接下载绕过 spider 的任务元数据构造器，因此补入平台请求头和本地认证
         # 默认值。已有 merged 键优先，确保调用配置不会被推导值覆盖。
-        platform_defaults = get_platform_download_defaults(source)
+        platform_defaults = get_platform_download_defaults(
+            source,
+            execution_profile=execution_profile,
+        )
         for key, val in platform_defaults.items():
             if key not in merged:
                 merged[key] = val
