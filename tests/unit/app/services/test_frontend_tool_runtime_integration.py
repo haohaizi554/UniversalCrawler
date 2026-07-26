@@ -196,6 +196,9 @@ def test_dynamic_toolbox_snapshot_comes_from_injected_runner(tmp_path: Path) -> 
     assert projection["tool_id"] == "file_verify"
     assert projection["state"] == "success"
     assert projection["result"]["data"] == {"checked": 1}
+    assert projection["actions"]["tool_open_result"] is False
+    assert runner.calls.count(("list",)) == 1
+    assert runner.calls.count(("history", None, 20)) == 1
 
 
 def test_tool_validate_forwards_parameters_and_trusted_roots(tmp_path: Path) -> None:
@@ -301,6 +304,38 @@ def test_web_path_tool_rejects_missing_trusted_roots_before_runner(tmp_path: Pat
     assert response["status"] == "error"
     assert "approved session root" in response["message"]
     assert not any(call[0] == "validate" for call in runner.calls)
+
+
+def test_web_nested_path_array_rejects_missing_trusted_roots(tmp_path: Path) -> None:
+    runner = _FakeToolRunner()
+    runner.manifests[0]["input_schema"] = {
+        "type": "object",
+        "properties": {
+            "batch": {
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string", "format": "path"},
+                    }
+                },
+            }
+        },
+    }
+
+    with _service(tmp_path, runner) as service:
+        response = service.handle_action(
+            "tool_start",
+            {
+                "tool_id": "file_verify",
+                "parameters": {"batch": {"sources": [str(tmp_path / "media.mp4")]}},
+                "_approved_roots": [],
+            },
+        )
+
+    assert response["status"] == "error"
+    assert "approved session root" in response["message"]
+    assert not any(call[0] == "run" for call in runner.calls)
 
 
 def test_tool_open_result_uses_stored_path_and_enforces_trusted_root(tmp_path: Path) -> None:

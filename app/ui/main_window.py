@@ -478,7 +478,7 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.retry_requested, self._retry_failed_item)
         self._connections.connect(self.app_shell.copy_diagnostics_requested, self._copy_item_diagnostics)
         self._connections.connect(self.app_shell.delete_failed_record_requested, self._delete_failed_record)
-        self._connections.connect(self.app_shell.tool_requested, self._run_tool)
+        self._connections.connect(self.app_shell.tool_action_requested, self._handle_tool_action)
         self._connections.connect(self.app_shell.completed_metadata_detected, self._update_completed_metadata)
         self._connections.connect(self.app_shell.file_association_requested, lambda *_args: self.on_btn_file_association_clicked())
         self._connections.connect(self.app_shell.setting_changed, self._update_basic_setting)
@@ -1229,8 +1229,8 @@ class MainWindow(QMainWindow):
             self._finish_update_download_options(action_result)
         elif result.action == "pause_download":
             self._finish_pause_download(action_result)
-        elif result.action == "run_tool":
-            self._finish_run_tool(result.payload, action_result)
+        elif result.action == "run_tool" or result.action.startswith("tool_"):
+            self._finish_tool_action(result.action, result.payload, action_result)
         elif result.action == "register_file_associations":
             self._finish_register_file_associations(action_result)
         elif result.action == "update_completed_metadata":
@@ -1296,9 +1296,25 @@ class MainWindow(QMainWindow):
         self.append_log(str(action_result.get("message") or "download paused"))
         self.refresh_frontend_state(topics={"videos.update"})
 
-    def _finish_run_tool(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
-        tool_id = str(payload.get("tool_id") or "")
-        self.append_log(str(action_result.get("message") or f"tool started: {tool_id}"))
+    def _finish_tool_action(
+        self,
+        action: str,
+        _payload: dict[str, object],
+        action_result: dict[str, object],
+    ) -> None:
+        ok = action_result.get("status") == "ok"
+        message = str(action_result.get("message") or f"tool action completed: {action}")
+        if not ok:
+            self.append_log(message, level="ERROR")
+        elif action not in {"tool_validate"}:
+            self.append_log(message)
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        projection = data.get("toolbox_display_projection") if isinstance(data, dict) else None
+        toolbox_page = getattr(getattr(self, "app_shell", None), "pages", {}).get("toolbox")
+        apply_projection = getattr(toolbox_page, "apply_display_projection", None)
+        if isinstance(projection, dict) and callable(apply_projection):
+            apply_projection(projection)
+        self.refresh_frontend_state(topics={"tools.action"})
 
     def _finish_register_file_associations(self, action_result: dict[str, object]) -> None:
         ok = action_result.get("status") == "ok"
@@ -2911,6 +2927,9 @@ class MainWindow(QMainWindow):
 
     def _run_tool(self, tool_id: str) -> None:
         self._submit_frontend_action("run_tool", {"tool_id": tool_id})
+
+    def _handle_tool_action(self, action: str, payload: dict) -> None:
+        self._submit_frontend_action(str(action or ""), dict(payload or {}))
 
     def _register_file_associations_from_frontend(self, include_video: bool, include_image: bool) -> None:
         self._submit_frontend_action(

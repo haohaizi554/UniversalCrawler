@@ -44,6 +44,7 @@ class AppShell(QWidget):
     copy_diagnostics_requested = pyqtSignal(str)
     delete_failed_record_requested = pyqtSignal(str)
     tool_requested = pyqtSignal(str)
+    tool_action_requested = pyqtSignal(str, dict)
     completed_metadata_detected = pyqtSignal(str, dict)
     file_association_requested = pyqtSignal(bool, bool)
     setting_changed = pyqtSignal(str, str, object)
@@ -190,6 +191,7 @@ class AppShell(QWidget):
         failed.clear_failed_records_requested.connect(self.clear_failed_records_requested.emit)
         toolbox = self.pages["toolbox"]
         toolbox.tool_requested.connect(self.tool_requested.emit)
+        toolbox.action_requested.connect(self.tool_action_requested.emit)
         settings = self.pages["settings"]
         settings.file_association_requested.connect(self.file_association_requested.emit)
         settings.setting_changed.connect(self.setting_changed.emit)
