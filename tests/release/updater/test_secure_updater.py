@@ -183,13 +183,13 @@ def test_compare_versions_uses_numeric_fallback_for_non_semver_versions(
     assert compare_versions(local, latest) == expected
 
 
-def test_version_policy_rejects_stable_prerelease_and_downgrade():
+def test_version_policy_rejects_stable_prerelease_and_uses_installed_version_as_floor():
     policy = VersionPolicy(channel="stable", state=LocalUpdateState(last_seen_version="3.8.0"))
 
     assert not policy.evaluate("3.7.0-rc.1", current_version="3.6.17").allowed
     result = policy.evaluate("3.7.0", current_version="3.6.17")
-    assert not result.allowed
-    assert "last seen" in result.reason
+    assert result.allowed
+    assert not policy.evaluate("3.6.16", current_version="3.6.17").allowed
 
 
 def test_version_policy_respects_skipped_version_for_automatic_checks():

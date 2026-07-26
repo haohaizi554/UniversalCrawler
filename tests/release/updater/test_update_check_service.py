@@ -723,7 +723,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
             readonly_fetch.assert_not_called()
 
-    def test_secure_update_rejects_release_head_older_than_last_seen_version(self):
+    def test_secure_update_accepts_verified_release_newer_than_installed_version_when_last_seen_is_stale(self):
         from tempfile import TemporaryDirectory
 
         from app.services.secure_updater import LocalUpdateState
@@ -734,18 +734,48 @@ class UpdateCheckServiceTests(unittest.TestCase):
             manifest_path, sig_path, public_pem = _signed_manifest(root)
             state = LocalUpdateState(last_seen_version="3.8.0")
 
-            with self.assertRaisesRegex(UpdateCheckError, "older than last seen"):
-                check_secure_update(
+            result = check_secure_update(
+                "v3.6.17",
+                public_key_pem=public_pem,
+                manifest_path=manifest_path,
+                signature_path=sig_path,
+                os_name="windows",
+                arch="x64",
+                state=state,
+            )
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.latest_version, "3.7.0")
+        self.assertEqual(state.last_seen_version, "3.8.0")
+
+    def test_secure_update_refreshes_persisted_last_seen_version_from_verified_release_head(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path, sig_path, public_pem = _signed_manifest(root)
+            state = LocalUpdateState(last_seen_version="3.8.0")
+
+            with (
+                patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
+                patch("app.services.update_check_service.load_local_update_state", return_value=state),
+                patch("app.services.update_check_service.save_local_update_state") as save_state,
+            ):
+                result = check_secure_update(
                     "v3.6.17",
                     public_key_pem=public_pem,
                     manifest_path=manifest_path,
                     signature_path=sig_path,
                     os_name="windows",
                     arch="x64",
-                    state=state,
                 )
 
-        self.assertEqual(state.last_seen_version, "3.8.0")
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(state.last_seen_version, "3.7.0")
+        save_state.assert_called_once_with(state)
 
     def test_secure_update_rejects_manifest_requiring_newer_client(self):
         from tempfile import TemporaryDirectory

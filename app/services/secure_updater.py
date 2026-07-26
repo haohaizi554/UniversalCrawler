@@ -331,6 +331,7 @@ def _state_int(value: Any, *, default: int, minimum: int = 0) -> int:
 
 @dataclass
 class LocalUpdateState:
+    # 仅记录最近一次成功校验到的发布头，供界面和诊断使用；不能作为安装版本下限。
     last_seen_version: str = ""
     last_seen_revision: int = 0
     skipped_version: str = ""
@@ -508,7 +509,7 @@ class UpdatePolicy:
 
 
 class VersionPolicy:
-    """统一处理发布身份、跳过记录和低于 last_seen 身份的回滚防护。"""
+    """统一处理渠道、已安装版本和用户跳过记录的更新准入。"""
 
     def __init__(
         self,
@@ -541,10 +542,6 @@ class VersionPolicy:
             return UpdatePolicy(False, "stable channel excludes prerelease updates", mandatory=False)
         if candidate_identity <= current_identity and not self.allow_downgrade:
             return UpdatePolicy(False, "candidate release is not newer than current release", mandatory=False)
-        if self.state.last_seen_version:
-            last_seen = ReleaseIdentity(self.state.last_seen_version, self.state.last_seen_revision)
-            if candidate_identity < last_seen and not self.allow_downgrade:
-                return UpdatePolicy(False, "candidate release is lower than last seen release", mandatory=False)
         if self.state.skipped_version:
             skipped = ReleaseIdentity(self.state.skipped_version, self.state.skipped_revision)
             if candidate_identity == skipped and not manual:

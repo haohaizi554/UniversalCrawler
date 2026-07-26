@@ -665,16 +665,6 @@ def check_secure_update(
             return readonly_result
 
     ranked_candidates = _sort_candidates_desc(_deduplicate_candidates(verified_candidates))
-    if (
-        ranked_candidates
-        and managed_state.last_seen_version
-        and ranked_candidates[0].identity
-        < ReleaseIdentity(managed_state.last_seen_version, managed_state.last_seen_revision)
-    ):
-        raise UpdateCheckError(
-            "Latest verified update candidate is older than last seen version "
-            f"{managed_state.last_seen_version}"
-        )
     available_candidates = tuple(
         candidate
         for candidate in ranked_candidates
@@ -688,11 +678,9 @@ def check_secure_update(
         )
     )
     if state is None:
-        if ranked_candidates and (
-            not managed_state.last_seen_version
-            or ranked_candidates[0].identity
-            > ReleaseIdentity(managed_state.last_seen_version, managed_state.last_seen_revision)
-        ):
+        if ranked_candidates:
+            # last_seen 是最近一次可信检查的观察值，不是版本回滚的授权基线。
+            # 这会纠正历史测试/预发布候选写入的陈旧记录。
             managed_state.last_seen_version = ranked_candidates[0].identity.version
             managed_state.last_seen_revision = ranked_candidates[0].identity.revision
         save_local_update_state(managed_state)
@@ -1062,8 +1050,6 @@ def _candidate_is_available(
     state: LocalUpdateState,
 ) -> bool:
     policy_state = LocalUpdateState(
-        last_seen_version=state.last_seen_version,
-        last_seen_revision=state.last_seen_revision,
         skipped_version=state.skipped_version,
         skipped_revision=state.skipped_revision,
         install_attempt_limit=state.install_attempt_limit,
