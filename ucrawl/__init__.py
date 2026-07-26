@@ -21,6 +21,7 @@ from shared.selection_runtime import (
 from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeOutput, PipeSelection
 from shared.version import __version__
+from ucrawl.tools import ToolRunnerUnavailableError, ToolsAPI
 
 __all__ = [
     "UcrawlSDK",
@@ -36,4 +37,6 @@ __all__ = [
     "AutoSelection",
     "SelectionStrategy",
     "is_selection_strategy",
+    "ToolsAPI",
+    "ToolRunnerUnavailableError",
 ]

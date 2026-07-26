@@ -62,6 +62,7 @@ def build_parser(
     )
     from cli.commands.scan import handle_scan_command
     from cli.commands.search import handle_search_command
+    from cli.commands.tools import add_tools_arguments, handle_tools_command
     from cli.platform_catalog import load_cli_platforms, platform_ids
     from shared.download_command_runtime import add_download_arguments
     from shared.scan_command_runtime import add_scan_arguments
@@ -109,6 +110,13 @@ def build_parser(
     )
     add_interactive_arguments(interactive_parser)
     interactive_parser.set_defaults(_handler=handle_interactive_command)
+
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="list, inspect, validate, and run application tools",
+    )
+    add_tools_arguments(tools_parser)
+    tools_parser.set_defaults(_handler=handle_tools_command)
 
     add_platform_subparsers(subparsers, catalog)
     return parser

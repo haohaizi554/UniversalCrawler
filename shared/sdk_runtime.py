@@ -83,6 +83,7 @@ class UcrawlSDK:
         if config is not None and not isinstance(config, dict):
             raise TypeError("config 必须是字典或 None")
         self.default_config = dict(config or {})
+        self._tools_api = None
 
     def __enter__(self) -> "UcrawlSDK":
         return self
@@ -94,6 +95,15 @@ class UcrawlSDK:
     def close(self):
         """保留幂等清理接口；当前实例不持有跨调用的运行资源。"""
         return None
+
+    @property
+    def tools(self):
+        """Return the cached thin facade for application tools."""
+        if self._tools_api is None:
+            from ucrawl.tools import ToolsAPI
+
+            self._tools_api = ToolsAPI()
+        return self._tools_api
 
     def _get_runner_class(self):
         """返回 SDK 搜索流程使用的执行器类。
