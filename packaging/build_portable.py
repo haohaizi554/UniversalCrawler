@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
+    packaging_dir = Path(__file__).resolve().parent
+    if str(packaging_dir) not in sys.path:
+        sys.path.insert(0, str(packaging_dir))
     from release_lock import leaf_build_guard
     from project_meta import (
         APP_DISPLAY_NAME,

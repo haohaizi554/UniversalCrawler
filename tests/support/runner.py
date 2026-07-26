@@ -161,7 +161,10 @@ def run_category(
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["PYTHONIOENCODING"] = "utf-8"
+    # 测试文件还会继续启动 Python 子进程。仅设置标准流编码会造成子进程
+    # 输出 UTF-8、当前 pytest 却按 Windows GBK 解码，因此两层都启用 UTF-8。
+    env["PYTHONUTF8"] = "1"
     # 禁用 Qt 弹窗（offscreen）
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
 
