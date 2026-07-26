@@ -254,13 +254,14 @@ jobs:
           python -m playwright install chromium
 
       - name: Run browser suite
+        id: browser_suite
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python -X faulthandler -m pytest tests/e2e -q --junitxml=artifacts/browser-tests.xml
 
       - name: Upload browser report
-        if: always()
+        if: failure() && steps.browser_suite.outcome == 'failure'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -271,6 +272,7 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+          compression-level: 0
 
   required-check:
     name: Required CI
