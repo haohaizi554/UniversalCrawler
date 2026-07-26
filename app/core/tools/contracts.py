@@ -1,0 +1,319 @@
+"""Stable contracts shared by built-in and externally loaded tools."""
+
+from __future__ import annotations
+
+import os
+import re
+import threading
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
+
+_TOOL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+
+
+class ToolRunStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ToolCancelledError(RuntimeError):
+    """Raised by cooperative tools after cancellation was requested."""
+
+
+class CancellationToken:
+    """Thread-safe cooperative cancellation token."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def is_set(self) -> bool:
+        return self.is_cancelled()
+
+    def cancelled(self) -> bool:
+        return self.is_cancelled()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
+
+    def raise_if_cancelled(self) -> None:
+        if self.is_cancelled():
+            raise ToolCancelledError("tool run cancelled")
+
+
+@dataclass(frozen=True, slots=True)
+class ToolManifest:
+    """Declarative metadata used by every frontend to render one tool."""
+
+    id: str
+    title: str
+    summary: str
+    category: str = "general"
+    input_schema: Mapping[str, Any] = field(default_factory=dict)
+    permissions: tuple[str, ...] = ()
+    supports_cancel: bool = True
+    icon: str = "toolbox"
+    icon_file: str = ""
+    input_example: str = ""
+    output_example: str = ""
+    version: str = "1"
+    sort_order: int = 1000
+    safety_level: str = "standard"
+    read_only: bool = False
+    destructive: bool = False
+    execution_mode: str = "worker"
+    run_in_worker: bool = True
+    background: bool = True
+    cancellable: bool = True
+    requires: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        normalized_id = str(self.id or "").strip().lower()
+        if not _TOOL_ID_PATTERN.fullmatch(normalized_id):
+            raise ValueError(f"invalid tool id: {self.id!r}")
+        if not str(self.title or "").strip():
+            raise ValueError("tool title is required")
+        if not str(self.summary or "").strip():
+            raise ValueError("tool summary is required")
+        object.__setattr__(self, "id", normalized_id)
+        object.__setattr__(self, "permissions", tuple(str(item) for item in self.permissions))
+        object.__setattr__(self, "requires", tuple(str(item) for item in self.requires))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "summary": self.summary,
+            "category": self.category,
+            "input_schema": _plain_value(self.input_schema),
+            "permissions": list(self.permissions),
+            "supports_cancel": bool(self.supports_cancel),
+            "icon": self.icon,
+            "icon_file": self.icon_file,
+            "input_example": self.input_example,
+            "output_example": self.output_example,
+            "version": self.version,
+            "sort_order": int(self.sort_order),
+            "safety_level": self.safety_level,
+            "read_only": bool(self.read_only),
+            "destructive": bool(self.destructive),
+            "execution_mode": self.execution_mode,
+            "run_in_worker": bool(self.run_in_worker),
+            "background": bool(self.background),
+            "cancellable": bool(self.cancellable and self.supports_cancel),
+            "requires": list(self.requires),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolValidationResult:
+    valid: bool = True
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def ok(
+        cls,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> ToolValidationResult:
+        return cls(True, (), warnings, dict(parameters or {}))
+
+    @classmethod
+    def rejected(cls, *errors: str) -> ToolValidationResult:
+        normalized = tuple(str(item) for item in errors if str(item).strip())
+        return cls(False, normalized or ("tool input is invalid",))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": "ok" if self.valid else "error",
+            "valid": self.valid,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+            "parameters": _plain_value(self.parameters),
+        }
+
+
+ProgressCallback = Callable[[int, str, Mapping[str, Any]], None]
+PathAuthorizer = Callable[[str | os.PathLike[str]], str | os.PathLike[str]]
+
+
+@dataclass(slots=True)
+class ToolContext:
+    """Per-run context. Tools receive services, permissions and cancellation here."""
+
+    parameters: Mapping[str, Any]
+    run_id: str = ""
+    approved_roots: tuple[str, ...] = ()
+    settings: Mapping[str, Any] = field(default_factory=dict)
+    services: Mapping[str, Any] = field(default_factory=dict)
+    cancellation: CancellationToken = field(default_factory=CancellationToken)
+    progress_callback: ProgressCallback | None = None
+    path_authorizer: PathAuthorizer | None = None
+
+    @property
+    def inputs(self) -> Mapping[str, Any]:
+        return self.parameters
+
+    @property
+    def params(self) -> Mapping[str, Any]:
+        return self.parameters
+
+    @property
+    def cancel_event(self) -> CancellationToken:
+        return self.cancellation
+
+    @property
+    def cancellation_token(self) -> CancellationToken:
+        return self.cancellation
+
+    def is_cancelled(self) -> bool:
+        return self.cancellation.is_cancelled()
+
+    def raise_if_cancelled(self) -> None:
+        self.cancellation.raise_if_cancelled()
+
+    def report_progress(
+        self,
+        percent: int | float,
+        message: str = "",
+        **details: Any,
+    ) -> None:
+        self.raise_if_cancelled()
+        callback = self.progress_callback
+        if callback is None:
+            return
+        normalized = max(0, min(100, int(percent)))
+        callback(normalized, str(message or ""), details)
+
+    def authorize_path(self, path: str | os.PathLike[str]) -> Path:
+        """Resolve a path and enforce the approved-root boundary."""
+
+        if self.path_authorizer is not None:
+            return Path(self.path_authorizer(path)).expanduser().resolve()
+        resolved = Path(path).expanduser().resolve()
+        roots = tuple(Path(root).expanduser().resolve() for root in self.approved_roots if str(root).strip())
+        if roots and not any(_is_relative_to(resolved, root) for root in roots):
+            raise PermissionError("path is outside approved roots")
+        return resolved
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRunResult:
+    status: ToolRunStatus
+    message: str = ""
+    data: Mapping[str, Any] = field(default_factory=dict)
+    output_paths: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "output_paths", tuple(str(path) for path in self.output_paths))
+        object.__setattr__(self, "warnings", tuple(str(item) for item in self.warnings))
+
+    @classmethod
+    def success(
+        cls,
+        message: str = "",
+        *,
+        data: Mapping[str, Any] | None = None,
+        output_paths: tuple[str, ...] = (),
+        warnings: tuple[str, ...] = (),
+    ) -> ToolRunResult:
+        return cls(
+            ToolRunStatus.SUCCEEDED,
+            str(message or ""),
+            dict(data or {}),
+            tuple(str(path) for path in output_paths),
+            tuple(str(item) for item in warnings),
+        )
+
+    @classmethod
+    def failure(
+        cls,
+        message: str,
+        *,
+        data: Mapping[str, Any] | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> ToolRunResult:
+        return cls(
+            ToolRunStatus.FAILED,
+            str(message or "tool run failed"),
+            dict(data or {}),
+            (),
+            tuple(str(item) for item in warnings),
+        )
+
+    @classmethod
+    def cancelled(cls, message: str = "tool run cancelled") -> ToolRunResult:
+        return cls(ToolRunStatus.CANCELLED, str(message or "tool run cancelled"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value if isinstance(self.status, ToolRunStatus) else str(self.status),
+            "message": self.message,
+            "data": _plain_value(self.data),
+            "output_paths": list(self.output_paths),
+            "warnings": list(self.warnings),
+        }
+
+
+@runtime_checkable
+class ToolPlugin(Protocol):
+    manifest: ToolManifest
+
+    def validate(self, context: ToolContext) -> Any: ...
+
+    def run(self, context: ToolContext) -> ToolRunResult: ...
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _plain_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_plain_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+__all__ = [
+    "CancellationToken",
+    "PathAuthorizer",
+    "ProgressCallback",
+    "ToolCancelledError",
+    "ToolContext",
+    "ToolManifest",
+    "ToolPlugin",
+    "ToolRunResult",
+    "ToolRunStatus",
+    "ToolValidationResult",
+]
