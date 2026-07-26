@@ -9,6 +9,12 @@ from shared.execution_profile import (
 import pytest
 
 
+def _reject_execution_profile_overrides(payload):
+    from shared.execution_profile import reject_execution_profile_overrides
+
+    return reject_execution_profile_overrides(payload)
+
+
 def test_public_factory_is_session_owned_and_fail_closed(tmp_path):
     root = tmp_path / "downloads"
 
@@ -23,6 +29,48 @@ def test_public_factory_is_session_owned_and_fail_closed(tmp_path):
     assert profile.tool_permissions == frozenset()
     assert profile.approved_roots == frozenset({root.resolve()})
     assert not profile.allow_external_plugins
+
+
+def test_public_factory_preserves_empty_approved_roots():
+    profile = public_web_profile(owner_id="session-empty", approved_roots=())
+
+    assert profile.approved_roots == frozenset()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"execution_profile": {"allow_tool_execution": True}},
+        {"config": {"owner_id": "attacker"}},
+        {"config": {"approved_roots": ["C:/"]}},
+        {"nested": [{"tool_permissions": ["admin"]}]},
+        {"allow_machine_credentials": True},
+        {"allow_caller_proxy": True},
+        {"allow_external_plugins": True},
+    ],
+)
+def test_payload_cannot_supply_execution_authority(payload):
+    with pytest.raises(ExecutionProfileEscalation, match="payload"):
+        _reject_execution_profile_overrides(payload)
+
+
+def test_ordinary_payload_fields_remain_valid():
+    _reject_execution_profile_overrides(
+        {
+            "source": "douyin",
+            "keyword": "cats",
+            "config": {"timeout": 30, "max_items": 20},
+        }
+    )
+
+
+def test_payload_non_string_key_fails_closed_without_string_coercion():
+    class HostileKey:
+        def __str__(self):
+            raise AssertionError("attacker-controlled __str__ must not run")
+
+    with pytest.raises(ExecutionProfileEscalation, match="payload"):
+        _reject_execution_profile_overrides({HostileKey(): "value"})
 
 
 def test_local_factory_requires_real_owner_and_surface(tmp_path):

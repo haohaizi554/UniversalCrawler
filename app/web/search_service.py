@@ -8,8 +8,13 @@ from typing import Any, Callable
 
 from fastapi import Request
 
-from app.web.api_result import error_result
+from app.web.api_result import error_result, finalize_api_result
 from app.web.logging_utils import log_web_exception
+from shared.execution_profile import (
+    ExecutionProfileEscalation,
+    public_web_profile,
+    reject_execution_profile_overrides,
+)
 from shared.runtime_options import merge_convenience_params
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +41,20 @@ class WebSearchService:
     async def search(self, request: Request, body: dict) -> dict:
         runtime = self._runtime_provider()
         context = self._get_request_context(request)
+
+        execution_profile = public_web_profile(
+            owner_id=context.session_id,
+            approved_roots=context.approved_roots_snapshot(),
+        )
+        try:
+            reject_execution_profile_overrides(body)
+        except ExecutionProfileEscalation as exc:
+            return finalize_api_result(
+                error_result(
+                    str(exc),
+                    error_code="EXECUTION_PROFILE_ESCALATION",
+                )
+            )
 
         source = body.get("source", "")
         keyword = body.get("keyword", "")
@@ -94,7 +113,19 @@ class WebSearchService:
 
         merged_config = runtime.merge_default_config(source, user_config)
         try:
-            merge_convenience_params(body, merged_config, source)
+            merge_convenience_params(
+                body,
+                merged_config,
+                source,
+                execution_profile=execution_profile,
+            )
+        except ExecutionProfileEscalation as exc:
+            return finalize_api_result(
+                error_result(
+                    str(exc),
+                    error_code="EXECUTION_PROFILE_ESCALATION",
+                )
+            )
         except ValueError as exc:
             return error_result(str(exc))
 
@@ -110,6 +141,7 @@ class WebSearchService:
                     config=merged_config,
                     timeout=timeout,
                     download=download,
+                    execution_profile=execution_profile,
                 ),
             )
         except Exception as exc:

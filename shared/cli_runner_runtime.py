@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from shared.controller_session import ControllerSessionMixin
+from shared.execution_profile import ExecutionProfile, local_execution_profile
 from shared.selection_runtime import AutoSelection, SelectionBridge, build_selection_prompt, format_selection_result
 from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 
@@ -45,6 +47,8 @@ class CLIRunner(ControllerSessionMixin):
         log_to_stderr: bool = True,
         timeout: float | None = None,
         download: bool = True,
+        *,
+        execution_profile: ExecutionProfile,
     ):
         """初始化 CLI 执行器。
 
@@ -59,6 +63,9 @@ class CLIRunner(ControllerSessionMixin):
             timeout: 超时秒数 (None=无限)
             download: 是否把发现的项目加入下载队列；False 时只收集结果
         """
+        if not isinstance(execution_profile, ExecutionProfile):
+            raise TypeError("execution_profile must be an ExecutionProfile")
+        self.execution_profile = execution_profile
         self.source = source
         # 入口边界统一去除关键词两端空白，避免插件收到空白伪关键词。
         self.keyword = keyword.strip() if isinstance(keyword, str) else keyword
@@ -614,6 +621,13 @@ def run_search(
         result = run_search("douyin", "测试关键词", max_items=20, save_dir="downloads")
         result = run_search("douyin", "测试关键词", timeout=60)
     """
+    execution_profile = local_execution_profile(
+        host_surface="cli",
+        owner_id=f"pid-{os.getpid()}",
+        approved_roots=(Path(save_dir),),
+        tool_permissions=(),
+        allow_external_plugins=True,
+    )
     runner = CLIRunner(
         source=source,
         keyword=keyword,
@@ -622,5 +636,6 @@ def run_search(
         config=config,
         download=download,
         timeout=timeout,
+        execution_profile=execution_profile,
     )
     return runner.run()

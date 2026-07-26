@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from collections.abc import Mapping
 from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 
+from shared.execution_profile import ExecutionProfile, ExecutionProfileEscalation
 from shared.resilient_dns import install_resilient_dns
 
 # 公网策略和实际传输必须看到同一批解析结果。这里统一安装后，GUI、Web、CLI、SDK
@@ -318,8 +320,16 @@ def validate_config_types(user_config: dict) -> str | None:
 
     return None
 
-def validate_direct_download_url(url: str) -> str | None:
+def validate_direct_download_url(
+    url: str, *, execution_profile: ExecutionProfile | None = None
+) -> str | None:
     """统一校验直链下载 URL，避免明显 SSRF/内网探测输入。"""
+    if execution_profile is not None and not isinstance(
+        execution_profile, ExecutionProfile
+    ):
+        raise TypeError("execution_profile must be an ExecutionProfile")
+    if execution_profile is not None and not execution_profile.require_public_network:
+        return None
     try:
         PUBLIC_DOMAIN_POLICY.require_public_url(url)
     except DomainPolicyViolation as exc:
@@ -556,10 +566,11 @@ def _try_load_cookies_dict(source: str) -> dict | None:
     return None
 
 def merge_convenience_params(
-    body: dict,
+    body: Mapping[str, Any],
     config: dict,
     source: str = "",
     *,
+    execution_profile: ExecutionProfile,
     proxy_normalizer: Callable[[str], str] | None = None,
 ) -> dict:
     """将 REST API/WebSocket 请求体中的便捷参数合并到 config 字典。
@@ -582,6 +593,19 @@ def merge_convenience_params(
     返回：
         dict: 合并后的 config 字典
     """
+    if not isinstance(execution_profile, ExecutionProfile):
+        raise TypeError("execution_profile must be an ExecutionProfile")
+    if body.get("proxy") is not None and not execution_profile.allow_caller_proxy:
+        raise ExecutionProfileEscalation(
+            "caller proxy is not allowed by the execution profile"
+        )
+    if not execution_profile.allow_machine_credentials and any(
+        body.get(key) is not None for key in ("cookie", "cookies")
+    ):
+        raise ExecutionProfileEscalation(
+            "caller credentials are not allowed by the execution profile"
+        )
+
     # 通用爬取限制可直接覆盖已合并配置。
     if body.get("max_items") is not None:
         config["max_items"] = body["max_items"]
@@ -642,6 +666,7 @@ def compose_runtime_config(
     user_config: dict | None = None,
     convenience_body: dict | None = None,
     explicit_none_keys: set[str] | None = None,
+    execution_profile: ExecutionProfile | None = None,
     defaults_factory: Callable[[str], dict] | None = None,
     proxy_normalizer: Callable[[str], str] | None = None,
 ) -> dict:
@@ -665,10 +690,19 @@ def compose_runtime_config(
         merged.pop(key, None)
 
     if convenience_body is not None:
+        if execution_profile is None:
+            if convenience_body:
+                raise TypeError("execution_profile must be provided for payload fields")
+            return _apply_runtime_config_bridges(
+                merged,
+                source=source,
+                proxy_normalizer=proxy_normalizer,
+            )
         return merge_convenience_params(
             convenience_body,
             merged,
             source,
+            execution_profile=execution_profile,
             proxy_normalizer=proxy_normalizer,
         )
 
@@ -704,7 +738,9 @@ def _validate_convenience_param_types(body: dict) -> str | None:
 
     return None
 
-def get_platform_download_defaults(source: str) -> dict:
+def get_platform_download_defaults(
+    source: str, *, execution_profile: ExecutionProfile | None = None
+) -> dict:
     """获取直接下载所需的平台默认元数据。
 
     ``download_video`` 不经过 spider 的任务构造阶段，需要在这里提供 ua、
@@ -716,6 +752,11 @@ def get_platform_download_defaults(source: str) -> dict:
     返回：
         dict: 平台下载默认 meta 字段（新 dict，可安全修改）
     """
+    if execution_profile is not None and not isinstance(
+        execution_profile, ExecutionProfile
+    ):
+        raise TypeError("execution_profile must be an ExecutionProfile")
+
     try:
         from app.config import DEFAULT_USER_AGENT, cfg
     except ImportError:
@@ -759,13 +800,18 @@ def get_platform_download_defaults(source: str) -> dict:
     result = dict(_PLATFORM_DEFAULTS.get(source, {}))
 
     # 这里返回的是低优先级默认值；调用配置在上层合并后仍可覆盖本地 cookie。
-    _cookie = _try_load_cookie(source)
-    if _cookie:
-        result["cookie"] = _cookie
+    if execution_profile is not None and execution_profile.allow_machine_credentials:
+        _cookie = _try_load_cookie(source)
+        if _cookie:
+            result["cookie"] = _cookie
 
     # BilibiliDownloader 刷新 CDN URL 时优先消费 cookies 字典，故除字符串外再
     # 提供结构化认证数据。
-    if source == "bilibili":
+    if (
+        source == "bilibili"
+        and execution_profile is not None
+        and execution_profile.allow_machine_credentials
+    ):
         _cookies_dict = _try_load_cookies_dict(source)
         if _cookies_dict:
             result["cookies"] = _cookies_dict

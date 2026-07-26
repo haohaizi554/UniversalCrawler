@@ -9,7 +9,20 @@ import io
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from shared.execution_profile import local_execution_profile
+
+
+def _local_profile(save_dir: str = "downloads"):
+    return local_execution_profile(
+        host_surface="test",
+        owner_id="cli-runner-test",
+        approved_roots=(Path(save_dir),),
+        tool_permissions=(),
+        allow_external_plugins=True,
+    )
 
 class CLIRunnerInitTests(unittest.TestCase):
     """CLIRunner 初始化测试。"""
@@ -17,7 +30,8 @@ class CLIRunnerInitTests(unittest.TestCase):
     def test_init_with_minimal_args(self):
         """最小参数初始化。"""
         from shared.cli_runner_runtime import CLIRunner
-        runner = CLIRunner(source="douyin", keyword="kw")
+        profile = _local_profile()
+        runner = CLIRunner(source="douyin", keyword="kw", execution_profile=profile)
         self.assertEqual(runner.source, "douyin")
         self.assertEqual(runner.keyword, "kw")
         self.assertEqual(runner.videos, {})
@@ -26,6 +40,17 @@ class CLIRunnerInitTests(unittest.TestCase):
         self.assertEqual(runner.selection_count, 0)
         self.assertIsNone(runner._spider)
         self.assertIsNone(runner._dl_manager)
+        self.assertIs(runner.execution_profile, profile)
+
+    def test_init_rejects_profile_dictionary(self):
+        from shared.cli_runner_runtime import CLIRunner
+
+        with self.assertRaises(TypeError):
+            CLIRunner(
+                source="douyin",
+                keyword="kw",
+                execution_profile={"host_surface": "cli"},
+            )
 
     def test_init_with_all_args(self):
         """全参数初始化。"""
@@ -39,6 +64,7 @@ class CLIRunnerInitTests(unittest.TestCase):
             log_to_stderr=False,
             timeout=60.0,
             download=False,
+            execution_profile=_local_profile("/tmp/dl"),
         )
         self.assertEqual(runner.save_dir, "/tmp/dl")
         self.assertEqual(runner.config, {"max_pages": 2})
@@ -50,7 +76,9 @@ class CLIRunnerInitTests(unittest.TestCase):
     def test_init_default_save_dir(self):
         """save_dir 默认值。"""
         from shared.cli_runner_runtime import CLIRunner
-        runner = CLIRunner(source="douyin", keyword="kw")
+        runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         # save_dir 必须是字符串（默认或从 cfg 读取）
         self.assertIsInstance(runner.save_dir, str)
 
@@ -58,7 +86,12 @@ class CLIRunnerInitTests(unittest.TestCase):
         """config 必须是副本（避免外部修改污染）。"""
         from shared.cli_runner_runtime import CLIRunner
         original = {"max_items": 10}
-        runner = CLIRunner(source="douyin", keyword="kw", config=original)
+        runner = CLIRunner(
+            source="douyin",
+            keyword="kw",
+            config=original,
+            execution_profile=_local_profile(),
+        )
         original["max_items"] = 999
         # runner.config 必须是副本
         self.assertEqual(runner.config["max_items"], 10)
@@ -67,7 +100,9 @@ class CLIRunnerInitTests(unittest.TestCase):
         """未指定 selection_strategy 时默认 AutoSelection。"""
         from shared.cli_runner_runtime import CLIRunner
         from shared.selection_runtime import AutoSelection
-        runner = CLIRunner(source="douyin", keyword="kw")
+        runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         self.assertIsInstance(runner.selection_strategy, AutoSelection)
 
 class CLIRunnerApplyStateTests(unittest.TestCase):
@@ -75,7 +110,9 @@ class CLIRunnerApplyStateTests(unittest.TestCase):
 
     def setUp(self):
         from shared.cli_runner_runtime import CLIRunner
-        self.runner = CLIRunner(source="douyin", keyword="kw")
+        self.runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         # 注入假 video
         self.fake_item = MagicMock()
         self.fake_item.id = "v1"
@@ -145,6 +182,7 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
             source="douyin",
             keyword="kw",
             selection_strategy=RuleSelection(select="0,2"),
+            execution_profile=_local_profile(),
         )
         self.ask = self.runner._make_ask_user_selection()
 
@@ -167,6 +205,7 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
             source="douyin",
             keyword="kw",
             selection_strategy=MagicMock(select=MagicMock(side_effect=RuntimeError("boom"))),
+            execution_profile=_local_profile(),
         )
         ask = runner._make_ask_user_selection()
         items = [{"i": 0}, {"i": 1}, {"i": 2}]
@@ -177,7 +216,9 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
         """Signal ownership belongs to SpiderSession; the runner only patches selection."""
         from shared.cli_runner_runtime import CLIRunner
 
-        runner = CLIRunner(source="douyin", keyword="kw")
+        runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         spider = MagicMock()
         spider.sig_log = MagicMock()
         spider.sig_item_found = MagicMock()
@@ -194,7 +235,9 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
         """下载链去 Qt 化后，CLI 应直接绑定纯 Python 回调。"""
         from shared.cli_runner_runtime import CLIRunner
 
-        runner = CLIRunner(source="douyin", keyword="kw")
+        runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         runner._dl_manager = MagicMock()
 
         runner._connect_download_signals()
@@ -210,7 +253,11 @@ class CLIRunnerRunTests(unittest.TestCase):
     def test_run_unknown_source(self):
         """未知平台 → 返回 status=error。"""
         from shared.cli_runner_runtime import CLIRunner
-        runner = CLIRunner(source="unknown_platform_xyz", keyword="kw")
+        runner = CLIRunner(
+            source="unknown_platform_xyz",
+            keyword="kw",
+            execution_profile=_local_profile(),
+        )
         result = runner.run()
         self.assertEqual(result["status"], "error")
         self.assertIn("未知平台", result["error"])
@@ -276,6 +323,7 @@ class CLIRunnerRunTests(unittest.TestCase):
             selection_strategy=RuleSelection(all_items=True),
             download=False,  # 不真下载
             verbose=False,
+            execution_profile=_local_profile(),
         )
 
         with patch.object(registry, "get_plugin", side_effect=fake_get_plugin), \
@@ -316,6 +364,7 @@ class CLIRunnerRunTests(unittest.TestCase):
             source="broken_platform",
             keyword="test",
             selection_strategy=RuleSelection(all_items=True),
+            execution_profile=_local_profile(),
         )
         with patch.object(registry, "get_plugin", side_effect=fake_get_plugin):
             result = runner.run()
@@ -327,7 +376,12 @@ class CLIRunnerRunTests(unittest.TestCase):
         """等待 spider 时应轮询纯 Python 线程状态直到结束。"""
         from shared.cli_runner_runtime import CLIRunner
 
-        runner = CLIRunner(source="douyin", keyword="kw", verbose=False)
+        runner = CLIRunner(
+            source="douyin",
+            keyword="kw",
+            verbose=False,
+            execution_profile=_local_profile(),
+        )
 
         class FakeSpider:
             def __init__(self):
@@ -400,6 +454,7 @@ class CLIRunnerRunTests(unittest.TestCase):
             keyword="test",
             download=False,
             verbose=False,
+            execution_profile=_local_profile(),
         )
 
         with patch.object(registry, "get_plugin", side_effect=fake_get_plugin):
@@ -413,7 +468,9 @@ class CLIRunnerBuildResultTests(unittest.TestCase):
     def test_build_result_has_required_keys(self):
         """_build_result 必须返回完整结构。"""
         from shared.cli_runner_runtime import CLIRunner
-        runner = CLIRunner(source="douyin", keyword="kw")
+        runner = CLIRunner(
+            source="douyin", keyword="kw", execution_profile=_local_profile()
+        )
         runner.videos = {"v1": MagicMock(id="v1", status="✅ 完成", progress=100, local_path="", title="t", source="douyin", url="u", meta={})}
         runner.logs = ["log1"]
         runner.selection_count = 0

@@ -4,8 +4,21 @@ import logging
 import os
 import shutil
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+from shared.execution_profile import local_execution_profile, public_web_profile
+
+
+def _local_profile(save_dir: str = "downloads"):
+    return local_execution_profile(
+        host_surface="test",
+        owner_id="runtime-helper-test",
+        approved_roots=(Path(save_dir),),
+        tool_permissions=(),
+        allow_external_plugins=True,
+    )
 
 class RuntimeOptionsTests(unittest.TestCase):
     def test_direct_download_url_rejects_unresolvable_hosts(self):
@@ -76,7 +89,9 @@ class RuntimeOptionsTests(unittest.TestCase):
 
         config = {"author": "alice"}
 
-        merged = merge_convenience_params({}, config, source="douyin")
+        merged = merge_convenience_params(
+            {}, config, source="douyin", execution_profile=_local_profile()
+        )
 
         self.assertEqual(merged["folder_name"], "alice")
         self.assertTrue(merged["use_subdir"])
@@ -93,6 +108,7 @@ class RuntimeOptionsTests(unittest.TestCase):
                 },
                 {},
                 source="missav",
+                execution_profile=_local_profile(),
             )
 
         self.assertEqual(merged["proxy"], "http://127.0.0.1:7890")
@@ -103,7 +119,12 @@ class RuntimeOptionsTests(unittest.TestCase):
         from shared.runtime_options import merge_convenience_params
 
         with self.assertRaises(ValueError) as ctx:
-            merge_convenience_params({"use_subdir": 1}, {}, source="douyin")
+            merge_convenience_params(
+                {"use_subdir": 1},
+                {},
+                source="douyin",
+                execution_profile=_local_profile(),
+            )
 
         self.assertIn("use_subdir 必须是布尔值", str(ctx.exception))
 
@@ -121,11 +142,56 @@ class RuntimeOptionsTests(unittest.TestCase):
             "shared.runtime_options._try_load_cookies_dict",
             return_value={"SESSDATA": "abc"},
         ):
-            defaults = get_platform_download_defaults("bilibili")
+            defaults = get_platform_download_defaults(
+                "bilibili", execution_profile=_local_profile()
+            )
 
         self.assertEqual(defaults["cookie"], "SESSDATA=abc")
         self.assertEqual(defaults["cookies"], {"SESSDATA": "abc"})
         self.assertEqual(defaults["referer"], "https://www.bilibili.com")
+
+    def test_public_profile_prevents_machine_cookie_loading_and_caller_proxy(self):
+        import shared.runtime_options as runtime_options
+        from shared.execution_profile import ExecutionProfileEscalation
+
+        profile = public_web_profile(
+            owner_id="session-a", approved_roots=(Path("downloads"),)
+        )
+        with patch(
+            "shared.runtime_options._try_load_cookie",
+            return_value="session=machine-secret",
+        ) as load_cookie:
+            defaults = runtime_options.get_platform_download_defaults(
+                "douyin", execution_profile=profile
+            )
+
+        self.assertNotIn("cookie", defaults)
+        load_cookie.assert_not_called()
+        with self.assertRaisesRegex(ExecutionProfileEscalation, "proxy"):
+            runtime_options.merge_convenience_params(
+                {"proxy": "http://127.0.0.1:7890"},
+                {},
+                "douyin",
+                execution_profile=profile,
+            )
+
+    def test_runtime_profile_parameters_reject_dictionaries(self):
+        from shared.runtime_options import (
+            get_platform_download_defaults,
+            merge_convenience_params,
+        )
+
+        with self.assertRaises(TypeError):
+            get_platform_download_defaults(
+                "douyin", execution_profile={"host_surface": "cli"}
+            )
+        with self.assertRaises(TypeError):
+            merge_convenience_params(
+                {},
+                {},
+                "douyin",
+                execution_profile={"host_surface": "cli"},
+            )
 
     def test_try_load_cookie_falls_back_to_manual_dict_serialization(self):
         from shared.runtime_options import _try_load_cookie
@@ -183,6 +249,7 @@ class RuntimeAdaptersTests(unittest.TestCase):
 
         runner = Mock()
         runner.run.return_value = {"status": "ok", "items": []}
+        profile = _local_profile()
 
         with patch("shared.cli_runner_runtime.CLIRunner", return_value=runner) as runner_cls:
             result = run_cli_search(
@@ -193,6 +260,7 @@ class RuntimeAdaptersTests(unittest.TestCase):
                 config={"max_items": 20},
                 timeout=3.0,
                 download=False,
+                execution_profile=profile,
             )
 
         self.assertEqual(result, {"status": "ok", "items": []})
@@ -206,6 +274,7 @@ class RuntimeAdaptersTests(unittest.TestCase):
             log_to_stderr=False,
             timeout=3.0,
             download=False,
+            execution_profile=profile,
         )
         runner.run.assert_called_once()
 

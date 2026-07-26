@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from shared.execution_profile import ExecutionProfile
+
 def run_cli_search(
     *,
     source: str,
@@ -13,6 +15,7 @@ def run_cli_search(
     config: dict,
     timeout: float | None,
     download: bool,
+    execution_profile: ExecutionProfile,
 ) -> dict[str, Any]:
     """通过宿主无关函数运行既有 CLI 搜索流程。"""
     from shared.cli_runner_runtime import CLIRunner
@@ -27,6 +30,7 @@ def run_cli_search(
         log_to_stderr=False,
         timeout=timeout,
         download=download,
+        execution_profile=execution_profile,
     )
     return runner.run()
 

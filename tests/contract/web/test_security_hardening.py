@@ -27,6 +27,76 @@ class WebSecurityHardeningTests(unittest.TestCase):
         session_id = self.client.cookies.get(cookie_name)
         self.context = self.client.app.state.web_session_registry.get_or_create(session_id)
 
+    def test_search_rejects_authority_before_executor(self):
+        forbidden_payloads = [
+            {"execution_profile": {"allow_machine_credentials": True}},
+            {"config": {"tool_permissions": ["admin"]}},
+            {"config": {"approved_roots": ["C:/"]}},
+            {"cookie": "session=secret"},
+            {"cookies": {"session": "secret"}},
+            {"proxy": "http://127.0.0.1:7890"},
+            {"config": {"douyin_cookie_file": "C:/machine/cookies.json"}},
+        ]
+
+        for forbidden in forbidden_payloads:
+            with self.subTest(forbidden=forbidden), patch(
+                "app.web.server.run_cli_search"
+            ) as run_cli_search:
+                response = self.client.post(
+                    "/api/search",
+                    json={
+                        "source": "douyin",
+                        "keyword": "cats",
+                        "download": False,
+                        **forbidden,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json().get("error_code"),
+                    "EXECUTION_PROFILE_ESCALATION",
+                )
+                run_cli_search.assert_not_called()
+
+    def test_search_builds_profile_from_authenticated_session(self):
+        with patch(
+            "app.web.server.run_cli_search",
+            return_value={"status": "success", "items": []},
+        ) as run_cli_search:
+            response = self.client.post(
+                "/api/search",
+                json={"source": "douyin", "keyword": "cats", "download": False},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        profile = run_cli_search.call_args.kwargs["execution_profile"]
+        self.assertEqual(profile.host_surface, "public_web")
+        self.assertEqual(profile.owner_id, self.context.session_id)
+        self.assertEqual(
+            profile.approved_roots,
+            frozenset(Path(root).resolve() for root in self.context.approved_roots_snapshot()),
+        )
+
+    def test_crawl_rejects_authority_before_plugin_lookup(self):
+        from app.core.plugin_registry import registry
+
+        with patch.object(registry, "get_plugin") as get_plugin:
+            response = self.client.post(
+                "/api/crawl/start",
+                json={
+                    "source": "douyin",
+                    "keyword": "cats",
+                    "config": {"owner_id": "attacker"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json().get("error_code"), "EXECUTION_PROFILE_ESCALATION"
+        )
+        get_plugin.assert_not_called()
+
     def test_production_app_uses_composed_rest_and_websocket_routers(self):
         pending = list(self.client.app.routes)
         registered_routes = []

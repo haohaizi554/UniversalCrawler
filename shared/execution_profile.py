@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 
 HostSurface = Literal["desktop_gui", "public_web", "cli", "sdk", "test"]
@@ -11,6 +12,68 @@ LocalHostSurface = Literal["desktop_gui", "cli", "sdk", "test"]
 
 class ExecutionProfileEscalation(ValueError):
     """Raised when a derived profile would gain a capability."""
+
+
+PROFILE_AUTHORITY_KEYS = frozenset(
+    {
+        "execution_profile",
+        "host_surface",
+        "owner_id",
+        "allow_machine_credentials",
+        "allow_caller_proxy",
+        "require_public_network",
+        "allow_tool_execution",
+        "tool_permissions",
+        "approved_roots",
+        "allow_external_plugins",
+    }
+)
+
+_PAYLOAD_CREDENTIAL_AND_PROXY_KEYS = frozenset({"cookie", "cookies", "proxy"})
+
+
+def reject_execution_profile_overrides(payload: Mapping[str, Any]) -> None:
+    """Reject untrusted payload fields that can widen execution authority."""
+    if not isinstance(payload, Mapping):
+        raise TypeError("payload must be a mapping")
+
+    pending: list[Any] = [payload]
+    visited: set[int] = set()
+    while pending:
+        value = pending.pop()
+        if isinstance(value, Mapping):
+            marker = id(value)
+            if marker in visited:
+                continue
+            visited.add(marker)
+
+            forbidden: set[str] = set()
+            nested_values: list[Any] = []
+            for key, nested in value.items():
+                if type(key) is not str:
+                    raise ExecutionProfileEscalation(
+                        "payload cannot contain non-string authority keys"
+                    )
+                if (
+                    key in PROFILE_AUTHORITY_KEYS
+                    or key in _PAYLOAD_CREDENTIAL_AND_PROXY_KEYS
+                    or key == "cookie_file"
+                    or key.endswith("_cookie_file")
+                ):
+                    forbidden.add(key)
+                nested_values.append(nested)
+            if forbidden:
+                raise ExecutionProfileEscalation(
+                    "payload cannot set execution authority: "
+                    + ", ".join(sorted(forbidden))
+                )
+            pending.extend(nested_values)
+        elif isinstance(value, (list, tuple)):
+            marker = id(value)
+            if marker in visited:
+                continue
+            visited.add(marker)
+            pending.extend(value)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

@@ -16,6 +16,12 @@ from app.core.events import (
 from app.core.state import VideoStatus
 from app.models.video_item import VideoItem
 from app.debug_logger import debug_logger
+from app.web.api_result import error_result, finalize_api_result
+from shared.execution_profile import (
+    ExecutionProfileEscalation,
+    public_web_profile,
+    reject_execution_profile_overrides,
+)
 from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeSelection
 from shared.runtime_options import (
@@ -31,6 +37,11 @@ from shared.runtime_adapters import build_sdk
 from shared.selection_runtime import RuleSelection
 
 BroadcastFn = Callable[[str, Any], Coroutine[Any, Any, Any]]
+
+_WEB_WORKFLOW_EXECUTION_PROFILE = public_web_profile(
+    owner_id="web-workflow",
+    approved_roots=(),
+)
 
 def build_selection_strategy(selection_dict: dict | None):
     """从 Web 端 `selection` 参数构建 SelectionStrategy 实例。"""
@@ -109,6 +120,17 @@ class WebWorkflowService:
         return {"status": "error", "error": message}
 
     async def start_crawl(self, payload: dict, *, log_error: bool) -> dict:
+        try:
+            reject_execution_profile_overrides(payload)
+        except ExecutionProfileEscalation as exc:
+            if log_error:
+                await self._emit_log(f"❌ {exc}")
+                await self.broadcast("crawl_state", {"is_running": False})
+            return finalize_api_result(
+                error_result(
+                    str(exc), error_code="EXECUTION_PROFILE_ESCALATION"
+                )
+            )
         source = payload.get("source", "")
         keyword = payload.get("keyword", "")
         if "download" in payload:
@@ -161,7 +183,12 @@ class WebWorkflowService:
 
         merged_config = merge_default_config(source, user_config)
         try:
-            merge_convenience_params(payload, merged_config, source)
+            merge_convenience_params(
+                payload,
+                merged_config,
+                source,
+                execution_profile=_WEB_WORKFLOW_EXECUTION_PROFILE,
+            )
         except ValueError as exc:
             return await self._error(str(exc), log_error=log_error, crawl_state_false=True)
 
@@ -381,6 +408,16 @@ class WebWorkflowService:
         return result
 
     async def direct_download(self, payload: dict, *, log_error: bool) -> dict:
+        try:
+            reject_execution_profile_overrides(payload)
+        except ExecutionProfileEscalation as exc:
+            if log_error:
+                await self._emit_log(f"❌ {exc}")
+            return finalize_api_result(
+                error_result(
+                    str(exc), error_code="EXECUTION_PROFILE_ESCALATION"
+                )
+            )
         start_at = time.time()
         url = payload.get("url", "")
         source = payload.get("source", "")
@@ -395,7 +432,11 @@ class WebWorkflowService:
         if not url or not source:
             return await self._error("url 和 source 为必填参数", log_error=log_error)
         url = url.strip()
-        url_error = validate_direct_download_url(url)
+        url_error = (
+            validate_direct_download_url(url)
+            if _WEB_WORKFLOW_EXECUTION_PROFILE.require_public_network
+            else None
+        )
         if url_error:
             return await self._error(url_error, log_error=log_error)
         title = title or url
@@ -427,7 +468,12 @@ class WebWorkflowService:
         merged_config.update({k: v for k, v in user_config.items() if v is not None})
         try:
             config_payload = {key: value for key, value in payload.items() if key != "timeout"}
-            merge_convenience_params(config_payload, merged_config, source)
+            merge_convenience_params(
+                config_payload,
+                merged_config,
+                source,
+                execution_profile=_WEB_WORKFLOW_EXECUTION_PROFILE,
+            )
         except ValueError as exc:
             return await self._error(str(exc), log_error=log_error)
         user_config = merged_config
