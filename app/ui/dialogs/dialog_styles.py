@@ -143,30 +143,13 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         border: 1px solid {colors["border"]};
         border-radius: 10px;
     }}
-    QComboBox#UpdateVersionCombo {{
-        min-height: 34px;
-        background: {colors["input"]};
+    QTextBrowser#UpdateMarkdownView {{
         color: {colors["text"]};
-        border: 1px solid {colors["border"]};
-        border-radius: 8px;
-        padding: 0 10px;
-        font-weight: 700;
-    }}
-    QComboBox#UpdateVersionCombo:hover {{
-        border-color: {colors["accent"]};
-    }}
-    QComboBox#UpdateVersionCombo QAbstractItemView {{
-        background: {colors["panel"]};
-        color: {colors["text"]};
-        selection-background-color: {colors["row_selected"]};
-        selection-color: {colors["text"]};
-        border: 1px solid {colors["border"]};
-    }}
-    QFrame#UpdateDetailCard QLabel#DialogStatus {{
-        color: {colors["muted"]};
         background: transparent;
         border: none;
         padding: 0;
+        selection-background-color: {colors["accent_soft"]};
+        selection-color: {colors["text"]};
     }}
     QLabel#UpdateDetailTitle {{
         color: {colors["text"]};

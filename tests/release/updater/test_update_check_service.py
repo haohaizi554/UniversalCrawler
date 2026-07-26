@@ -441,6 +441,97 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
         self.assertEqual(result.latest_version, "3.7.0")
 
+    def test_secure_update_prefers_newest_signed_cache_generation_for_same_identity(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_metadata = root / "cache" / "updates" / "metadata"
+            cache_metadata.mkdir(parents=True)
+            key = ECC.generate(curve="Ed25519")
+            old_manifest, old_signature, public_pem = _signed_manifest(
+                root / "old",
+                key=key,
+                overrides={
+                    "publishedAt": "2026-07-09T00:00:00Z",
+                    "notes": "old signed generation",
+                },
+            )
+            new_manifest, new_signature, _ = _signed_manifest(
+                root / "new",
+                key=key,
+                overrides={
+                    "publishedAt": "2026-07-10T00:00:00Z",
+                    "notes": "new signed generation",
+                },
+            )
+            (cache_metadata / "3.7.0-old.latest.json").write_bytes(old_manifest.read_bytes())
+            (cache_metadata / "3.7.0-old.latest.json.sig").write_bytes(old_signature.read_bytes())
+            (cache_metadata / "3.7.0-new.latest.json").write_bytes(new_manifest.read_bytes())
+            (cache_metadata / "3.7.0-new.latest.json.sig").write_bytes(new_signature.read_bytes())
+
+            class FakeReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (ManifestLocations(not_modified=True),)
+
+            with patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"):
+                result = check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    release_client=FakeReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.notes, "new signed generation")
+        self.assertEqual(len(result.candidates), 1)
+
+    def test_secure_update_rejects_ambiguous_cached_generations_with_same_timestamp(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.release.updater.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_metadata = root / "cache" / "updates" / "metadata"
+            cache_metadata.mkdir(parents=True)
+            key = ECC.generate(curve="Ed25519")
+            first_manifest, first_signature, public_pem = _signed_manifest(
+                root / "first",
+                key=key,
+                overrides={"notes": "first signed generation"},
+            )
+            second_manifest, second_signature, _ = _signed_manifest(
+                root / "second",
+                key=key,
+                overrides={"notes": "second signed generation"},
+            )
+            (cache_metadata / "3.7.0-first.latest.json").write_bytes(first_manifest.read_bytes())
+            (cache_metadata / "3.7.0-first.latest.json.sig").write_bytes(first_signature.read_bytes())
+            (cache_metadata / "3.7.0-second.latest.json").write_bytes(second_manifest.read_bytes())
+            (cache_metadata / "3.7.0-second.latest.json.sig").write_bytes(second_signature.read_bytes())
+
+            class FakeReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (ManifestLocations(not_modified=True),)
+
+            with patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"):
+                with self.assertRaisesRegex(UpdateCheckError, "conflicting signed manifests"):
+                    check_secure_update(
+                        "v3.6.17",
+                        public_key_pem=public_pem,
+                        release_client=FakeReleaseClient(),
+                        os_name="windows",
+                        arch="x64",
+                        state=LocalUpdateState(),
+                    )
+
     def test_secure_update_preserves_last_good_cache_when_fresh_signature_download_fails(self):
         from tempfile import TemporaryDirectory
 
@@ -1116,7 +1207,7 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
 
     def test_update_check_dialog_uses_scoped_theme_styles(self):
         from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QLabel, QPushButton, QFrame
+        from PyQt6.QtWidgets import QLabel, QPushButton, QFrame, QTextBrowser
 
         from app.ui.dialogs.chromed_dialog import ChromedDialog
         from app.ui.dialogs.update_check import UpdateCheckDialog, UpdateStatusIcon
@@ -1139,20 +1230,54 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIsInstance(dialog, ChromedDialog)
         self.assertIs(dialog.window_title_bar, dialog.chrome_frame.title_bar)
         self.assertIsInstance(dialog._window_chrome_controller, FramelessWindowChromeController)
+        self.assertFalse(dialog.window_title_bar.btn_minimize.isHidden())
+        self.assertFalse(dialog.window_title_bar.btn_maximize.isHidden())
+        self.assertFalse(dialog.window_title_bar.btn_close.isHidden())
+        self.assertTrue(dialog._window_chrome_controller.minimizable)
+        self.assertTrue(dialog._window_chrome_controller.maximizable)
         self.assertTrue(bool(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint))
         self.assertIn(colors["bg"], dialog.styleSheet())
         self.assertIn(colors["text"], dialog.styleSheet())
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogTitle"))
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogBody"))
-        self.assertIsNotNone(dialog.findChild(QLabel, "DialogStatus"))
+        self.assertIsNotNone(dialog.findChild(QTextBrowser, "UpdateMarkdownView"))
         self.assertIsNotNone(dialog.findChild(UpdateStatusIcon, "UpdateStatusIcon"))
         self.assertIsNotNone(dialog.findChild(QLabel, "UpdateStatusBadge"))
         self.assertIsNotNone(dialog.findChild(QFrame, "UpdateVersionPanel"))
         self.assertIsNotNone(dialog.findChild(QLabel, "UpdateReleaseLink"))
         self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))
 
+    def test_update_check_dialog_renders_release_notes_as_markdown(self):
+        from PyQt6.QtWidgets import QTextBrowser
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="Update available",
+            message="Install the selected version?",
+            details=(
+                "# Release notes\n\n"
+                "**Important fix**\n\n"
+                "| Item | Status |\n"
+                "| --- | --- |\n"
+                "| Hot update | Complete |"
+            ),
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="v3.6.18",
+            latest_version="v3.6.21",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        browser = dialog.findChild(QTextBrowser, "UpdateMarkdownView")
+        self.assertIsNotNone(browser)
+        self.assertNotIn("**Important fix**", browser.toPlainText())
+        self.assertIn("Important fix", browser.toPlainText())
+        self.assertIn("<h1", browser.toHtml().lower())
+        self.assertIn("<table", browser.toHtml().lower())
+
     def test_update_check_dialog_exposes_indeterminate_loading_state(self):
-        from PyQt6.QtWidgets import QProgressBar
+        from PyQt6.QtWidgets import QFrame, QProgressBar, QSizePolicy
 
         from app.ui.dialogs.update_check import UpdateCheckDialog
 
@@ -1171,9 +1296,19 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertEqual(progress.minimum(), 0)
         self.assertEqual(progress.maximum(), 0)
         self.assertFalse(dialog.primary_button.isEnabled())
+        self.assertLessEqual(dialog.minimumHeight(), 420)
+        self.assertLessEqual(dialog.height(), 480)
+        self.assertEqual(dialog.remote_version_value.text(), "检测中…")
+        version_panel = dialog.findChild(QFrame, "UpdateVersionPanel")
+        self.assertIsNotNone(version_panel)
+        self.assertEqual(version_panel.sizePolicy().verticalPolicy(), QSizePolicy.Policy.Fixed)
+        hero = dialog.findChild(QFrame, "UpdateHero")
+        self.assertIsNotNone(hero)
+        self.assertEqual(hero.sizePolicy().verticalPolicy(), QSizePolicy.Policy.Fixed)
+        self.assertNotEqual(dialog.remote_version_value.text(), "-")
 
     def test_update_check_dialog_uses_current_language(self):
-        from PyQt6.QtWidgets import QLabel, QPushButton
+        from PyQt6.QtWidgets import QLabel, QPushButton, QTextBrowser
 
         from app.ui.dialogs.update_check import UpdateCheckDialog
 
@@ -1190,7 +1325,9 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         )
         self.addCleanup(dialog.deleteLater)
 
-        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        details_browser = dialog.findChild(QTextBrowser, "UpdateMarkdownView")
+        self.assertIsNotNone(details_browser)
+        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel)) + "\n" + details_browser.toPlainText()
         buttons = "\n".join(button.text() for button in dialog.findChildren(QPushButton))
 
         self.assertEqual(dialog.windowTitle(), "Update check failed")
@@ -1206,7 +1343,7 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
             self.assertNotIn(unexpected, labels + buttons)
 
     def test_update_check_dialog_translates_local_newer_detail_with_prefix(self):
-        from PyQt6.QtWidgets import QLabel
+        from PyQt6.QtWidgets import QTextBrowser
 
         from app.ui.dialogs.update_check import UpdateCheckDialog
 
@@ -1222,16 +1359,17 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         )
         self.addCleanup(dialog.deleteLater)
 
-        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        details_browser = dialog.findChild(QTextBrowser, "UpdateMarkdownView")
+        self.assertIsNotNone(details_browser)
 
         self.assertIn(
             "This usually means you are using a local or pre-release build, so no update is needed.",
-            labels,
+            details_browser.toPlainText(),
         )
-        self.assertNotIn("\u8fd9\u901a\u5e38\u8868\u793a", labels)
+        self.assertNotIn("\u8fd9\u901a\u5e38\u8868\u793a", details_browser.toPlainText())
 
     def test_update_check_dialog_exposes_selector_for_multiple_update_candidates(self):
-        from PyQt6.QtWidgets import QComboBox, QLabel
+        from app.ui.components.combo_popup import ThemedComboBox
 
         from app.services.update_check_service import UpdateCandidate
         from app.ui.dialogs.update_check import UpdateCheckDialog
@@ -1269,14 +1407,14 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         )
         self.addCleanup(dialog.deleteLater)
 
-        combo = dialog.findChild(QComboBox, "UpdateVersionCombo")
+        combo = dialog.findChild(ThemedComboBox, "UpdateVersionCombo")
         self.assertIsNotNone(combo)
         self.assertEqual(combo.count(), 2)
 
         combo.setCurrentIndex(1)
-        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        details_text = dialog.details_browser.toPlainText()
 
         self.assertEqual(dialog.selected_update_version(), "3.8.0")
         self.assertEqual(dialog.selected_update_candidate_id(), "v3.8.0-r1")
         self.assertIn("Revision 1", combo.currentText())
-        self.assertIn("notes 3.8.0 r1", labels)
+        self.assertIn("notes 3.8.0 r1", details_text)

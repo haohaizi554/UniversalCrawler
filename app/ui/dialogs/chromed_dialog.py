@@ -23,6 +23,9 @@ class ChromedDialog(QDialog):
         object_name: str,
         body_margins: tuple[int, int, int, int] = (18, 18, 18, 18),
         body_spacing: int = 12,
+        show_minimize: bool = False,
+        show_maximize: bool = False,
+        resizable: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -39,8 +42,8 @@ class ChromedDialog(QDialog):
             title=title,
             icon=self._resolve_window_icon(parent),
             is_dark_theme=self._is_dark,
-            show_minimize=False,
-            show_maximize=False,
+            show_minimize=show_minimize,
+            show_maximize=show_maximize,
             show_close=True,
             body_margins=body_margins,
             body_spacing=body_spacing,
@@ -51,9 +54,9 @@ class ChromedDialog(QDialog):
         self._window_chrome_controller = FramelessWindowChromeController(
             self,
             title_bar_getter=lambda: self.window_title_bar,
-            resizable=True,
-            minimizable=False,
-            maximizable=False,
+            resizable=resizable,
+            minimizable=show_minimize,
+            maximizable=show_maximize,
         )
         self._window_chrome_controller.set_window_flags()
         self._window_chrome_controller.bind_title_bar_controls(

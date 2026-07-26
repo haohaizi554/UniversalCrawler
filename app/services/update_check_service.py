@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Any, Callable
@@ -83,6 +84,7 @@ class UpdateCandidate:
     release_name: str
     html_url: str
     release_revision: int = 0
+    published_at: str = ""
     notes: str = ""
     mandatory: bool = False
     asset_name: str = ""
@@ -771,6 +773,7 @@ def _candidate_from_verified_metadata(
         release_name=release_name or manifest.tag or manifest.version,
         html_url=release_url,
         release_revision=manifest.release_revision,
+        published_at=manifest.published_at,
         notes=manifest.notes,
         mandatory=False,
         asset_name=asset.name,
@@ -941,7 +944,82 @@ def _load_cached_update_candidates(
             )
         except (ManifestError, UpdateCheckError, ValueError) as exc:
             log_update_event("update.check.cached_candidate_skipped", str(exc), level="WARN")
-    return tuple(candidates)
+    return _collapse_cached_update_generations(tuple(candidates))
+
+
+def _collapse_cached_update_generations(
+    candidates: tuple[UpdateCandidate, ...],
+) -> tuple[UpdateCandidate, ...]:
+    """按签名发布时间折叠同一发布身份的历史缓存，保留无法判定的新旧冲突。"""
+
+    grouped: dict[ReleaseIdentity, list[UpdateCandidate]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.identity, []).append(candidate)
+
+    selected: list[UpdateCandidate] = []
+    for identity, generations in grouped.items():
+        distinct_by_digest: dict[tuple[str, str], UpdateCandidate] = {}
+        for candidate in generations:
+            distinct_by_digest.setdefault(_candidate_metadata_digest(candidate), candidate)
+        distinct = tuple(distinct_by_digest.values())
+        if len(distinct) <= 1:
+            selected.extend(distinct)
+            continue
+
+        dated_generations = tuple(
+            (candidate, _parse_signed_publication_time(candidate.published_at))
+            for candidate in distinct
+        )
+        if all(published_at is not None for _, published_at in dated_generations):
+            newest_time = max(published_at for _, published_at in dated_generations if published_at is not None)
+            newest = tuple(
+                candidate
+                for candidate, published_at in dated_generations
+                if published_at == newest_time
+            )
+            if len(newest) == 1:
+                selected.append(newest[0])
+                log_update_event(
+                    "update.check.cached_generation_superseded",
+                    "newer signed cached manifest superseded historical generations",
+                    level="WARN",
+                    version=identity.version,
+                    revision=identity.revision,
+                    published_at=newest[0].published_at,
+                    superseded=len(distinct) - 1,
+                )
+                continue
+
+        # 发布时间缺失或并列时无法安全判断代际，交给全局冲突校验拒绝。
+        selected.extend(distinct)
+    return tuple(selected)
+
+
+def _parse_signed_publication_time(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _candidate_metadata_digest(candidate: UpdateCandidate) -> tuple[str, str]:
+    try:
+        return (
+            hashlib.sha256(Path(candidate.manifest_path).read_bytes()).hexdigest(),
+            hashlib.sha256(Path(candidate.signature_path).read_bytes()).hexdigest(),
+        )
+    except OSError as exc:
+        raise UpdateCheckError(
+            f"verified candidate metadata disappeared: {candidate.identity.tag}"
+        ) from exc
 
 
 def _metadata_targets(
@@ -1062,13 +1140,7 @@ def _deduplicate_candidates(
     digests: dict[ReleaseIdentity, tuple[str, str]] = {}
     for candidate in candidates:
         identity = candidate.identity
-        try:
-            digest = (
-                hashlib.sha256(Path(candidate.manifest_path).read_bytes()).hexdigest(),
-                hashlib.sha256(Path(candidate.signature_path).read_bytes()).hexdigest(),
-            )
-        except OSError as exc:
-            raise UpdateCheckError(f"verified candidate metadata disappeared: {identity.tag}") from exc
+        digest = _candidate_metadata_digest(candidate)
         if identity in unique:
             if digests[identity] != digest:
                 raise UpdateCheckError(f"conflicting signed manifests for release identity {identity.tag}")

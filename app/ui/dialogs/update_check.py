@@ -7,8 +7,20 @@ from typing import Any
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
+from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from shared.localization import normalize_language, tr
 from shared.version import format_version_label
@@ -128,22 +140,29 @@ class UpdateCheckDialog(ChromedDialog):
         language: str = "zh-CN",
     ) -> None:
         self._language = normalize_language(language)
+        self._status = status or "info"
+        self.details_browser: QTextBrowser | None = None
+        self._rendered_details = ""
         super().__init__(
             parent,
             title=self._tr(title),
             object_name="UpdateCheckDialog",
             body_margins=(24, 22, 24, 20),
             body_spacing=16,
+            show_minimize=True,
+            show_maximize=True,
         )
-        self.setMinimumWidth(620)
-        self.setMaximumWidth(720)
-        self._status = status or "info"
+        if self._status == "checking":
+            self.setMinimumSize(620, 360)
+            self.resize(680, 420)
+        else:
+            self.setMinimumSize(680, 560)
+            self.resize(760, 720)
         self._release_url = str(release_url or "").strip()
         self._initial_details = str(details or "")
         self._candidate_options = self._normalize_candidates(candidates, latest_version=latest_version, release_url=release_url)
         self._selected_version = self._candidate_options[0]["version"] if self._candidate_options else str(latest_version or "")
         self._selected_candidate_id = self._candidate_options[0]["candidate_id"] if self._candidate_options else ""
-        self.details_label: QLabel | None = None
         self.release_link: QLabel | None = None
 
         layout = self.content_layout
@@ -164,12 +183,15 @@ class UpdateCheckDialog(ChromedDialog):
         self.busy_bar.setObjectName("UpdateCheckBusyBar")
         self.busy_bar.setRange(0, 0)
         self.busy_bar.setTextVisible(False)
+        self.busy_bar.setFixedHeight(8)
+        self.busy_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.busy_bar.setAccessibleName(self._tr("正在检查更新..."))
         return self.busy_bar
 
     def _build_header(self, title: str, message: str) -> QWidget:
         hero = QFrame()
         hero.setObjectName("UpdateHero")
+        hero.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         hero_layout = QHBoxLayout(hero)
         hero_layout.setContentsMargins(0, 0, 0, 0)
         hero_layout.setSpacing(14)
@@ -205,6 +227,7 @@ class UpdateCheckDialog(ChromedDialog):
     def _build_version_panel(self, local_version: str, latest_version: str) -> QWidget:
         panel = QFrame()
         panel.setObjectName("UpdateVersionPanel")
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         grid = QGridLayout(panel)
         grid.setContentsMargins(16, 14, 16, 14)
         grid.setHorizontalSpacing(12)
@@ -213,7 +236,10 @@ class UpdateCheckDialog(ChromedDialog):
         self.local_version_label = self._make_version_label(self._tr("当前版本"))
         self.local_version_value = self._make_version_value(local_version or "-")
         self.remote_version_label = self._make_version_label(self._tr("Release 版本"))
-        self.remote_version_value = self._make_version_value(latest_version or "-")
+        remote_version = latest_version or (
+            f"{self._tr('检测中')}…" if self._status == "checking" else "-"
+        )
+        self.remote_version_value = self._make_version_value(remote_version)
         self.remote_version_value.setProperty("tone", self._status_tone())
         arrow = QLabel("→")
         arrow.setObjectName("UpdateVersionArrow")
@@ -239,7 +265,7 @@ class UpdateCheckDialog(ChromedDialog):
         label.setObjectName("UpdateDetailTitle")
         panel_layout.addWidget(label)
 
-        self.version_combo = QComboBox()
+        self.version_combo = ThemedComboBox()
         self.version_combo.setObjectName("UpdateVersionCombo")
         self.version_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         for option in self._candidate_options:
@@ -259,11 +285,15 @@ class UpdateCheckDialog(ChromedDialog):
         detail_title.setObjectName("UpdateDetailTitle")
         card_layout.addWidget(detail_title)
 
-        self.details_label = QLabel(self._detail_text(details))
-        self.details_label.setObjectName("DialogStatus")
-        self.details_label.setWordWrap(True)
-        self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        card_layout.addWidget(self.details_label)
+        self.details_browser = QTextBrowser()
+        self.details_browser.setObjectName("UpdateMarkdownView")
+        self.details_browser.setFrameShape(QFrame.Shape.NoFrame)
+        self.details_browser.setOpenExternalLinks(True)
+        self.details_browser.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+        self.details_browser.setMinimumHeight(220)
+        self.details_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._render_detail_markdown(details)
+        card_layout.addWidget(self.details_browser, 1)
 
         if self._release_url:
             link_text = self._tr("打开 GitHub Release 页面")
@@ -312,6 +342,8 @@ class UpdateCheckDialog(ChromedDialog):
         super().apply_chrome_theme(is_dark)
         if hasattr(self, "status_icon"):
             self.status_icon.set_status(self._status, self._colors)
+        if self.details_browser is not None:
+            self._render_detail_markdown(self._rendered_details)
 
     def selected_update_version(self) -> str:
         return str(self._selected_version or "")
@@ -329,11 +361,29 @@ class UpdateCheckDialog(ChromedDialog):
         self._selected_candidate_id = option["candidate_id"]
         self._release_url = option["release_url"]
         self.remote_version_value.setText(option["tag"] or self._display_version(option["version"]))
-        if self.details_label is not None:
-            self.details_label.setText(self._detail_text(option["notes"] or self._initial_details))
+        if self.details_browser is not None:
+            self._render_detail_markdown(option["notes"] or self._initial_details)
         if self.release_link is not None and self._release_url:
             link_text = self._tr("打开 GitHub Release 页面")
             self.release_link.setText(f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>')
+
+    def _render_detail_markdown(self, details: str) -> None:
+        self._rendered_details = str(details or "")
+        if self.details_browser is None:
+            return
+        colors = self._colors
+        self.details_browser.document().setDefaultStyleSheet(
+            f"""
+            body {{ color: {colors['text']}; }}
+            h1, h2, h3, h4 {{ color: {colors['text']}; margin: 8px 0 5px 0; }}
+            p {{ color: {colors['text']}; margin: 4px 0; }}
+            a {{ color: {colors['accent']}; text-decoration: none; }}
+            code, pre {{ color: {colors['text']}; background-color: {colors['panel']}; }}
+            table {{ border-collapse: collapse; margin: 6px 0; }}
+            th, td {{ border: 1px solid {colors['border']}; padding: 5px 7px; }}
+            """
+        )
+        self.details_browser.setMarkdown(self._detail_text(self._rendered_details))
 
     @staticmethod
     def _display_version(version: str) -> str:
