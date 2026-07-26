@@ -403,7 +403,7 @@ class FrontendStateService:
         self.failed_record_store.shutdown()
         if self._owns_tool_runner_service:
             try:
-                self.tool_runner_service.shutdown(wait=False)
+                self.tool_runner_service.shutdown(wait=True, timeout=1.0)
             except (OSError, RuntimeError, AttributeError) as exc:
                 debug_logger.log_exception(
                     "FrontendStateService",

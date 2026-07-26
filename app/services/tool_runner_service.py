@@ -86,6 +86,7 @@ class ToolRunnerService:
         self._settings_provider = settings_provider
         self._services = dict(services or {})
         self._lock = threading.RLock()
+        self._history_write_lock = threading.Lock()
         self._records: dict[str, _RunRecord] = {}
         self._order: list[str] = []
         self._tokens: dict[str, CancellationToken] = {}
@@ -264,17 +265,42 @@ class ToolRunnerService:
             if pending and deadline is not None and time.monotonic() >= deadline:
                 return False
 
-    def shutdown(self, *, wait: bool = True) -> None:
+    def shutdown(
+        self,
+        *,
+        wait: bool = True,
+        timeout: float | None = None,
+    ) -> bool:
+        """Cancel active runs, wait within the caller budget, and durably flush history."""
+
         with self._lock:
             if self._closed:
-                return
+                return not self._futures
             self._closed = True
-            tokens = tuple(self._tokens.values())
-        for token in tokens:
-            token.cancel()
-        self._executor.shutdown(wait=wait, cancel_futures=True)
-        self._schedule_persist()
-        self._io_executor.shutdown(wait=wait, cancel_futures=False)
+            active_run_ids = tuple(self._futures)
+        for run_id in active_run_ids:
+            self.cancel(run_id)
+
+        with self._lock:
+            drained = not self._futures
+        if wait and not drained:
+            drained = self.wait_for_idle(timeout=timeout)
+        self._executor.shutdown(wait=bool(wait and drained), cancel_futures=True)
+
+        # Drain already queued writes first, then write one authoritative final snapshot.
+        # This prevents an older asynchronous snapshot from overwriting shutdown state.
+        self._io_executor.shutdown(wait=True, cancel_futures=False)
+        self._persist_history_now()
+        if not drained:
+            debug_logger.log(
+                component="ToolRunnerService",
+                action="shutdown_timeout",
+                level="WARN",
+                message="Tool runtime exceeded the bounded shutdown window",
+                status_code="TOOL_SHUTDOWN_TIMEOUT",
+                details={"active_run_ids": list(active_run_ids), "timeout": timeout},
+            )
+        return drained
 
     def _execute(
         self,
@@ -443,13 +469,27 @@ class ToolRunnerService:
                 generation = self._persist_generation
                 snapshot = [self._records[run_id].to_dict() for run_id in self._order if run_id in self._records]
             try:
-                _atomic_write_json(self.history_path, snapshot)
+                with self._history_write_lock:
+                    _atomic_write_json(self.history_path, snapshot)
             except OSError as exc:
                 debug_logger.log_exception("ToolRunnerService", "persist_history", exc)
             with self._lock:
                 if generation == self._persist_generation:
                     self._persist_running = False
                     return
+
+    def _persist_history_now(self) -> None:
+        with self._lock:
+            snapshot = [
+                self._records[run_id].to_dict()
+                for run_id in self._order
+                if run_id in self._records
+            ]
+        try:
+            with self._history_write_lock:
+                _atomic_write_json(self.history_path, snapshot)
+        except OSError as exc:
+            debug_logger.log_exception("ToolRunnerService", "persist_history.shutdown", exc)
 
 
 def _normalize_validation(value: Any, parameters: Mapping[str, Any]) -> ToolValidationResult:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 from app.core.tools.contracts import ToolManifest, ToolRunResult
@@ -45,6 +46,27 @@ class BlockingTool:
             context.cancellation.wait(0.01)
         context.raise_if_cancelled()
         raise AssertionError("unreachable")
+
+
+class StubbornTool:
+    manifest = ToolManifest(
+        id="stubborn",
+        title="Stubborn",
+        summary="Ignores cancellation until the test releases it",
+        supports_cancel=True,
+    )
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def validate(self, context):
+        return []
+
+    def run(self, context):
+        self.started.set()
+        self.release.wait()
+        return ToolRunResult.success("released")
 
 
 def _registry(*tools):
@@ -110,3 +132,42 @@ def test_runner_public_list_and_describe_match_sdk_contract(tmp_path: Path) -> N
     assert service.describe("missing")["status"] == "error"
 
     service.shutdown(wait=True)
+
+
+def test_runner_shutdown_cancels_cooperative_tool_and_flushes_history(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    history_path = tmp_path / "history.json"
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+    )
+
+    service.run("blocking", {})
+    assert tool.started.wait(1.0)
+
+    assert service.shutdown(wait=True, timeout=1.0) is True
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert persisted[0]["status"] == "cancelled"
+
+
+def test_runner_shutdown_timeout_is_bounded_and_persists_cancelling_state(tmp_path: Path) -> None:
+    tool = StubbornTool()
+    history_path = tmp_path / "history.json"
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+    )
+
+    service.run("stubborn", {})
+    assert tool.started.wait(1.0)
+    started_at = time.monotonic()
+    try:
+        assert service.shutdown(wait=True, timeout=0.01) is False
+        assert time.monotonic() - started_at < 0.5
+        persisted = json.loads(history_path.read_text(encoding="utf-8"))
+        assert persisted[0]["status"] == "cancelling"
+    finally:
+        tool.release.set()
+        assert service.wait_for_idle(timeout=1.0)
