@@ -23,6 +23,18 @@ class ConfigWriteError:
 class WebControllerConfigService:
     """集中处理 WebController 使用的配置读写副作用。"""
 
+    _TOOL_ACTIONS = frozenset(
+        {
+            "tool_validate",
+            "tool_start",
+            "tool_cancel",
+            "tool_open_result",
+            "tool_clear_history",
+            "tool_reload",
+            "run_tool",
+        }
+    )
+
     def __init__(self, action_handler: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None) -> None:
         self._action_handler = action_handler
 
@@ -147,6 +159,55 @@ class WebControllerConfigService:
         if not isinstance(value, bool):
             raise ValueError(f"{key} 必须是布尔值")
 
+    @staticmethod
+    def _require_nonempty_string(
+        payload: Mapping[str, Any],
+        key: str,
+        *,
+        aliases: tuple[str, ...] = (),
+    ) -> str:
+        for candidate in (key, *aliases):
+            if candidate not in payload:
+                continue
+            value = payload[candidate]
+            if isinstance(value, str) and value.strip():
+                return value
+            raise ValueError(f"{candidate} must be a non-empty string")
+        raise ValueError(f"{key} is required")
+
+    @classmethod
+    def _validate_tool_action_payload(cls, action: str, payload: Mapping[str, Any]) -> None:
+        if action == "tool_reload":
+            if "tool_id" in payload:
+                cls._require_nonempty_string(payload, "tool_id")
+            return
+
+        cls._require_nonempty_string(
+            payload,
+            "tool_id",
+            aliases=("id",) if action == "run_tool" else (),
+        )
+        if action in {"tool_validate", "tool_start"}:
+            if "parameters" not in payload:
+                raise ValueError("parameters is required")
+            if not isinstance(payload["parameters"], Mapping):
+                raise ValueError("parameters must be an object")
+        elif action == "tool_cancel":
+            cls._require_nonempty_string(payload, "run_id")
+        elif action == "tool_open_result":
+            result_fields = tuple(
+                key
+                for key in ("result_id", "history_id", "result_path")
+                if key in payload
+            )
+            if not result_fields:
+                raise ValueError("a result identifier is required")
+            for key in result_fields:
+                cls._require_nonempty_string(payload, key)
+        elif action == "run_tool" and "parameters" in payload:
+            if not isinstance(payload["parameters"], Mapping):
+                raise ValueError("parameters must be an object")
+
     @classmethod
     def authorize_frontend_action_payload(
         cls,
@@ -154,8 +215,13 @@ class WebControllerConfigService:
         payload: Mapping[str, Any],
         approved_roots: tuple[str, ...] | None,
     ) -> dict[str, Any]:
-        normalized_payload = dict(payload or {})
         normalized_action = str(action or "").strip()
+        if normalized_action in cls._TOOL_ACTIONS and payload is not None and not isinstance(payload, Mapping):
+            raise ValueError("payload must be an object")
+        normalized_payload = dict(payload or {})
+        normalized_payload.pop("_approved_roots", None)
+        if normalized_action in cls._TOOL_ACTIONS:
+            cls._validate_tool_action_payload(normalized_action, normalized_payload)
         if normalized_action == "update_setting":
             section = str(normalized_payload.get("section") or normalized_payload.get("group") or "").strip()
             key = str(normalized_payload.get("key") or normalized_payload.get("name") or "").strip()

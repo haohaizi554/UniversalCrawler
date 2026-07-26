@@ -125,6 +125,25 @@ def test_settings_update_includes_settings_contract_section():
         {"settings_snapshot", "settings_contract", "download_options", "app_status"},
     )
 
+
+def test_tool_runtime_events_refresh_only_toolbox_projection_sections():
+    expected_sections = frozenset(
+        {
+            "toolbox_items",
+            "toolbox_recent_items",
+            "toolbox_display_projection",
+        },
+    )
+
+    for topic in ("tools.progress", "toolbox.selection_changed"):
+        aggregator = FrontendEventAggregator()
+
+        state = aggregator.record(topic, {"tool_id": "media_health"})
+
+        assert sections_for_topic(topic) == expected_sections
+        assert state.changed_sections == expected_sections
+
+
 def test_deleted_ids_since_ignores_acknowledged_deletions():
     aggregator = FrontendEventAggregator()
 

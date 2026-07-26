@@ -421,6 +421,42 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertTrue(worker_threads)
         self.assertNotEqual(worker_threads[0], main_thread)
 
+    def test_async_tool_actions_receive_only_session_approved_roots(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller.frontend_state_service.handle_action = Mock(return_value={"status": "ok"})
+        trusted_roots = ("C:/trusted", "D:/also-trusted")
+        action_payloads = (
+            ("tool_validate", {"tool_id": "media_health", "parameters": {}}),
+            ("tool_start", {"tool_id": "media_health", "parameters": {}}),
+            ("tool_cancel", {"tool_id": "media_health", "run_id": "run-7"}),
+            ("tool_open_result", {"tool_id": "media_health", "result_id": "result-9"}),
+            ("tool_clear_history", {"tool_id": "media_health"}),
+            ("tool_reload", {}),
+            ("run_tool", {"id": "metadata_viewer"}),
+        )
+
+        try:
+            for action, payload in action_payloads:
+                with self.subTest(action=action):
+                    controller.frontend_state_service.handle_action.reset_mock()
+                    result = asyncio.run(
+                        controller.async_handle_frontend_action(
+                            action,
+                            {**payload, "_approved_roots": ("C:/attacker",)},
+                            approved_roots=trusted_roots,
+                        )
+                    )
+
+                    self.assertEqual(result["status"], "ok")
+                    forwarded = controller.frontend_state_service.handle_action.call_args.args[1]
+                    self.assertEqual(forwarded["_approved_roots"], trusted_roots)
+                    self.assertNotIn("C:/attacker", forwarded["_approved_roots"])
+        finally:
+            controller.shutdown()
+
     def test_async_delete_video_preserves_item_on_file_delete_error(self):
         import asyncio
 

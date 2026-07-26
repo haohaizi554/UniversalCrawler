@@ -17,17 +17,22 @@ class FrontendEventPriority(IntEnum):
     CRITICAL = 2
 
 VIDEO_SECTIONS = frozenset({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
+TOOLBOX_SECTIONS = frozenset(
+    {
+        "toolbox_items",
+        "toolbox_recent_items",
+        "toolbox_display_projection",
+    }
+)
 STATIC_SECTIONS = frozenset(
     {
         "pages",
         "icon_manifest",
-        "toolbox_items",
-        "toolbox_recent_items",
         "settings_snapshot",
         "settings_contract",
         "download_options",
     }
-)
+) | TOOLBOX_SECTIONS
 ALL_FRONTEND_SECTIONS = VIDEO_SECTIONS | STATIC_SECTIONS | frozenset({"log_items"})
 
 NOISY_TOPICS = frozenset(
@@ -133,6 +138,8 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         return frozenset({"settings_snapshot", "settings_contract"})
     if normalized == "platforms":
         return frozenset({"settings_snapshot"})
+    if normalized.startswith(("tools.", "toolbox.")):
+        return TOOLBOX_SECTIONS
     return None
 
 def event_coalesce_key(topic: str, payload: Any = None) -> tuple[str, str]:

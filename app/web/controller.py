@@ -1309,7 +1309,7 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
         try:
             normalized_payload = WebControllerConfigService.authorize_frontend_action_payload(
                 action,
-                payload or {},
+                payload if payload is not None else {},
                 approved_roots,
             )
         except (ConfigValidationError, PermissionError, ValueError) as exc:
@@ -1324,6 +1324,9 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
                     else "config_not_allowed"
                 },
             }
+
+        if str(action or "").strip() in WebControllerConfigService._TOOL_ACTIONS:
+            normalized_payload["_approved_roots"] = tuple(approved_roots or ())
 
         async def _delete() -> dict:
             video_id = str(normalized_payload.get("id") or normalized_payload.get("video_id") or "")
