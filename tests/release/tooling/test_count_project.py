@@ -239,6 +239,26 @@ def test_scan_project_excludes_graphify_output_directory(tmp_path):
     assert [item["path"] for item in result["largest_files"]] == ["main.py"]
 
 
+def test_scan_project_excludes_codex_work_directory(tmp_path):
+    """Codex 隔离工作目录不属于当前项目源码，不能计入统计。"""
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    worker_dir = tmp_path / ".codex-work"
+    nested_dir = worker_dir / "workspace" / "app"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "worker_copy.py").write_text(
+        "print('worker copy')\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(tmp_path)
+
+    assert result["total_dirs"] == 0
+    assert result["total_files"] == 1
+    assert result["code_files"] == 1
+    assert result["totals"]["all"]["files"] == 1
+    assert [item["path"] for item in result["largest_files"]] == ["main.py"]
+
+
 def test_scan_project_counts_python_test_case_definitions(tmp_path):
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()

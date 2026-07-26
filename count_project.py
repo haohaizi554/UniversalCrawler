@@ -30,6 +30,7 @@ EXCLUDE_DIRS = {
     "target",
     "out",
     "graphify-out",
+    ".codex-work",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
