@@ -100,6 +100,11 @@ function settingsControllerService() {
   return window.UcpSettingsController;
 }
 
+function toolboxControllerService() {
+  if (!window.UcpToolboxController) throw new Error("UcpToolboxController is unavailable");
+  return window.UcpToolboxController;
+}
+
 function dialogControllerService() {
   if (!window.UcpDialogController) throw new Error("UcpDialogController is unavailable");
   return window.UcpDialogController;
@@ -113,6 +118,22 @@ function playbackControllerService() {
 function frontendRuntimeService() {
   if (!window.UcpFrontendRuntime) throw new Error("UcpFrontendRuntime is unavailable");
   return window.UcpFrontendRuntime;
+}
+
+function toolboxControllerDependencies() {
+  return {
+    getState: () => frontendState,
+    getSelectedToolId: () => selected.tool,
+    setSelectedToolId: id => { selected.tool = String(id || ""); },
+    getIconManifest: () => iconManifest,
+    requestAction: (action, payload) => frontendRuntimeService().requestAction(action, payload),
+    enhanceSelects,
+    translateText: translateUiText,
+    t,
+    esc,
+    escAttr,
+    byId,
+  };
 }
 
 function listPageDependencies() {
@@ -404,6 +425,7 @@ function configureFeatureModules() {
   window.UcpDialogController.configure(dialogControllerDependencies());
   window.UcpPlaybackController.configure(playbackControllerDependencies());
   window.UcpFrontendRuntime.configure(runtimeDependencies());
+  window.UcpToolboxController.configure(toolboxControllerDependencies());
   featureModulesConfigured = true;
 }
 
@@ -546,7 +568,10 @@ function renderFrontendSections(sections) {
     settingsControllerService().render();
   }
   if (sections.has("settings_snapshot")) updatePlaceholder();
-  if ((sections.has("toolbox_items") || sections.has("toolbox_recent_items")) && currentPage === "toolbox") renderToolbox();
+  if (toolboxControllerService().shouldRender(sections)) {
+    toolboxControllerService().ingest();
+    if (currentPage === "toolbox") renderToolbox();
+  }
   if (sections.has("icon_manifest")) renderCurrentPage();
   if (sections.has("app_status")) renderStatus();
 }
@@ -1153,32 +1178,25 @@ function renderToolbox() {
   if (subtitle) subtitle.textContent = t("高效实用的辅助工具，提升工作效率");
   const items = frontendState.toolbox_items || [];
   reconcileSelectedTask("tool", items);
-  byId("toolGrid").innerHTML = items.map(item => `
-    <button class="tool-card ${selected.tool === item.id ? "active" : ""}" onclick="selectTool('${escAttr(item.id)}')">
-      <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(item.icon_file || "nav_toolbox.png")}" alt="" />
-      <h2>${esc(t(item.title))}</h2>
-      <p>${esc(t(item.summary))}</p>
-    </button>
-  `).join("");
-  renderToolDetail();
+  return toolboxControllerService().render();
 }
 
 function selectTool(id) {
   selected.tool = id;
-  renderToolbox();
+  return toolboxControllerService().select(id);
 }
 
 function renderToolDetail() {
-  const item = selectedTaskItem("tool", frontendState.toolbox_items || []) || {};
-  const recent = frontendState.toolbox_recent_items || [];
-  byId("toolDetail").innerHTML = `
-    <h2>${esc(t("最近使用"))}</h2>
-    <div class="recent-list">${recent.length ? recent.map(row => `${esc(t(row.title || ""))}  ${esc(translateUiText(row.last_used || ""))}`).join("\n") : esc(t("暂无最近使用记录"))}</div>
-    <h2>${esc(t("工具详情"))}</h2>
-    ${kvHtml([["工具", t(item.title || "")], ["说明", t(item.summary || "")], ["输入示例", t(item.input_example || "")], ["输出示例", t(item.output_example || "")]])}
-    <button class="btn btn-primary" onclick="frontendAction('run_tool',{tool_id:'${escAttr(item.id || "")}'})">${esc(t("打开工具"))}</button>
-  `;
+  selectedTaskItem("tool", frontendState.toolbox_items || []);
+  return toolboxControllerService().renderDetail();
 }
+
+function updateToolParameter(name, value) { return toolboxControllerService().updateParameter(name, value); }
+function validateTool() { return toolboxControllerService().validate(); }
+function startTool() { return toolboxControllerService().start(); }
+function cancelTool() { return toolboxControllerService().cancel(); }
+function openToolResult(historyId = "") { return toolboxControllerService().openResult(historyId); }
+function clearToolHistory() { return toolboxControllerService().clearHistory(); }
 
 function renderStatus() {
   const status = frontendState.app_status || {};
