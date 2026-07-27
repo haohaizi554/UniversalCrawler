@@ -612,7 +612,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             debug_logger.log_command(
                 component="N_m3u8DL_RE_Downloader",
                 tool_name="N_m3u8DL-RE",
-                command_args=cmd,
+                command_args=[arg.replace(source_url, "<local-hls-capability-url>") if local_proxy and isinstance(arg, str) else arg for arg in cmd],
                 message="Preparing N_m3u8DL-RE HLS download",
                 context={
                     "title": video_item.title,
@@ -767,7 +767,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             action="local_hls_proxy_start",
             message="Started local HLS proxy for protected MissAV stream",
             status_code="M3U8_LOCAL_PROXY_START",
-            details={"source_url": video_item.url, "local_url": local_proxy.url},
+            details={"task_id": local_proxy.capability.task_id, "base_url": local_proxy.base_url},
             trace_id=video_item.meta.get("trace_id"),
         )
         return local_proxy
@@ -799,7 +799,6 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         upstream_headers.setdefault("Cache-Control", "no-cache")
         upstream_headers.setdefault("Pragma", "no-cache")
         upstream_headers["Priority"] = "i"
-        upstream_headers.setdefault("Range", "bytes=0-")
         upstream_headers["Sec-Fetch-Dest"] = "video"
         upstream_headers["Sec-Fetch-Mode"] = "no-cors"
         upstream_headers["Sec-Fetch-Site"] = "same-origin"
@@ -812,7 +811,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         upstream_proxy: str | None,
         *,
         domain_policy: DomainPolicyEngine | None = None,
-    ) -> tuple[int, str, bytes]:
+    ) -> tuple[int, str, bytes, str, tuple[str, ...]]:
         try:
             from curl_cffi import requests as curl_requests
         except ImportError as exc:
@@ -832,8 +831,14 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 continue
             status = int(getattr(response, "status_code", 0) or 0)
             if status in (200, 206):
-                content_type = str(getattr(response, "headers", {}).get("Content-Type", "") or "")
-                return status, content_type, bytes(getattr(response, "content", b"") or b"")
+                try:
+                    content_type = str(getattr(response, "headers", {}).get("Content-Type", "") or "")
+                    resolved_url = canonicalize_request_target(str(getattr(response, "url", "") or upstream_url)).url
+                    chain = tuple(getattr(response, "redirect_chain", ()) or (resolved_url,))
+                    return status, content_type, bytes(getattr(response, "content", b"") or b""), resolved_url, chain
+                finally:
+                    self._close_hls_proxy_response(response, upstream_url)
+            self._close_hls_proxy_response(response, upstream_url)
             first_error = ExternalToolError(f"local HLS proxy upstream request failed ({status}) for {upstream_url}")
             if status != 403:
                 break
@@ -868,14 +873,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 first_error = exc
                 continue
             status = int(getattr(response, "status_code", 0) or 0)
-            if status in (200, 206):
+            if status in (200, 206, 416):
                 return response
-            close = getattr(response, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except (OSError, RuntimeError, AttributeError) as exc:
-                    debug_logger.log_exception("M3U8Downloader", "close_retry_response", exc, details={"url": upstream_url})
+            self._close_hls_proxy_response(response, upstream_url)
             first_error = ExternalToolError(f"local HLS proxy upstream request failed ({status}) for {upstream_url}")
             if status != 403:
                 break
@@ -900,7 +900,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 timeout=60,
                 max_response_bytes=256 * 1024 * 1024,
             ).request("GET", upstream_url, headers=headers, max_redirects=max_redirects)
-        current_url = str(upstream_url)
+        current_url = canonicalize_request_target(str(upstream_url)).url
+        redirect_chain = [current_url]
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
             request_url = current_url
@@ -919,12 +920,10 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             response_headers = getattr(response, "headers", {}) or {}
             location = response_headers.get("Location") or response_headers.get("location")
             if status not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
+                response.redirect_chain = tuple(redirect_chain)
                 return response
-
-            target_url = urllib.parse.urljoin(request_url, str(location))
             try:
-                if domain_policy is not None:
-                    target_url = canonicalize_request_target(target_url).url
+                target_url = canonicalize_request_target(urllib.parse.urljoin(request_url, str(location))).url
                 if redirect_count >= max_redirects:
                     raise ExternalToolError("local HLS proxy redirect limit exceeded")
             except Exception:
@@ -939,6 +938,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 }
             self._close_hls_proxy_response(response, request_url)
             current_url = target_url
+            redirect_chain.append(target_url)
         raise ExternalToolError("local HLS proxy redirect limit exceeded")
 
     @staticmethod

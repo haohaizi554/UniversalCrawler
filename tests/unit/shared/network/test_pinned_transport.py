@@ -18,6 +18,7 @@ from curl_cffi.const import CurlOpt
 
 from shared.network import pinned_transport as pinned_transport_module
 from shared.network.pinned_transport import (
+    PinnedResponse,
     PinnedTransport,
     canonicalize_host,
     canonicalize_request_target,
@@ -245,6 +246,72 @@ def test_redirect_hops_share_one_canonical_target_without_system_dns(monkeypatch
     system_dns.assert_not_called()
 
 
+def test_pinned_response_four_positional_arguments_keep_compatibility() -> None:
+    response = PinnedResponse(200, "https://one.example:443/a", {}, b"ok")
+
+    assert response.redirect_chain == ()
+
+
+def test_response_records_canonical_url_when_no_redirect_occurs() -> None:
+    factory = _RecordingSessionFactory(
+        [_FakeResponse(200, "https://one.example:443/a", {}, b"ok")]
+    )
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(), session_factory=factory
+    ).request("GET", "HTTPS://ONE.Example./a", headers={})
+
+    assert result.redirect_chain == ("https://one.example:443/a",)
+
+
+def test_response_records_every_canonical_same_origin_redirect_hop() -> None:
+    factory = _RecordingSessionFactory(
+        [
+            _FakeResponse(302, "https://one.example:443/a", {"Location": "/b?step=1"}),
+            _FakeResponse(307, "https://one.example:443/b?step=1", {"Location": "./c"}),
+            _FakeResponse(200, "https://one.example:443/c", {}, b"ok"),
+        ]
+    )
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(), session_factory=factory
+    ).request("GET", "https://ONE.Example./a", headers={})
+
+    assert result.redirect_chain == (
+        "https://one.example:443/a",
+        "https://one.example:443/b?step=1",
+        "https://one.example:443/c",
+    )
+
+
+def test_response_records_every_canonical_cross_origin_redirect_hop() -> None:
+    factory = _RecordingSessionFactory(
+        [
+            _FakeResponse(
+                302,
+                "https://one.example:443/a",
+                {"Location": "HTTPS://TWO.Example./b"},
+            ),
+            _FakeResponse(
+                308,
+                "https://two.example:443/b",
+                {"Location": "https://BÜCHER.Example./final"},
+            ),
+            _FakeResponse(200, "https://xn--bcher-kva.example:443/final", {}, b"ok"),
+        ]
+    )
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(), session_factory=factory
+    ).request("GET", "https://ONE.Example./a", headers={})
+
+    assert result.redirect_chain == (
+        "https://one.example:443/a",
+        "https://two.example:443/b",
+        "https://xn--bcher-kva.example:443/final",
+    )
+
+
 def test_cross_origin_redirect_drops_credentials_before_next_request() -> None:
     factory = _RecordingSessionFactory(
         [
@@ -268,10 +335,23 @@ def test_cross_origin_redirect_drops_credentials_before_next_request() -> None:
     assert factory.sessions[0].calls[0]["headers"] == {
         "Cookie": "session=secret",
         "Authorization": "Bearer secret",
-        "Proxy-Authorization": "Basic secret",
         "X-Public": "kept",
     }
     assert factory.sessions[1].calls[0]["headers"] == {"X-Public": "kept"}
+
+
+def test_proxy_authorization_is_never_sent_to_an_origin() -> None:
+    factory = _RecordingSessionFactory(
+        [_FakeResponse(200, "https://one.example:443/a", {}, b"ok")]
+    )
+
+    PinnedTransport(policy=_CapturingPolicy(), session_factory=factory).request(
+        "GET",
+        "https://one.example/a",
+        headers={"Proxy-Authorization": "Basic secret", "X-Public": "kept"},
+    )
+
+    assert factory.sessions[0].calls[0]["headers"] == {"X-Public": "kept"}
 
 
 def test_cross_origin_redirect_drops_session_cookie_jar() -> None:

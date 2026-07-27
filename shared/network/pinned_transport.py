@@ -41,6 +41,7 @@ class PinnedResponse:
     url: str
     headers: Mapping[str, str]
     body: bytes
+    redirect_chain: tuple[str, ...] = ()
 
     @property
     def content(self) -> bytes:
@@ -210,7 +211,7 @@ def _copy_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
     for key, value in headers.items():
         if type(key) is not str or type(value) is not str:
             raise TypeError("request headers must contain only strings")
-        if key.lower() == "host":
+        if key.lower() in {"host", "proxy-authorization"}:
             continue
         copied[key] = value
     return copied
@@ -287,6 +288,7 @@ class PinnedTransport:
 
         request_headers = _copy_request_headers(headers)
         target = canonicalize_request_target(url)
+        redirect_chain = [target.url]
         session: Any | None = None
         base_curl_options: dict[Any, Any] = {}
 
@@ -361,6 +363,7 @@ class PinnedTransport:
                         url=target.url,
                         headers=response_headers,
                         body=payload,
+                        redirect_chain=tuple(redirect_chain),
                     )
                     _close_response(response)
                     response = None
@@ -391,6 +394,7 @@ class PinnedTransport:
                     _close_session(session)
                     session = None
                 target = next_target
+                redirect_chain.append(target.url)
         finally:
             if response is not None:
                 _close_response(response)

@@ -2274,10 +2274,17 @@ https://cdn.example.com/seg2.m4s?token=1
     def test_local_hls_proxy_streams_segment_bytes_for_live_speed(self):
         downloader = N_m3u8DL_RE_Downloader()
         proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
-        proxy._segment_total = 1
+        segment_url = "https://surrit.com/demo/seg1.m4s"
+        canonical_segment_url = "https://surrit.com:443/demo/seg1.m4s"
+        proxy.record_playlist(
+            proxy.root_url,
+            "#EXTM3U\n#EXTINF:1,\nseg1.m4s\n#EXT-X-ENDLIST\n",
+        )
 
         class FakeResponse:
             status_code = 200
+            url = canonical_segment_url
+            redirect_chain = (canonical_segment_url,)
             headers = {"Content-Type": "video/mp4", "Content-Length": "6"}
 
             def iter_content(self, chunk_size=0):
@@ -2303,19 +2310,40 @@ https://cdn.example.com/seg2.m4s?token=1
                 pass
 
         handler = FakeHandler()
-        with patch.object(downloader, "_hls_proxy_open_upstream", return_value=FakeResponse()):
-            proxy.serve(handler, "https://surrit.com/demo/seg1.m4s")
+        with patch.object(
+            downloader, "_hls_proxy_open_upstream", return_value=FakeResponse()
+        ) as mocked_open:
+            proxy.serve(handler, segment_url)
 
         self.assertEqual(handler.status, 200)
         self.assertEqual(handler.wfile.getvalue(), b"abcdef")
         self.assertEqual(proxy.progress_snapshot(), (95, 6))
+        self.assertEqual(mocked_open.call_args.args[0], canonical_segment_url)
 
     def test_local_hls_proxy_forwards_range_response_headers(self):
         downloader = N_m3u8DL_RE_Downloader()
-        proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
+        proxy = _LocalHlsProxy(
+            downloader,
+            "https://surrit.com/demo/playlist.m3u8",
+            {
+                "Authorization": "Bearer origin-secret",
+                "Cookie": "session=origin-secret",
+                "Host": "attacker.example",
+                "Proxy-Authorization": "Basic proxy-secret",
+            },
+            None,
+        )
+        segment_url = "https://surrit.com/demo/seg1.m4s"
+        canonical_segment_url = "https://surrit.com:443/demo/seg1.m4s"
+        proxy.record_playlist(
+            proxy.root_url,
+            "#EXTM3U\n#EXTINF:1,\nseg1.m4s\n#EXT-X-ENDLIST\n",
+        )
 
         class FakeResponse:
             status_code = 206
+            url = canonical_segment_url
+            redirect_chain = (canonical_segment_url,)
             headers = {
                 "Content-Type": "video/mp4",
                 "Content-Length": "6",
@@ -2346,7 +2374,7 @@ https://cdn.example.com/seg2.m4s?token=1
 
         handler = FakeHandler()
         with patch.object(downloader, "_hls_proxy_open_upstream", return_value=FakeResponse()) as mocked_open:
-            proxy.serve(handler, "https://surrit.com/demo/seg1.m4s")
+            proxy.serve(handler, segment_url)
 
         self.assertEqual(handler.status, 206)
         self.assertIn(("Content-Range", "bytes 0-5/6"), handler.response_headers)
@@ -2354,8 +2382,13 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertIn(("ETag", '"demo"'), handler.response_headers)
         self.assertEqual(handler.wfile.getvalue(), b"abcdef")
         upstream_headers = mocked_open.call_args.args[1]
+        self.assertEqual(mocked_open.call_args.args[0], canonical_segment_url)
         self.assertEqual(upstream_headers["Range"], "bytes=2-5")
         self.assertEqual(upstream_headers["If-Range"], '"demo"')
+        self.assertEqual(upstream_headers["Authorization"], "Bearer origin-secret")
+        self.assertEqual(upstream_headers["Cookie"], "session=origin-secret")
+        self.assertNotIn("Host", upstream_headers)
+        self.assertNotIn("Proxy-Authorization", upstream_headers)
 
     def test_hls_proxy_segment_headers_mimic_browser_media_request(self):
         headers = {
@@ -2379,7 +2412,7 @@ https://cdn.example.com/seg2.m4s?token=1
 
         self.assertNotIn("Origin", media_headers)
         self.assertEqual(media_headers["Accept-Encoding"], "identity;q=1, *;q=0")
-        self.assertEqual(media_headers["Range"], "bytes=0-")
+        self.assertNotIn("Range", media_headers)
         self.assertEqual(media_headers["Sec-Fetch-Dest"], "video")
         self.assertEqual(media_headers["Sec-Fetch-Mode"], "no-cors")
         self.assertEqual(media_headers["Sec-Fetch-Site"], "same-origin")
