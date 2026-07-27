@@ -18,6 +18,7 @@ from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalTo
 from app.models import VideoItem
 from shared.runtime_options import DomainPolicyViolation
 from shared.network_proxy import requests_proxy_mapping
+from shared.subprocess_env import isolated_media_subprocess_env
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
@@ -292,6 +293,7 @@ class FFmpegDownloader(BaseDownloader):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
+                    env=isolated_media_subprocess_env(),
                 )
                 last_progress_time = time.time()
                 last_progress = 0

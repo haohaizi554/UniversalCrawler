@@ -86,70 +86,53 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         session.get.assert_not_called()
 
-    def test_python_hls_policy_pins_session_request_to_validated_dns_results(self):
-        from curl_cffi.const import CurlOpt
-
+    def test_python_hls_policy_uses_private_pinned_transport(self):
         response = Mock(status_code=200, headers={})
+        supplied_session = Mock()
+        policy = Mock(spec=DomainPolicyEngine)
+        transport = Mock()
+        transport.request.return_value = response
 
-        class RecordingSession:
-            def __init__(self):
-                self.curl_options = {CurlOpt.NOSIGNAL: 1}
-                self.options_during_request = {}
-                self.request_kwargs = {}
-
-            def get(self, _url, **kwargs):
-                self.options_during_request = dict(self.curl_options)
-                self.request_kwargs = dict(kwargs)
-                return response
-
-        session = RecordingSession()
-        policy = DomainPolicyEngine(
-            resolver=lambda *_args, **_kwargs: [
-                (None, None, None, None, ("2001:4860:4860::8888", 8443)),
-                (None, None, None, None, ("93.184.216.34", 8443)),
-            ]
-        )
-
-        result = N_m3u8DL_RE_Downloader._curl_cffi_session_response(
-            session,
-            "https://cdn.example:8443/segment.ts",
-            {},
-            timeout=30,
-            domain_policy=policy,
-        )
-
-        self.assertIs(result, response)
-        self.assertNotIn("curl_options", session.request_kwargs)
-        self.assertEqual(
-            session.options_during_request[CurlOpt.RESOLVE],
-            ["cdn.example:8443:[2001:4860:4860::8888],93.184.216.34"],
-        )
-        self.assertEqual(session.curl_options, {CurlOpt.NOSIGNAL: 1})
-
-    def test_python_hls_policy_rejects_private_redirect_before_following(self):
-        response = Mock()
-        response.status_code = 302
-        response.headers = {"Location": "http://127.0.0.1/private.ts"}
-        response.close = Mock()
-        session = Mock()
-        session.curl_options = {}
-        session.get.return_value = response
-        policy = DomainPolicyEngine(
-            resolver=lambda *_args, **_kwargs: [
-                (None, None, None, None, ("93.184.216.34", 443)),
-            ]
-        )
-
-        with self.assertRaises(DomainPolicyViolation):
-            N_m3u8DL_RE_Downloader._curl_cffi_get_bytes(
-                session,
-                "https://cdn.example/segment.ts",
-                {"Cookie": "session=private"},
+        with patch(
+            "app.core.downloaders.m3u8.PinnedTransport",
+            return_value=transport,
+        ) as transport_factory:
+            result = N_m3u8DL_RE_Downloader._curl_cffi_session_response(
+                supplied_session,
+                "https://cdn.example:8443/segment.ts",
+                {"X-Public": "kept"},
+                timeout=30,
                 domain_policy=policy,
             )
 
-        session.get.assert_called_once()
-        self.assertFalse(session.get.call_args.kwargs["allow_redirects"])
+        self.assertIs(result, response)
+        transport_factory.assert_called_once_with(
+            policy=policy,
+            timeout=30,
+            max_response_bytes=64 * 1024 * 1024,
+        )
+        transport.request.assert_called_once_with(
+            "GET",
+            "https://cdn.example:8443/segment.ts",
+            headers={"X-Public": "kept"},
+            max_redirects=5,
+        )
+        supplied_session.get.assert_not_called()
+
+    def test_python_hls_policy_rejects_private_redirect_before_following(self):
+        session = Mock()
+        transport = Mock()
+        transport.request.side_effect = DomainPolicyViolation("private redirect")
+        with patch("app.core.downloaders.m3u8.PinnedTransport", return_value=transport):
+            with self.assertRaises(DomainPolicyViolation):
+                N_m3u8DL_RE_Downloader._curl_cffi_get_bytes(
+                    session,
+                    "https://cdn.example/segment.ts",
+                    {"Cookie": "session=private"},
+                    domain_policy=DomainPolicyEngine(),
+                )
+
+        session.get.assert_not_called()
 
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.is_available", return_value=False)
     @patch("app.core.downloaders.m3u8.N_m3u8DL_RE_Downloader._python_hls_fallback_available", return_value=True)
@@ -713,6 +696,8 @@ class DownloaderStrategyTests(unittest.TestCase):
 
             def fake_popen(cmd, **_kwargs):
                 self.assertEqual(cmd[cmd.index("-i") + 1], FakeProxy.url)
+                self.assertNotIn("HTTPS_PROXY", _kwargs["env"])
+                self.assertNotIn("COOKIE", _kwargs["env"])
                 Path(temp_path).write_bytes(b"done")
                 process = Mock()
                 process.stderr.readline.side_effect = [b"progress=end\n", b""]
@@ -727,7 +712,10 @@ class DownloaderStrategyTests(unittest.TestCase):
                     (None, None, None, None, ("93.184.216.34", 443)),
                 ]
             )
-            with patch("app.core.downloaders.base.PUBLIC_DOMAIN_POLICY", public_policy), patch.object(
+            with patch.dict(
+                os.environ,
+                {"HTTPS_PROXY": "http://127.0.0.1:8888", "COOKIE": "secret"},
+            ), patch("app.core.downloaders.base.PUBLIC_DOMAIN_POLICY", public_policy), patch.object(
                 downloader, "_start_validated_media_proxy", return_value=FakeProxy()
             ) as mocked_proxy:
                 downloader.download(item, save_path, lambda _value: None, lambda: False)
@@ -2183,7 +2171,11 @@ https://cdn.example.com/seg2.m4s?token=1
     @patch("app.core.downloaders.m3u8.build_hidden_startupinfo", return_value="hidden-startupinfo")
     @patch("app.core.downloaders.m3u8.subprocess.Popen")
     def test_nm3u8_process_captures_output_without_visible_console(self, mocked_popen, _mocked_startupinfo):
-        N_m3u8DL_RE_Downloader._popen_nm3u8_process(["N_m3u8DL-RE.exe", "demo.m3u8"], 123)
+        with patch.dict(
+            os.environ,
+            {"HTTPS_PROXY": "http://127.0.0.1:8888", "COOKIE": "secret"},
+        ):
+            N_m3u8DL_RE_Downloader._popen_nm3u8_process(["N_m3u8DL-RE.exe", "demo.m3u8"], 123)
 
         kwargs = mocked_popen.call_args.kwargs
         self.assertEqual(kwargs["creationflags"], 123)
@@ -2191,6 +2183,8 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertEqual(kwargs["stdout"], subprocess.PIPE)
         self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
         self.assertTrue(kwargs["text"])
+        self.assertNotIn("HTTPS_PROXY", kwargs["env"])
+        self.assertNotIn("COOKIE", kwargs["env"])
 
     @patch.object(N_m3u8DL_RE_Downloader, "_wait_external_process_with_file_progress")
     @patch("app.core.downloaders.m3u8.subprocess.Popen")
@@ -2224,6 +2218,58 @@ https://cdn.example.com/seg2.m4s?token=1
         proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
 
         self.assertEqual(proxy.progress_snapshot(), (0, 0))
+
+    def test_local_hls_proxy_upstream_proxy_permission_is_explicit(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        proxy_url = "http://user-proxy.example:8080"
+
+        local_proxy = _LocalHlsProxy(
+            downloader,
+            "https://surrit.com/demo/playlist.m3u8",
+            {},
+            proxy_url,
+            domain_policy=DomainPolicyEngine(),
+            allow_upstream_proxy=True,
+        )
+        public_proxy = _LocalHlsProxy(
+            downloader,
+            "https://surrit.com/demo/playlist.m3u8",
+            {},
+            proxy_url,
+            domain_policy=DomainPolicyEngine(),
+            allow_upstream_proxy=False,
+        )
+
+        self.assertEqual(local_proxy.upstream_proxy, proxy_url)
+        self.assertIsNone(public_proxy.upstream_proxy)
+
+    def test_start_local_hls_proxy_disables_proxy_only_for_public_task(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        proxy_url = "http://user-proxy.example:8080"
+        local_item = VideoItem(url="https://surrit.com/local.m3u8", title="local", source="missav")
+        public_item = VideoItem(url="https://surrit.com/public.m3u8", title="public", source="missav")
+        public_item.meta["_network_policy"] = "public"
+        proxy_instance = Mock(url="http://127.0.0.1:1234/hls")
+        proxy_instance.start.return_value = proxy_instance
+
+        with patch("app.core.downloaders.m3u8._LocalHlsProxy", return_value=proxy_instance) as factory:
+            downloader._start_local_hls_proxy(local_item, {}, proxy_url)
+            self.assertTrue(factory.call_args.kwargs["allow_upstream_proxy"])
+            factory.reset_mock()
+            downloader._start_local_hls_proxy(public_item, {}, proxy_url)
+            self.assertFalse(factory.call_args.kwargs["allow_upstream_proxy"])
+
+    def test_curl_cffi_session_does_not_store_request_credentials_as_defaults(self):
+        curl_requests = Mock()
+        curl_requests.Session.return_value = Mock()
+
+        N_m3u8DL_RE_Downloader._make_curl_cffi_session(
+            curl_requests,
+            {"Cookie": "secret", "Authorization": "Bearer secret", "Host": "attacker"},
+            None,
+        )
+
+        self.assertNotIn("headers", curl_requests.Session.call_args.kwargs)
 
     def test_local_hls_proxy_streams_segment_bytes_for_live_speed(self):
         downloader = N_m3u8DL_RE_Downloader()
@@ -2365,11 +2411,13 @@ https://cdn.example.com/seg2.m4s?token=1
         downloader = N_m3u8DL_RE_Downloader()
         fake_curl_cffi = types.ModuleType("curl_cffi")
         fake_curl_cffi.requests = object()
+        transport = Mock()
+        transport.request.side_effect = DomainPolicyViolation("private upstream")
 
-        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
-            downloader,
-            "_curl_cffi_get_response",
-        ) as mocked_get:
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
+            "app.core.downloaders.m3u8.PinnedTransport",
+            return_value=transport,
+        ), patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
             with self.assertRaises(DomainPolicyViolation):
                 downloader._hls_proxy_open_upstream(
                     "http://127.0.0.1/private-segment.ts",
@@ -2382,37 +2430,60 @@ https://cdn.example.com/seg2.m4s?token=1
 
     def test_hls_proxy_rejects_redirect_to_private_upstream_before_following(self):
         downloader = N_m3u8DL_RE_Downloader()
-        response = Mock()
-        response.status_code = 302
-        response.headers = {"Location": "http://127.0.0.1/private-segment.ts"}
-        response.close = Mock()
         fake_curl_cffi = types.ModuleType("curl_cffi")
         fake_curl_cffi.requests = object()
-        policy = DomainPolicyEngine(
-            resolver=lambda *_args, **_kwargs: [
-                (None, None, None, None, ("93.184.216.34", 443)),
-            ]
-        )
+        transport = Mock()
+        transport.request.side_effect = DomainPolicyViolation("private redirect")
 
-        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
-            downloader,
-            "_curl_cffi_get_response",
-            return_value=response,
-        ) as mocked_get:
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
+            "app.core.downloaders.m3u8.PinnedTransport",
+            return_value=transport,
+        ), patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
             with self.assertRaises(DomainPolicyViolation):
                 downloader._hls_proxy_open_upstream(
                     "https://cdn.example/playlist.m3u8",
                     {},
                     None,
-                    domain_policy=policy,
+                    domain_policy=DomainPolicyEngine(),
                 )
 
-        mocked_get.assert_called_once()
-        self.assertFalse(mocked_get.call_args.kwargs["allow_redirects"])
+        mocked_get.assert_not_called()
 
-    def test_hls_proxy_pins_curl_to_validated_public_dns_results(self):
-        from curl_cffi.const import CurlOpt
+    def test_hls_proxy_public_request_uses_private_pinned_transport(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(status_code=200, headers={"Content-Type": "video/mp4"})
+        fake_curl_cffi = types.ModuleType("curl_cffi")
+        fake_curl_cffi.requests = object()
+        policy = Mock(spec=DomainPolicyEngine)
+        transport = Mock()
+        transport.request.return_value = response
 
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
+            "app.core.downloaders.m3u8.PinnedTransport",
+            return_value=transport,
+        ) as transport_factory, patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
+            result = downloader._hls_proxy_open_upstream(
+                "https://CDN.Example./video.mp4",
+                {"Range": "bytes=0-"},
+                None,
+                domain_policy=policy,
+            )
+
+        self.assertIs(result, response)
+        transport_factory.assert_called_once_with(
+            policy=policy,
+            timeout=60,
+            max_response_bytes=256 * 1024 * 1024,
+        )
+        transport.request.assert_called_once_with(
+            "GET",
+            "https://CDN.Example./video.mp4",
+            headers={"Range": "bytes=0-"},
+            max_redirects=5,
+        )
+        mocked_get.assert_not_called()
+
+    def test_hls_proxy_local_explicit_upstream_proxy_is_preserved(self):
         downloader = N_m3u8DL_RE_Downloader()
         response = Mock(status_code=200, headers={"Content-Type": "video/mp4"})
         fake_curl_cffi = types.ModuleType("curl_cffi")
@@ -2422,6 +2493,7 @@ https://cdn.example.com/seg2.m4s?token=1
                 (None, None, None, None, ("93.184.216.34", 443)),
             ]
         )
+        proxy_url = "http://user-proxy.example:8080"
 
         with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
             downloader,
@@ -2431,12 +2503,47 @@ https://cdn.example.com/seg2.m4s?token=1
             downloader._hls_proxy_open_upstream(
                 "https://cdn.example/video.mp4",
                 {},
-                None,
+                proxy_url,
                 domain_policy=policy,
             )
 
-        resolve_entries = mocked_get.call_args.kwargs["curl_options"][CurlOpt.RESOLVE]
-        self.assertEqual(resolve_entries, ["cdn.example:443:93.184.216.34"])
+        self.assertEqual(mocked_get.call_args.args[3], proxy_url)
+        self.assertNotIn("curl_options", mocked_get.call_args.kwargs)
+
+    @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    def test_m3u8_remux_uses_isolated_subprocess_environment(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        _mocked_wait,
+    ):
+        process = Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_path = Path(temp_dir) / "source.ts"
+            target = Path(temp_dir) / "target.mp4"
+            raw_path.write_bytes(b"transport-stream")
+
+            def fake_popen(_command, **kwargs):
+                self.assertNotIn("HTTPS_PROXY", kwargs["env"])
+                self.assertNotIn("COOKIE", kwargs["env"])
+                target.write_bytes(b"mp4")
+                return process
+
+            mocked_popen.side_effect = fake_popen
+            with patch.dict(
+                os.environ,
+                {"HTTPS_PROXY": "http://127.0.0.1:8888", "COOKIE": "secret"},
+            ):
+                N_m3u8DL_RE_Downloader()._finalize_curl_cffi_hls_output(
+                    raw_path,
+                    target,
+                    lambda: False,
+                )
+
+        mocked_popen.assert_called_once()
 
     def test_response_iter_bytes_prefers_buffered_content_before_iter_content(self):
         class FakeResponse:

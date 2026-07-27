@@ -21,7 +21,9 @@ from app.debug_logger import debug_logger
 from shared import playwright_network_guard
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
+from shared.network.pinned_transport import PinnedTransport, canonicalize_request_target
 from shared.runtime_options import PUBLIC_DOMAIN_POLICY, DomainPolicyEngine
+from shared.subprocess_env import isolated_media_subprocess_env
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 from . import hls_proxy as hls_proxy_utils
@@ -684,6 +686,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=isolated_media_subprocess_env(),
         )
 
     @staticmethod
@@ -749,13 +752,15 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     ) -> _LocalHlsProxy:
         proxy_headers = self._headers_for_hls_proxy(video_item, headers)
         # 外部工具只看到 loopback 地址；所有真实上游请求仍由代理逐跳执行公网校验。
-        domain_policy = self._domain_policy_for_item(video_item) or PUBLIC_DOMAIN_POLICY
+        task_policy = self._domain_policy_for_item(video_item)
+        domain_policy = task_policy or PUBLIC_DOMAIN_POLICY
         local_proxy = _LocalHlsProxy(
             self,
             str(video_item.url),
             proxy_headers,
             upstream_proxy,
             domain_policy=domain_policy,
+            allow_upstream_proxy=task_policy is None,
         ).start()
         debug_logger.log(
             component="N_m3u8DL_RE_Downloader",
@@ -889,20 +894,26 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         max_redirects: int = 5,
     ):
         """读取单个 HLS 资源，并在跟随前逐跳校验每次重定向。"""
+        if domain_policy is not None and not upstream_proxy:
+            return PinnedTransport(
+                policy=domain_policy,
+                timeout=60,
+                max_response_bytes=256 * 1024 * 1024,
+            ).request("GET", upstream_url, headers=headers, max_redirects=max_redirects)
         current_url = str(upstream_url)
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
-            curl_options = None
+            request_url = current_url
             if domain_policy is not None:
-                addresses = domain_policy.resolve_public_addresses(current_url)
-                curl_options = hls_proxy_utils.curl_resolve_options(current_url, addresses)
+                target = canonicalize_request_target(current_url)
+                request_url = target.url
+                domain_policy.require_public_url(request_url)
             response = self._curl_cffi_get_response(
                 curl_requests,
-                current_url,
+                request_url,
                 request_headers,
                 upstream_proxy,
                 allow_redirects=False,
-                curl_options=curl_options,
             )
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
@@ -910,23 +921,23 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             if status not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
                 return response
 
-            target_url = urllib.parse.urljoin(current_url, str(location))
+            target_url = urllib.parse.urljoin(request_url, str(location))
             try:
                 if domain_policy is not None:
-                    domain_policy.require_public_url(target_url)
+                    target_url = canonicalize_request_target(target_url).url
                 if redirect_count >= max_redirects:
                     raise ExternalToolError("local HLS proxy redirect limit exceeded")
             except Exception:
                 self._close_hls_proxy_response(response, current_url)
                 raise
 
-            if self._url_origin(current_url) != self._url_origin(target_url):
+            if self._url_origin(request_url) != self._url_origin(target_url):
                 request_headers = {
                     key: value
                     for key, value in request_headers.items()
                     if str(key).lower() not in {"authorization", "cookie", "host", "proxy-authorization"}
                 }
-            self._close_hls_proxy_response(response, current_url)
+            self._close_hls_proxy_response(response, request_url)
             current_url = target_url
         raise ExternalToolError("local HLS proxy redirect limit exceeded")
 
@@ -1191,8 +1202,12 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         temp_dir.mkdir(parents=True, exist_ok=True)
         # Python 回退路径（fallback）先合并成裸 TS，再根据目标后缀决定是否 remux，失败时可整目录清理。
         raw_path = temp_dir / f"{target.stem}.ts"
-        session = self._make_curl_cffi_session(curl_requests, headers, proxy)
         domain_policy = self._domain_policy_for_item(video_item)
+        session = self._make_curl_cffi_session(
+            curl_requests,
+            headers,
+            None if domain_policy is not None else proxy,
+        )
         playlist_cache = self._playlist_cache_from_meta(video_item)
         try:
             playlist_url = str(video_item.url)
@@ -1688,9 +1703,13 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @staticmethod
     def _make_curl_cffi_session(curl_requests, headers: dict[str, str], proxy: str | None):
-        kwargs: dict[str, Any] = {"impersonate": "chrome", "headers": headers}
+        kwargs: dict[str, Any] = {"impersonate": "chrome"}
         if proxy:
             kwargs["proxy"] = proxy
+        else:
+            from curl_cffi.const import CurlOpt
+
+            kwargs["curl_options"] = {CurlOpt.PROXY: ""}
         try:
             return curl_requests.Session(**kwargs)
         except TypeError:
@@ -1705,6 +1724,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             headers,
             timeout=30,
             domain_policy=domain_policy,
+            max_response_bytes=8 * 1024 * 1024,
         )
         try:
             if response.status_code not in (200, 206):
@@ -1721,6 +1741,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             headers,
             timeout=60,
             domain_policy=domain_policy,
+            max_response_bytes=256 * 1024 * 1024,
         )
         try:
             if response.status_code not in (200, 206):
@@ -1739,8 +1760,15 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         timeout: float,
         domain_policy: DomainPolicyEngine | None,
         max_redirects: int = 5,
+        max_response_bytes: int = 64 * 1024 * 1024,
     ):
         """使用 curl_cffi 发起请求，但仍由本项目掌控并逐跳校验重定向。"""
+        if domain_policy is not None:
+            return PinnedTransport(
+                policy=domain_policy,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+            ).request("GET", url, headers=headers, max_redirects=max_redirects)
         current_url = str(url)
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
@@ -1749,32 +1777,16 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 "timeout": timeout,
                 "allow_redirects": False,
             }
-            original_curl_options: dict[Any, Any] | None = None
-            if domain_policy is not None:
-                addresses = domain_policy.resolve_public_addresses(current_url)
-                session_curl_options = getattr(session, "curl_options", None)
-                if not isinstance(session_curl_options, dict):
-                    raise ExternalToolError("curl_cffi session cannot enforce pinned DNS resolution")
-                original_curl_options = session_curl_options
-                session.curl_options = {
-                    **session_curl_options,
-                    **hls_proxy_utils.curl_resolve_options(current_url, addresses),
-                }
-            try:
-                response = session.get(current_url, **request_kwargs)
-            finally:
-                if original_curl_options is not None:
-                    session.curl_options = original_curl_options
+            request_url = current_url
+            response = session.get(request_url, **request_kwargs)
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
             location = response_headers.get("Location") or response_headers.get("location")
             if status not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
                 return response
 
-            target_url = urllib.parse.urljoin(current_url, str(location))
+            target_url = urllib.parse.urljoin(request_url, str(location))
             try:
-                if domain_policy is not None:
-                    domain_policy.require_public_url(target_url)
                 if redirect_count >= max_redirects:
                     raise ExternalToolError("curl_cffi HLS redirect limit exceeded")
             except Exception:
@@ -1850,6 +1862,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             stderr=subprocess.DEVNULL,
             startupinfo=build_hidden_startupinfo(),
             creationflags=0 if os.name != "nt" else getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=isolated_media_subprocess_env(),
         )
         ExternalToolRunner.wait_process(process, check_stop_func, None, None, poll_interval=0.2)
         if process.returncode != 0:

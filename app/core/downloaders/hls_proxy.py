@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.debug_logger import debug_logger
 from app.exceptions import ExternalToolError
+from shared.network.pinned_transport import (
+    canonicalize_request_target,
+    curl_resolve_options as _pinned_curl_resolve_options,
+)
 
 if TYPE_CHECKING:
     from shared.runtime_options import DomainPolicyEngine
@@ -68,15 +72,10 @@ def response_iter_bytes(response, chunk_size: int = 256 * 1024):
                 return
 
 
-def curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[Any, list[str]]:
+def curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[Any, Any]:
     """把 curl 固定到已通过策略校验的公网地址，防止解析结果漂移。"""
-    from curl_cffi.const import CurlOpt
-
-    parts = urllib.parse.urlsplit(str(url or ""))
-    host = str(parts.hostname or "").encode("idna").decode("ascii")
-    port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
-    pinned = [f"[{address}]" if ":" in address else address for address in addresses]
-    return {CurlOpt.RESOLVE: [f"{host}:{port}:{','.join(pinned)}"]}
+    target = canonicalize_request_target(url)
+    return _pinned_curl_resolve_options(target, addresses, disable_proxy=True)
 
 
 def looks_like_hls_media_resource(url: str) -> bool:
@@ -168,11 +167,13 @@ class _LocalHlsProxy:
         upstream_proxy: str | None,
         *,
         domain_policy: "DomainPolicyEngine | None" = None,
+        allow_upstream_proxy: bool = True,
     ) -> None:
         self.downloader = downloader
         self.root_url = root_url
         self.headers = dict(headers)
-        self.upstream_proxy = upstream_proxy
+        # The composition root decides whether this operation may use a user proxy.
+        self.upstream_proxy = upstream_proxy if allow_upstream_proxy else None
         self.domain_policy = domain_policy
         self.server: _ThreadingHlsProxyServer | None = None
         self.thread: threading.Thread | None = None
