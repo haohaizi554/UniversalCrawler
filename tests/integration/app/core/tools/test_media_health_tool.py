@@ -119,7 +119,10 @@ def test_module_exposes_read_only_cancellable_tool_contract() -> None:
     assert callable(media_health.validate)
     assert callable(media_health.run)
     assert getattr(tool.manifest, "id", getattr(tool.manifest, "tool_id", "")) == "media_health"
-    assert tuple(getattr(tool.manifest, "permissions", ())) == ("read_file",)
+    assert tuple(getattr(tool.manifest, "permissions", ())) == (
+        "read_file",
+        "process",
+    )
     assert bool(getattr(tool.manifest, "supports_cancel", True))
     assert "path" in getattr(tool.manifest, "input_schema", {})
 

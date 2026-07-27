@@ -8,10 +8,14 @@ from app.core.tools.contracts import (
     CancellationToken,
     ToolCancelledError,
     ToolContext,
+    ToolGrantEvaluator,
     ToolManifest,
+    ToolRequirements,
     ToolRunResult,
     ToolRunStatus,
 )
+from app.core.tools.builtin.download_residue import TOOL as DOWNLOAD_RESIDUE_TOOL
+from shared.execution_profile import public_web_profile
 
 
 def test_manifest_serializes_stable_frontend_contract() -> None:
@@ -78,3 +82,35 @@ def test_run_result_is_json_compatible() -> None:
         "output_paths": ["D:/output.mp4"],
         "warnings": ["warning"],
     }
+
+
+def test_download_residue_requirements_change_with_requested_mode() -> None:
+    diagnose = DOWNLOAD_RESIDUE_TOOL.requirements_for({"mode": "diagnose"})
+    cleanup = DOWNLOAD_RESIDUE_TOOL.requirements_for({"mode": "cleanup"})
+
+    assert diagnose == ToolRequirements(
+        frozenset({"read_file"}),
+        requires_approved_roots=True,
+    )
+    assert cleanup == ToolRequirements(
+        frozenset({"read_file", "write_file", "destructive"}),
+        requires_approved_roots=True,
+    )
+
+
+def test_public_web_host_grant_cannot_be_widened_by_tool_parameters() -> None:
+    profile = public_web_profile(owner_id="web:test", approved_roots=())
+    requirements = ToolRequirements(
+        frozenset({"read_file"}),
+        requires_approved_roots=True,
+    )
+
+    grant = ToolGrantEvaluator.evaluate(
+        requirements=requirements,
+        declared_permissions=frozenset({"read_file"}),
+        provenance="builtin",
+        execution_profile=profile,
+    )
+
+    assert grant.allowed is False
+    assert grant.code == "tool_run_disabled"

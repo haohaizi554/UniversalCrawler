@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.core.tools.contracts import ToolManifest, ToolRunResult
+from app.core.tools.contracts import ToolManifest, ToolRequirements, ToolRunResult
 from app.core.tools.registry import ToolRegistry
 from app.services.tool_runner_service import ToolRunnerService
 
@@ -17,6 +17,11 @@ class EchoTool:
         summary="Echo parameters",
         input_schema={"value": {"type": "string", "required": True}},
     )
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
 
     def validate(self, context):
         return [] if context.parameters.get("value") else ["value is required"]
@@ -36,6 +41,11 @@ class BlockingTool:
 
     def __init__(self) -> None:
         self.started = threading.Event()
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
 
     def validate(self, context):
         return []
@@ -59,6 +69,11 @@ class StubbornTool:
     def __init__(self) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
 
     def validate(self, context):
         return []

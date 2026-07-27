@@ -24,7 +24,12 @@ from app.core.downloaders.external import (
     NM3U8DLREExternalTool,
 )
 from app.core.plugins.run_options import normalize_proxy_url
-from app.core.tools.contracts import ToolContext, ToolManifest, ToolRunResult
+from app.core.tools.contracts import (
+    ToolContext,
+    ToolManifest,
+    ToolRequirements,
+    ToolRunResult,
+)
 from shared.network_proxy import requests_proxy_mapping
 
 
@@ -121,6 +126,7 @@ def _build_manifest() -> ToolManifest:
             "requires": (),
             "icon": "stethoscope",
             "sort_order": 70,
+            "permissions": ("network", "process"),
         },
     )
 
@@ -648,6 +654,11 @@ class EnvironmentDiagnosticsTool:
     """Diagnose the runtime environment without changing it."""
 
     manifest = _build_manifest()
+
+    @staticmethod
+    def requirements_for(parameters: Mapping[str, Any]) -> ToolRequirements:
+        del parameters
+        return ToolRequirements(frozenset({"network", "process"}))
 
     def validate(self, context: ToolContext) -> list[str]:
         inputs = _context_inputs(context)

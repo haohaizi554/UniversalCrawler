@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.core.tools.contracts import ToolContext, ToolManifest, ToolRunResult
+from app.core.tools.contracts import (
+    ToolContext,
+    ToolManifest,
+    ToolRequirements,
+    ToolRunResult,
+)
 from app.utils import runtime_paths
 
 
@@ -99,6 +104,7 @@ def _build_manifest() -> ToolManifest:
             "background": True,
             "supports_cancel": True,
             "cancellable": True,
+            "permissions": ("read_file", "write_file", "destructive"),
         },
     )
 
@@ -877,6 +883,18 @@ def run(context: ToolContext) -> ToolRunResult:
 
 class DownloadResidueTool:
     manifest = manifest
+
+    @staticmethod
+    def requirements_for(parameters: Mapping[str, Any]) -> ToolRequirements:
+        mode = str(parameters.get("mode") or "").strip().lower()
+        cleanup = mode == "cleanup" or bool(parameters.get("cleanup", False))
+        permissions = {"read_file"}
+        if cleanup:
+            permissions.update({"write_file", "destructive"})
+        return ToolRequirements(
+            frozenset(permissions),
+            requires_approved_roots=True,
+        )
 
     @staticmethod
     def validate(context: ToolContext) -> list[str]:

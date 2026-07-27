@@ -17,7 +17,12 @@ from app.core.downloaders.external import (
     build_hidden_startupinfo,
     build_no_window_flags,
 )
-from app.core.tools.contracts import ToolContext, ToolManifest, ToolRunResult
+from app.core.tools.contracts import (
+    ToolContext,
+    ToolManifest,
+    ToolRequirements,
+    ToolRunResult,
+)
 from app.services.media_metadata_service import MediaMetadataService
 
 
@@ -38,7 +43,7 @@ def _build_manifest() -> ToolManifest:
         summary="使用 ffprobe 只读检查本地媒体，并给出安全的修复建议",
         category="media",
         input_schema=_PARAMETERS,
-        permissions=("read_file",),
+        permissions=("read_file", "process"),
         supports_cancel=True,
         icon="metadata",
         sort_order=30,
@@ -161,6 +166,14 @@ class MediaHealthTool:
     """Diagnose one local media file without modifying it."""
 
     manifest = _build_manifest()
+
+    @staticmethod
+    def requirements_for(parameters: Mapping[str, Any]) -> ToolRequirements:
+        del parameters
+        return ToolRequirements(
+            frozenset({"read_file", "process"}),
+            requires_approved_roots=True,
+        )
 
     def __init__(
         self,

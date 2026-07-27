@@ -247,9 +247,15 @@ def test_contract_aliases_keep_the_builtin_importable(
         data: Mapping[str, Any] = field(default_factory=dict)
         error_code: str = ""
 
+    @dataclass(frozen=True)
+    class AlternateRequirements:
+        permissions: frozenset[str] = frozenset()
+        requires_approved_roots: bool = False
+
     contracts_module = types.ModuleType("app.core.tools.contracts")
     contracts_module.ToolContext = object
     contracts_module.ToolManifest = AlternateManifest
+    contracts_module.ToolRequirements = AlternateRequirements
     contracts_module.ToolRunResult = AlternateResult
     monkeypatch.setitem(sys.modules, "app.core.tools.contracts", contracts_module)
     module_name = "app.core.tools.builtin.download_residue_alternate_contract"

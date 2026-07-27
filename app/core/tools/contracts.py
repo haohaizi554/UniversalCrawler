@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from shared.execution_profile import ExecutionProfile
+
 _TOOL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 
 
@@ -28,6 +30,74 @@ class ToolRunStatus(str, Enum):
 
 class ToolCancelledError(RuntimeError):
     """Raised by cooperative tools after cancellation was requested."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRequirements:
+    """Capabilities one invocation needs after its parameters are normalized."""
+
+    permissions: frozenset[str] = frozenset()
+    requires_approved_roots: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "permissions",
+            frozenset(str(item).strip() for item in self.permissions if str(item).strip()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ToolGrant:
+    """Host-owned admission decision made before plugin code is called."""
+
+    allowed: bool
+    code: str = ""
+    message: str = ""
+
+
+class ToolGrantEvaluator:
+    """Compare tool requirements with an immutable host execution profile."""
+
+    @staticmethod
+    def evaluate(
+        *,
+        requirements: ToolRequirements,
+        declared_permissions: frozenset[str],
+        provenance: str,
+        execution_profile: ExecutionProfile,
+    ) -> ToolGrant:
+        if not execution_profile.allow_tool_execution:
+            return ToolGrant(
+                False,
+                "tool_run_disabled",
+                "tool execution is disabled for this host",
+            )
+        if not provenance.startswith("builtin") and not execution_profile.allow_external_plugins:
+            return ToolGrant(
+                False,
+                "external_plugins_disabled",
+                "external tools are disabled for this host",
+            )
+        if not requirements.permissions <= declared_permissions:
+            return ToolGrant(
+                False,
+                "undeclared_tool_permission",
+                "tool requested an undeclared permission",
+            )
+        if not requirements.permissions <= execution_profile.tool_permissions:
+            return ToolGrant(
+                False,
+                "tool_permission_denied",
+                "tool permissions are not granted",
+            )
+        if requirements.requires_approved_roots and not execution_profile.approved_roots:
+            return ToolGrant(
+                False,
+                "approved_roots_required",
+                "at least one approved root is required",
+            )
+        return ToolGrant(True)
 
 
 class CancellationToken:
@@ -162,6 +232,8 @@ class ToolContext:
     parameters: Mapping[str, Any]
     run_id: str = ""
     approved_roots: tuple[str, ...] = ()
+    execution_profile: ExecutionProfile | None = None
+    provenance: str = "explicit"
     settings: Mapping[str, Any] = field(default_factory=dict)
     services: Mapping[str, Any] = field(default_factory=dict)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
@@ -183,6 +255,11 @@ class ToolContext:
     @property
     def cancellation_token(self) -> CancellationToken:
         return self.cancellation
+
+    @property
+    def owner_id(self) -> str:
+        profile = self.execution_profile
+        return profile.owner_id if profile is not None else ""
 
     def is_cancelled(self) -> bool:
         return self.cancellation.is_cancelled()
@@ -209,7 +286,9 @@ class ToolContext:
         if self.path_authorizer is not None:
             return Path(self.path_authorizer(path)).expanduser().resolve()
         resolved = Path(path).expanduser().resolve()
-        roots = tuple(Path(root).expanduser().resolve() for root in self.approved_roots if str(root).strip())
+        profile = self.execution_profile
+        source_roots = profile.approved_roots if profile is not None else self.approved_roots
+        roots = tuple(Path(root).expanduser().resolve() for root in source_roots if str(root).strip())
         if roots and not any(_is_relative_to(resolved, root) for root in roots):
             raise PermissionError("path is outside approved roots")
         return resolved
@@ -278,9 +357,22 @@ class ToolRunResult:
 class ToolPlugin(Protocol):
     manifest: ToolManifest
 
+    def requirements_for(
+        self,
+        parameters: Mapping[str, Any],
+    ) -> ToolRequirements: ...
+
     def validate(self, context: ToolContext) -> Any: ...
 
     def run(self, context: ToolContext) -> ToolRunResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDescriptor:
+    """One tool paired with provenance assigned only by its host registry."""
+
+    tool: ToolPlugin
+    provenance: str
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -311,8 +403,12 @@ __all__ = [
     "ProgressCallback",
     "ToolCancelledError",
     "ToolContext",
+    "ToolDescriptor",
+    "ToolGrant",
+    "ToolGrantEvaluator",
     "ToolManifest",
     "ToolPlugin",
+    "ToolRequirements",
     "ToolRunResult",
     "ToolRunStatus",
     "ToolValidationResult",

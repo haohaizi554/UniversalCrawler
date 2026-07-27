@@ -14,7 +14,9 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from .contracts import ToolManifest, ToolPlugin
+from shared.execution_profile import ExecutionProfile
+
+from .contracts import ToolDescriptor, ToolManifest, ToolPlugin
 
 TOOL_ENTRY_POINT_GROUP = "ucrawl.tools"
 TOOL_PLUGIN_ROOT_ENV = "UCRAWL_TOOL_PLUGIN_ROOT"
@@ -45,33 +47,56 @@ class ToolRegistry:
         *,
         external_dir: str | os.PathLike[str] | None = None,
         include_builtins: bool = True,
-        include_entry_points: bool = True,
+        include_entry_points: bool = False,
+        enable_external: bool = False,
+        execution_profile: ExecutionProfile | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._tools: dict[str, ToolPlugin] = {}
         self._origins: dict[str, str] = {}
         self._external_ids: set[str] = set()
-        override = os.environ.get(TOOL_PLUGIN_ROOT_ENV, "").strip()
-        self.external_dir = Path(external_dir or override).expanduser() if external_dir or override else None
+        self._execution_profile = execution_profile
+        self._external_enabled = bool(
+            enable_external
+            and execution_profile is not None
+            and execution_profile.allow_external_plugins
+        )
+        self.external_dir: Path | None = None
+        if self._external_enabled:
+            override = os.environ.get(TOOL_PLUGIN_ROOT_ENV, "").strip()
+            configured_dir = external_dir or override
+            if configured_dir:
+                self.external_dir = Path(configured_dir).expanduser().resolve()
         self._include_builtins = bool(include_builtins)
         self._include_entry_points = bool(include_entry_points)
 
         if tools is not None:
             for tool in tools:
-                self.register(tool, origin="explicit")
+                self.register(tool)
         else:
             self._load_static_sources()
-        if self.external_dir is not None:
+        if self._external_enabled and self.external_dir is not None:
             self.reload_external()
 
-    def register(self, tool: ToolPlugin, *, origin: str = "runtime", replace: bool = False) -> None:
+    def register(self, tool: ToolPlugin, *, replace: bool = False) -> None:
+        """Register an explicitly supplied tool with host-owned provenance."""
+
+        self._register(tool, provenance="explicit", replace=replace)
+
+    def _register(
+        self,
+        tool: ToolPlugin,
+        *,
+        provenance: str,
+        replace: bool = False,
+    ) -> None:
         normalized = _coerce_tool(tool)
         tool_id = normalized.manifest.id
         with self._lock:
             if tool_id in self._tools and not replace:
                 raise ValueError(f"duplicate tool id: {tool_id}")
             self._tools[tool_id] = normalized
-            self._origins[tool_id] = str(origin)
+            self._origins[tool_id] = str(provenance)
 
     def unregister(self, tool_id: str) -> bool:
         normalized = str(tool_id or "").strip().lower()
@@ -82,8 +107,17 @@ class ToolRegistry:
             return removed
 
     def get(self, tool_id: str) -> ToolPlugin | None:
+        descriptor = self.descriptor(tool_id)
+        return descriptor.tool if descriptor is not None else None
+
+    def descriptor(self, tool_id: str) -> ToolDescriptor | None:
+        normalized = str(tool_id or "").strip().lower()
         with self._lock:
-            return self._tools.get(str(tool_id or "").strip().lower())
+            tool = self._tools.get(normalized)
+            provenance = self._origins.get(normalized, "")
+        if tool is None:
+            return None
+        return ToolDescriptor(tool=tool, provenance=provenance)
 
     def list(self) -> list[ToolPlugin]:
         with self._lock:
@@ -99,10 +133,30 @@ class ToolRegistry:
         )
 
     def manifests(self) -> list[dict[str, Any]]:
-        return [tool.manifest.to_dict() for tool in self.list()]
+        with self._lock:
+            rows = [
+                (tool, self._origins.get(tool.manifest.id, ""))
+                for tool in self._tools.values()
+            ]
+        rows.sort(
+            key=lambda row: (
+                int(row[0].manifest.sort_order),
+                str(row[0].manifest.category),
+                str(row[0].manifest.title).casefold(),
+                row[0].manifest.id,
+            )
+        )
+        manifests: list[dict[str, Any]] = []
+        for tool, provenance in rows:
+            manifest = tool.manifest.to_dict()
+            manifest["provenance"] = provenance
+            manifests.append(manifest)
+        return manifests
 
     def reload_external(self, *, force: bool = False) -> ToolReloadResult:
         del force  # Every explicit reload reads source directly; no stale bytecode cache is used.
+        if not self._external_enabled:
+            return ToolReloadResult(errors=("external plugins are disabled",))
         target = self.external_dir
         discovered: dict[str, ToolPlugin] = {}
         errors: list[str] = []
@@ -137,7 +191,7 @@ class ToolRegistry:
                     added.discard(tool_id)
                     continue
                 self._tools[tool_id] = tool
-                self._origins[tool_id] = f"external:{target}"
+                self._origins[tool_id] = f"external:{target.resolve()}"
             self._external_ids = {
                 tool_id
                 for tool_id in current
@@ -153,10 +207,10 @@ class ToolRegistry:
     def _load_static_sources(self) -> None:
         if self._include_builtins:
             for tool in discover_builtin_tools():
-                self.register(tool, origin="builtin")
-        if self._include_entry_points:
-            for tool in discover_entry_point_tools():
-                self.register(tool, origin="entry_point")
+                self._register(tool, provenance="builtin")
+        if self._include_entry_points and self._external_enabled:
+            for tool, provenance in _discover_entry_point_descriptors():
+                self._register(tool, provenance=provenance)
 
 
 def discover_builtin_tools() -> list[ToolPlugin]:
@@ -177,18 +231,42 @@ def discover_builtin_tools() -> list[ToolPlugin]:
     return _deduplicate(tools)
 
 
-def discover_entry_point_tools() -> list[ToolPlugin]:
-    tools: list[ToolPlugin] = []
+def discover_entry_point_tools(
+    *,
+    execution_profile: ExecutionProfile | None = None,
+    enabled: bool = False,
+) -> list[ToolPlugin]:
+    """Discover installed extensions only under an explicit host grant."""
+
+    if not enabled or execution_profile is None or not execution_profile.allow_external_plugins:
+        return []
+    return _deduplicate(
+        [tool for tool, _provenance in _discover_entry_point_descriptors()]
+    )
+
+
+def _discover_entry_point_descriptors() -> list[tuple[ToolPlugin, str]]:
+    descriptors: list[tuple[ToolPlugin, str]] = []
+    seen: set[str] = set()
     try:
         discovered = entry_points(group=TOOL_ENTRY_POINT_GROUP)
     except (ImportError, TypeError):
         return []
     for entry_point in discovered:
         try:
-            tools.extend(_tools_from_object(entry_point.load()))
+            distribution = str(
+                getattr(getattr(entry_point, "dist", None), "name", "")
+                or getattr(entry_point, "module", "")
+                or "unknown"
+            ).strip()
+            for tool in _tools_from_object(entry_point.load()):
+                if tool.manifest.id in seen:
+                    continue
+                seen.add(tool.manifest.id)
+                descriptors.append((tool, f"entry_point:{distribution}"))
         except Exception:
             continue
-    return _deduplicate(tools)
+    return descriptors
 
 
 def _load_source_module(path: Path) -> ModuleType:
@@ -241,6 +319,8 @@ def _coerce_tool(value: Any) -> ToolPlugin:
         raise TypeError("tool manifest must be ToolManifest")
     if not callable(getattr(value, "validate", None)) or not callable(getattr(value, "run", None)):
         raise TypeError(f"tool {manifest.id} must implement validate() and run()")
+    if not callable(getattr(value, "requirements_for", None)):
+        raise TypeError(f"tool {manifest.id} must implement requirements_for()")
     return value
 
 
