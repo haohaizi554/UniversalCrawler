@@ -26,7 +26,14 @@ CSS_LOAD_ORDER = (
     "task_runtime.css",
     "media_logs.css",
     "settings.css",
+    "toolbox.css",
     "overlays_responsive.css",
+)
+
+TOOLBOX_MODULES = (
+    "toolbox_contract.js",
+    "toolbox_view.js",
+    "toolbox_controller.js",
 )
 
 
@@ -85,6 +92,39 @@ def test_index_loads_responsibility_css_once_in_contract_order() -> None:
     loaded = list(stylesheet_names_from_index())
     assert loaded == list(CSS_LOAD_ORDER)
     assert all(loaded.count(name) == 1 for name in CSS_LOAD_ORDER)
+
+
+def test_toolbox_runtime_modules_have_explicit_ownership_boundaries() -> None:
+    modules = {name: (STATIC_DIR / name).read_text(encoding="utf-8") for name in TOOLBOX_MODULES}
+
+    assert all((STATIC_DIR / name).is_file() for name in TOOLBOX_MODULES)
+    assert "window.UcpToolboxContract = Object.freeze" in modules["toolbox_contract.js"]
+    assert "window.UcpToolboxView = Object.freeze" in modules["toolbox_view.js"]
+    assert "document" not in modules["toolbox_contract.js"]
+    assert "localStorage" not in modules["toolbox_contract.js"]
+    assert "requestAction" not in modules["toolbox_contract.js"]
+    assert "requestAction" not in modules["toolbox_view.js"]
+    assert "window.UcpToolboxContract" in modules["toolbox_controller.js"]
+    assert "window.UcpToolboxView" in modules["toolbox_controller.js"]
+    assert len(modules["toolbox_controller.js"].splitlines()) <= 700
+
+
+def test_toolbox_gui_surfaces_are_owned_by_reusable_widgets() -> None:
+    page = (PROJECT_ROOT / "app" / "ui" / "pages" / "toolbox_page.py").read_text(encoding="utf-8")
+    widgets = (PROJECT_ROOT / "app" / "ui" / "pages" / "toolbox_widgets.py").read_text(encoding="utf-8")
+
+    for widget in ("ToolParameterEditor", "ToolExecutionPanel", "ToolHistoryPanel"):
+        assert f"class {widget}" in widgets
+    for method in (
+        "_build_parameter_tab",
+        "_build_result_tab",
+        "_build_history_tab",
+        "_render_parameter_form",
+        "_render_lifecycle",
+        "_render_result",
+        "_render_recent",
+    ):
+        assert f"def {method}" not in page
 
 
 def test_browser_case_modules_are_non_collectable_mixins() -> None:

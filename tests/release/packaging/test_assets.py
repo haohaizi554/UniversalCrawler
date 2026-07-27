@@ -56,6 +56,9 @@ SPLIT_FRONTEND_MODULES = (
     "settings_controller.js",
     "dialog_controller.js",
     "playback_controller.js",
+    "toolbox_contract.js",
+    "toolbox_view.js",
+    "toolbox_controller.js",
 )
 SPLIT_FRONTEND_STYLES = (
     "app.css",
@@ -64,6 +67,7 @@ SPLIT_FRONTEND_STYLES = (
     "task_runtime.css",
     "media_logs.css",
     "settings.css",
+    "toolbox.css",
     "overlays_responsive.css",
 )
 
@@ -1007,6 +1011,7 @@ class InstallerScriptTests(unittest.TestCase):
             "task_runtime.css",
             "media_logs.css",
             "settings.css",
+            "toolbox.css",
             "overlays_responsive.css",
             "i18n.js",
             "custom_select.js",
@@ -1026,6 +1031,9 @@ class InstallerScriptTests(unittest.TestCase):
             "settings_controller.js",
             "dialog_controller.js",
             "playback_controller.js",
+            "toolbox_contract.js",
+            "toolbox_view.js",
+            "toolbox_controller.js",
             "app.js",
             "nav_settings.png",
             "APP_ICON_NAME",

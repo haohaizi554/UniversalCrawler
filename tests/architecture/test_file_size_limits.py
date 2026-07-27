@@ -24,6 +24,7 @@ LEGACY_FILE_LIMITS = {
     "app/ui/pages/active_downloads_page.py": 1300,
     "app/ui/pages/log_center_page.py": 1700,
     "app/ui/pages/settings_page.py": 1650,
+    "app/ui/pages/toolbox_page.py": 800,
     "app/ui/styles/themes.py": 1400,
 }
 

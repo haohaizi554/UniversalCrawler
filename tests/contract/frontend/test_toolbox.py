@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = ROOT / "app" / "web" / "static"
 TOOLBOX_JS = STATIC_DIR / "toolbox_controller.js"
 TOOLBOX_CSS = STATIC_DIR / "toolbox.css"
+TOOLBOX_CONTRACT_JS = STATIC_DIR / "toolbox_contract.js"
+TOOLBOX_VIEW_JS = STATIC_DIR / "toolbox_view.js"
 
 
 def _run_toolbox_contract(expression: str) -> object:
@@ -24,15 +26,17 @@ def _run_toolbox_contract(expression: str) -> object:
 const fs = require("fs");
 const vm = require("vm");
 global.window = {};
-const filename = process.env.UCP_TOOLBOX_JS;
-vm.runInThisContext(fs.readFileSync(filename, "utf8"), { filename });
-const contract = window.UcpToolboxController.contract;
+const filenames = process.env.UCP_TOOLBOX_JS.split(require("path").delimiter);
+for (const filename of filenames) {
+  vm.runInThisContext(fs.readFileSync(filename, "utf8"), { filename });
+}
+const contract = window.UcpToolboxContract;
 const result = Function("contract", `return (${process.env.UCP_TOOLBOX_EXPRESSION});`)(contract);
 process.stdout.write(JSON.stringify(result));
 """
     env = {
         **os.environ,
-        "UCP_TOOLBOX_JS": str(TOOLBOX_JS),
+        "UCP_TOOLBOX_JS": os.pathsep.join((str(TOOLBOX_CONTRACT_JS),)),
         "UCP_TOOLBOX_EXPRESSION": expression,
     }
     completed = subprocess.run(
@@ -49,10 +53,190 @@ def test_toolbox_assets_load_before_composition_root() -> None:
     index = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     assert TOOLBOX_JS.is_file()
+    assert TOOLBOX_CONTRACT_JS.is_file()
+    assert TOOLBOX_VIEW_JS.is_file()
     assert TOOLBOX_CSS.is_file()
     assert '/static/toolbox.css?' in index
-    assert '/static/toolbox_controller.js?' in index
-    assert index.index('/static/toolbox_controller.js?') < index.index('/static/app.js?')
+    scripts = [
+        '/static/toolbox_contract.js?',
+        '/static/toolbox_view.js?',
+        '/static/toolbox_controller.js?',
+        '/static/app.js?',
+    ]
+    assert all(script in index for script in scripts)
+    assert [index.index(script) for script in scripts] == sorted(index.index(script) for script in scripts)
+
+
+def test_toolbox_contract_evaluates_without_browser_globals() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the toolbox JavaScript contract")
+
+    script = """
+const fs = require("fs");
+const vm = require("vm");
+const context = { window: {} };
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.env.UCP_TOOLBOX_CONTRACT, "utf8"), context);
+process.stdout.write(JSON.stringify(Object.isFrozen(context.window.UcpToolboxContract)));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "UCP_TOOLBOX_CONTRACT": str(TOOLBOX_CONTRACT_JS)},
+    )
+    assert json.loads(completed.stdout) is True
+
+
+def test_toolbox_controller_requests_once_and_ignores_disposed_promise_resolution() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the toolbox JavaScript contract")
+
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+let lookups = 0;
+global.window = { addEventListener() {}, removeEventListener() {} };
+global.document = { getElementById() { lookups += 1; return null; } };
+for (const filename of process.env.UCP_TOOLBOX_MODULES.split(require("path").delimiter)) {
+  vm.runInThisContext(fs.readFileSync(filename, "utf8"), { filename });
+}
+let resolveAction;
+let calls = 0;
+const snapshot = {
+  toolbox_items: [{ id: "media_probe", parameters: [{ name: "source", required: true, default: "input.mp4" }] }]
+};
+const controller = window.UcpToolboxController;
+controller.configure({
+  getState: () => snapshot,
+  requestAction: () => { calls += 1; return new Promise(resolve => { resolveAction = resolve; }); }
+});
+const pending = controller.start();
+const lookupsBeforeDispose = lookups;
+controller.dispose();
+resolveAction({ status: "ok" });
+pending.then(() => process.stdout.write(JSON.stringify({ calls, lookupsBeforeDispose, lookupsAfterResolve: lookups })));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UCP_TOOLBOX_MODULES": os.pathsep.join(
+                (str(TOOLBOX_CONTRACT_JS), str(TOOLBOX_VIEW_JS), str(TOOLBOX_JS))
+            ),
+        },
+    )
+    result = json.loads(completed.stdout)
+    assert result["calls"] == 1
+    assert result["lookupsAfterResolve"] == result["lookupsBeforeDispose"]
+
+
+def test_toolbox_controller_reconfigure_drops_previous_session_projection() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the toolbox JavaScript contract")
+
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = {
+  UcpToolboxView: {
+    renderCards() {}, renderEmpty() {}, renderDetail() {},
+    patchDetail(model) { global.models.push(model); }
+  },
+  addEventListener() {}, removeEventListener() {}
+};
+global.models = [];
+for (const filename of process.env.UCP_TOOLBOX_MODULES.split(require("path").delimiter)) {
+  vm.runInThisContext(fs.readFileSync(filename, "utf8"), { filename });
+}
+const controller = window.UcpToolboxController;
+const tool = { id: "file_verify", parameters: [] };
+controller.configure({
+  getState: () => ({
+    toolbox_items: [tool],
+    toolbox_display_projection: {
+      tool_id: "file_verify", state: "running", progress: { value: 71 }
+    }
+  }),
+  requestAction: async () => ({ status: "ok" })
+});
+controller.render();
+controller.configure({
+  getState: () => ({ toolbox_items: [tool] }),
+  requestAction: async () => ({ status: "ok" })
+});
+controller.render();
+process.stdout.write(JSON.stringify(global.models.map(model => model.execution.progress)));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UCP_TOOLBOX_MODULES": os.pathsep.join((str(TOOLBOX_CONTRACT_JS), str(TOOLBOX_JS))),
+        },
+    )
+
+    assert json.loads(completed.stdout) == [71, 0]
+
+
+def test_toolbox_controller_resumes_after_persisted_page_cache_restore() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the toolbox JavaScript contract")
+
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const listeners = new Map();
+let cardRenders = 0;
+global.window = {
+  UcpToolboxView: {
+    renderCards() { cardRenders += 1; }, renderEmpty() {}, renderDetail() {}, patchDetail() {}
+  },
+  addEventListener(name, handler) { listeners.set(name, handler); },
+  removeEventListener(name, handler) { if (listeners.get(name) === handler) listeners.delete(name); }
+};
+for (const filename of process.env.UCP_TOOLBOX_MODULES.split(require("path").delimiter)) {
+  vm.runInThisContext(fs.readFileSync(filename, "utf8"), { filename });
+}
+const controller = window.UcpToolboxController;
+controller.configure({
+  getState: () => ({ toolbox_items: [{ id: "file_verify", parameters: [] }] }),
+  requestAction: async () => ({ status: "ok" })
+});
+controller.render();
+listeners.get("pagehide")({ persisted: true });
+const renderedWhileSuspended = controller.render();
+listeners.get("pageshow")({ persisted: true });
+process.stdout.write(JSON.stringify({ cardRenders, renderedWhileSuspended, handlers: [...listeners.keys()].sort() }));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UCP_TOOLBOX_MODULES": os.pathsep.join((str(TOOLBOX_CONTRACT_JS), str(TOOLBOX_JS))),
+        },
+    )
+    result = json.loads(completed.stdout)
+
+    assert result == {
+        "cardRenders": 2,
+        "renderedWhileSuspended": False,
+        "handlers": ["pagehide", "pageshow"],
+    }
 
 
 def test_toolbox_controller_owns_interaction_instead_of_app_monolith() -> None:
@@ -84,6 +268,43 @@ def test_toolbox_controller_owns_interaction_instead_of_app_monolith() -> None:
     assert "function normalizeToolDefinition" not in app
     assert "function validateParameters" not in app
     assert "function renderParameter" not in app
+    assert "document" not in module
+    assert '"Action failed"' not in module
+    assert '"操作提交失败"' in module
+
+
+def test_toolbox_view_routes_visible_copy_through_translation_context() -> None:
+    module = TOOLBOX_VIEW_JS.read_text(encoding="utf-8")
+    labels = (
+        "工具详情",
+        "输入示例",
+        "输出示例",
+        "工具参数",
+        "执行状态",
+        "执行进度",
+        "验证参数",
+        "启动工具",
+        "取消运行",
+        "执行结果",
+        "打开结果",
+        "使用历史",
+        "清空历史",
+        "请选择工具",
+        "暂无参数",
+        "暂无执行结果",
+        "暂无使用历史",
+        "已启用",
+        "未启用",
+        "等待操作",
+    )
+
+    assert "renderEmpty" in module.split("window.UcpToolboxView = Object.freeze({", 1)[1]
+    for label in labels:
+        matching_lines = [line for line in module.splitlines() if f'"{label}"' in line]
+        assert matching_lines
+        assert any("text(context" in line for line in matching_lines)
+    for untranslated in ("Tool details", "No parameters", "No result", "No history", "Enabled", "Disabled"):
+        assert f'"{untranslated}"' not in module
 
 
 def test_toolbox_parameter_contract_normalizes_and_validates_values() -> None:

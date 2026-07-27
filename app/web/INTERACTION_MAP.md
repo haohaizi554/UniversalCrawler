@@ -84,7 +84,7 @@ GUI 和 WebUI 的配置中心统一读取 `FrontendStateService.settings_snapsho
 
 WebUI 状态刷新约束：`/api/frontend/state` 和 `/api/frontend/delta` 必须在所有 FastAPI 启动路径中同时存在；`app.web.server.create_app()` 与 `app.web.rest_router.build_rest_router()` 的返回结构要保持一致。首屏静态资源使用带版本参数的 `/static/app.css?v=...` 和 `/static/app.js?v=...`，并且真实 `create_app()` 路径必须对首页、`app.css`、`app.js` 返回禁缓存头，避免升级后浏览器继续使用旧 CSS/JS。
 
-WebUI 样式所有权约束：`index.html` 必须按 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`overlays_responsive.css` 的顺序显式加载。该顺序就是级联契约：核心令牌与壳层最先，日志布局、任务页、运行态、媒体日志、设置和最终浮层/响应式覆盖依次生效。不得改用 `@import`，不得只在测试里拼接 `app.css`，不得在打包校验中漏掉任一责任样式表。
+WebUI 样式所有权约束：`index.html` 必须按 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`toolbox.css`、`overlays_responsive.css` 的顺序显式加载。该顺序就是级联契约：核心令牌与壳层最先，日志布局、任务页、运行态、媒体日志、设置、工具箱和最终浮层/响应式覆盖依次生效。不得改用 `@import`，不得只在测试里拼接 `app.css`，不得在打包校验中漏掉任一责任样式表。
 
 配置中心视觉约束：平台设置在 GUI/WebUI 均使用摘要条 + 表格列。数量列必须区分视频数和页数，短视频/MissAV 显示“20 个视频（推荐）”，Bilibili 显示“1 页（推荐）”；MissAV 代理下拉只承载预设和“自定义”，自定义端点在 GUI/WebUI 中位于代理列下一行，避免宽屏溢出和窄屏横向滚动。
 
@@ -6318,3 +6318,13 @@ GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
 1. 配置中心设置分类导航必须和 GUI `GROUP_ICONS` 保持同一语义：基础设置、下载设置、平台设置、播放设置、日志设置、外观设置分别显示对应图标，而不是纯文字列表。
 2. WebUI 图标必须走现有后端静态资源路由 `/ui-icon/...`，不得用纯 CSS、emoji 或不可验证占位符替代；浏览器测试必须确认图片 `naturalWidth > 0`。
 3. 工具箱页当前 GUI 尚未最终定型，不作为本阶段 WebUI 同步验收项；总览截图可保留历史对照，但不得把工具箱差异计入当前完成判定。
+
+---
+
+# v12 工具箱前端职责与生命周期合同
+
+1. WebUI 工具箱固定拆成 `toolbox_contract.js`、`toolbox_view.js`、`toolbox_controller.js`：契约层只做纯数据归一和 reducer，视图层独占 DOM 与可见文案，控制层只编排选择、动作和页面生命周期。控制器禁止直接引用 `document`，视图禁止发起后端动作。
+2. GUI 的 `ToolboxPage` 只负责组合和 display batch 投递；参数、执行结果、历史分别由 `ToolParameterEditor`、`ToolExecutionPanel`、`ToolHistoryPanel` 持有。禁止把 `_render_parameter_form`、`_render_lifecycle`、`_render_result`、`_render_recent` 等渲染方法重新放回页面类。
+3. 只更新进度的 projection 不得重建工具卡或参数编辑器，也不得清除用户尚未提交的表单值。运行阶段发生变化时只切换一次执行页签，后续同阶段进度更新不能反复抢走用户当前页签。
+4. Web 控制器每次 `configure()` 必须清空上一会话的投影、选择、表单和错误状态；进入 BFCache 时暂停并使未完成异步动作失效，从 `pageshow.persisted` 恢复后使用当前状态重新渲染。
+5. 工具箱新增的 CSS/JS 责任文件必须同时登记到首页加载顺序、安装包资源清单、静态资源测试和文件大小守卫；任何可见兜底文案都必须使用中文基准词条并经过翻译函数。

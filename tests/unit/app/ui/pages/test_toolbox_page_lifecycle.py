@@ -6,10 +6,11 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent
-from PyQt6.QtWidgets import QApplication, QComboBox, QLineEdit
+from PyQt6.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
 
 from app.ui.components.settings_controls import SettingsComboBox
 from app.ui.pages.toolbox_page import ToolboxPage
+from app.ui.pages.toolbox_widgets import ToolExecutionPanel, ToolHistoryPanel, ToolParameterEditor
 
 
 def _toolbox_snapshot() -> dict:
@@ -85,11 +86,36 @@ class ToolboxPageLifecycleTests(unittest.TestCase):
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
 
+    def test_page_composes_reusable_surfaces_without_owning_migrated_renderers(self) -> None:
+        migrated_methods = {
+            "_build_parameter_tab",
+            "_build_result_tab",
+            "_build_history_tab",
+            "_render_parameter_form",
+            "_render_lifecycle",
+            "_render_result",
+            "_render_recent",
+        }
+
+        self.assertTrue(issubclass(ToolParameterEditor, QWidget))
+        self.assertTrue(issubclass(ToolExecutionPanel, QWidget))
+        self.assertTrue(issubclass(ToolHistoryPanel, QWidget))
+        self.assertTrue(callable(getattr(ToolParameterEditor, "render", None)))
+        self.assertTrue(callable(getattr(ToolExecutionPanel, "render", None)))
+        self.assertTrue(callable(getattr(ToolHistoryPanel, "render", None)))
+        self.assertFalse(migrated_methods.intersection(ToolboxPage.__dict__))
+        self.assertIsInstance(self.page.parameter_editor, ToolParameterEditor)
+        self.assertIsInstance(self.page.execution_panel, ToolExecutionPanel)
+        self.assertIsInstance(self.page.history_panel, ToolHistoryPanel)
+
     def test_renders_parameter_controls_from_display_projection(self) -> None:
         self.page.render(_toolbox_snapshot())
         self.app.processEvents()
 
         self.assertEqual(self.page.current_tool_id, "file_verify")
+        self.assertIsInstance(self.page.parameter_editor, ToolParameterEditor)
+        self.assertIsInstance(self.page.execution_panel, ToolExecutionPanel)
+        self.assertIsInstance(self.page.history_panel, ToolHistoryPanel)
         self.assertEqual(set(self.page.parameter_editors), {"source", "algorithm"})
         source = self.page.parameter_editors["source"]
         algorithm = self.page.parameter_editors["algorithm"]
@@ -101,7 +127,7 @@ class ToolboxPageLifecycleTests(unittest.TestCase):
         self.assertEqual(algorithm.currentData(), "sha256")
         self.assertEqual(self.page.validation_label.text(), "参数可用")
 
-    def test_emits_named_actions_and_preserves_legacy_start_signal(self) -> None:
+    def test_emits_named_actions_without_legacy_start_signal(self) -> None:
         self.page.render(_toolbox_snapshot())
         actions: list[tuple[str, dict]] = []
         legacy: list[str] = []
@@ -145,7 +171,23 @@ class ToolboxPageLifecycleTests(unittest.TestCase):
                 ("tool_clear_history", {"tool_id": "file_verify"}),
             ],
         )
-        self.assertEqual(legacy, ["file_verify"])
+        self.assertEqual(legacy, [])
+
+    def test_progress_only_projection_keeps_grid_and_editor_identities(self) -> None:
+        self.page.render(_toolbox_snapshot())
+        card = self.page._tool_buttons["file_verify"]
+        source = self.page.parameter_editors["source"]
+
+        self.page.apply_display_projection(
+            {
+                "tool_id": "file_verify",
+                "state": "running",
+                "progress": {"value": 28, "text": "2 / 7"},
+            }
+        )
+
+        self.assertIs(self.page._tool_buttons["file_verify"], card)
+        self.assertIs(self.page.parameter_editors["source"], source)
 
     def test_projection_drives_running_success_result_and_history_views(self) -> None:
         snapshot = _toolbox_snapshot()

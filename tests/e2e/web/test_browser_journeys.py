@@ -249,6 +249,7 @@ class StaticAssetsTests(unittest.TestCase):
             "overlays_responsive.css",
         ):
             self.assertIn(f'/static/{stylesheet}?v=20260711-css-split', content)
+        self.assertIn('/static/toolbox.css?v=20260727-toolbox-interaction', content)
         self.assertIn('/static/i18n.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/media_display.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
