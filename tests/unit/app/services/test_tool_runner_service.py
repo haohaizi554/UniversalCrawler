@@ -39,6 +39,30 @@ class EchoTool:
         return ToolRunResult.success("done", data={"value": context.parameters["value"]})
 
 
+class OutputTool:
+    manifest = ToolManifest(
+        id="output",
+        title="Output",
+        summary="Return one private output path",
+        input_schema={"path": {"type": "string", "required": True}},
+    )
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
+
+    def validate(self, context):
+        return [] if context.parameters.get("path") else ["path is required"]
+
+    def run(self, context):
+        return ToolRunResult.success(
+            "private output",
+            data={"secret": "private-result-sentinel"},
+            output_paths=(str(context.parameters["path"]),),
+        )
+
+
 class BlockingTool:
     manifest = ToolManifest(
         id="blocking",
@@ -250,7 +274,11 @@ def test_history_projection_drops_nested_unknown_and_secret_fields() -> None:
         "run_id": "run-1",
         "tool_id": "media_health",
         "status": "failed",
-        "result": {"status": "failed", "message": "safe"},
+        "result": {
+            "status": "failed",
+            "message": "safe",
+            "has_output": True,
+        },
     }
 
 
@@ -367,6 +395,77 @@ def test_runner_validates_runs_and_persists_history(tmp_path: Path) -> None:
     assert persisted[0]["tool_id"] == "echo"
     assert persisted[0]["status"] == "succeeded"
     assert "hello" not in history_path.read_text(encoding="utf-8")
+
+
+def test_runner_private_result_lookup_is_owner_scoped_and_never_public(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "private-artifact.txt"
+    output_path.write_text("artifact", encoding="utf-8")
+    history_path = tmp_path / "tool-history.json"
+    owner = _profile(tmp_path, owner_id="gui:owner", host_surface="desktop_gui")
+    other_owner = _profile(tmp_path, owner_id="gui:other", host_surface="desktop_gui")
+    other_host = _profile(tmp_path, owner_id="gui:owner", host_surface="sdk")
+    service = ToolRunnerService(
+        registry=_registry(OutputTool()),
+        history_path=history_path,
+        max_workers=1,
+    )
+
+    queued = service.run(
+        "output",
+        {"path": str(output_path), "secret": "request-sentinel"},
+        execution_profile=owner,
+    )
+    terminal = service.wait_for_run(
+        queued["run_id"],
+        execution_profile=owner,
+        timeout=2.0,
+    )
+
+    private = service.lookup_private_result(
+        queued["run_id"],
+        execution_profile=owner,
+    )
+    assert terminal["status"] == "succeeded"
+    assert private is not None
+    assert private.run_id == queued["run_id"]
+    assert private.tool_id == "output"
+    assert private.output_paths == (output_path,)
+    try:
+        private.run_id = "mutated"
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("private result handles must be immutable")
+    assert service.lookup_private_result(
+        queued["run_id"],
+        execution_profile=other_owner,
+    ) is None
+    assert service.lookup_private_result(
+        queued["run_id"],
+        execution_profile=other_host,
+    ) is None
+    assert service.lookup_private_result(
+        "unknown-run",
+        execution_profile=owner,
+    ) is None
+
+    public_run = service.get_run(queued["run_id"], execution_profile=owner)
+    public_history = service.history(execution_profile=owner)
+    public_text = json.dumps(
+        {"run": public_run, "history": public_history},
+        ensure_ascii=False,
+    )
+    assert str(output_path) not in public_text
+    assert "request-sentinel" not in public_text
+    assert "private-result-sentinel" not in public_text
+
+    assert service.shutdown(wait=True)
+    persisted_text = history_path.read_text(encoding="utf-8")
+    assert str(output_path) not in persisted_text
+    assert "request-sentinel" not in persisted_text
+    assert "private-result-sentinel" not in persisted_text
 
 
 def test_runner_cancels_active_tool(tmp_path: Path) -> None:

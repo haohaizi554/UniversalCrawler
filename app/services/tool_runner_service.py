@@ -37,6 +37,15 @@ ToolEventCallback = Callable[[str, dict[str, Any]], None]
 _SHUTDOWN_PERSIST_GRACE_SECONDS = 0.25
 
 
+@dataclass(frozen=True, slots=True)
+class PrivateToolResult:
+    """Minimal owner-scoped handle for trusted local result opening."""
+
+    run_id: str
+    tool_id: str
+    output_paths: tuple[Path, ...]
+
+
 @dataclass(slots=True)
 class _RunRecord:
     run_id: str
@@ -375,6 +384,37 @@ class ToolRunnerService:
             if record is None or not self._is_owned_by(record, execution_profile):
                 return None
             return record.to_public_dict()
+
+    def lookup_private_result(
+        self,
+        run_id: str,
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> PrivateToolResult | None:
+        """Return an immutable local-only result handle without exposing run secrets."""
+
+        normalized = str(run_id or "").strip()
+        if not normalized or _profile_identity_error(execution_profile) is not None:
+            return None
+        self._history_loaded.wait()
+        with self._lock:
+            record = self._records.get(normalized)
+            if (
+                record is None
+                or not self._is_owned_by(record, execution_profile)
+                or not _is_terminal_status(record.status)
+                or record.result is None
+            ):
+                return None
+            return PrivateToolResult(
+                run_id=record.run_id,
+                tool_id=record.tool_id,
+                output_paths=tuple(
+                    Path(str(path))
+                    for path in record.result.output_paths
+                    if str(path).strip()
+                ),
+            )
 
     def snapshot(
         self,
