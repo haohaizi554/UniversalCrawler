@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import app.services.tool_runner_service as tool_runner_module
 from app.core.tools.contracts import (
     ToolManifest,
     ToolRequirements,
@@ -91,6 +92,34 @@ class StubbornTool:
         return ToolRunResult.success("released")
 
 
+class ReturningTool:
+    manifest = ToolManifest(
+        id="returning",
+        title="Returning",
+        summary="Signals immediately before returning",
+        supports_cancel=True,
+    )
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.returning = threading.Event()
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
+
+    def validate(self, context):
+        return []
+
+    def run(self, context):
+        self.started.set()
+        self.release.wait()
+        self.returning.set()
+        return ToolRunResult.success("returned")
+
+
 class CountingTool:
     manifest = ToolManifest(
         id="counting",
@@ -127,21 +156,76 @@ class CountingTool:
 
 
 def _registry(*tools):
-    return ToolRegistry(
-        tools=list(tools),
+    registry = ToolRegistry(
+        tools=[],
         include_builtins=False,
         include_entry_points=False,
     )
+    # These test doubles model application-owned built-ins. Registering them with
+    # explicit builtin provenance keeps grant checks real without enabling plugins.
+    for tool in tools:
+        registry._register(tool, provenance="builtin")
+    return registry
 
 
-def _profile(tmp_path: Path, *, permissions=(), allow_external_plugins: bool = False):
+def _profile(
+    tmp_path: Path,
+    *,
+    owner_id: str = "unit:runner",
+    host_surface: str = "test",
+    permissions=(),
+    allow_external_plugins: bool = False,
+):
     return local_execution_profile(
-        host_surface="test",
-        owner_id="unit:runner",
+        host_surface=host_surface,
+        owner_id=owner_id,
         approved_roots=(tmp_path,),
         tool_permissions=permissions,
         allow_external_plugins=allow_external_plugins,
     )
+
+
+def _terminal_row(
+    run_id: str,
+    created_at: float,
+    *,
+    owner_id: str = "gui:history",
+    host_surface: str = "desktop_gui",
+) -> dict:
+    return {
+        "run_id": run_id,
+        "tool_id": "echo",
+        "host_surface": host_surface,
+        "owner_id": owner_id,
+        "status": "succeeded",
+        "created_at": created_at,
+        "started_at": created_at,
+        "finished_at": created_at,
+        "progress": 100,
+        "message": "done",
+        "result": {"status": "succeeded", "message": "done", "warnings": []},
+    }
+
+
+def _invalid_profile(tmp_path: Path, *, field: str):
+    profile = _profile(tmp_path)
+    object.__setattr__(profile, field, "   ")
+    return profile
+
+
+def _persisted_by_id(history_path: Path) -> dict[str, dict]:
+    return {
+        row["run_id"]: row
+        for row in json.loads(history_path.read_text(encoding="utf-8"))
+    }
+
+
+def _active_tool_threads() -> list[str]:
+    return [
+        thread.name
+        for thread in threading.enumerate()
+        if thread.name.startswith(("tool-runner", "tool-history"))
+    ]
 
 
 def test_history_projection_drops_nested_unknown_and_secret_fields() -> None:
@@ -223,14 +307,14 @@ def test_runner_rechecks_requirements_after_validation_normalizes_parameters(
     assert result["code"] == "tool_permission_denied"
     assert tool.validate_calls == 1
     assert tool.run_calls == 0
-    assert service.history() == []
+    assert service.history(execution_profile=profile) == []
     service.shutdown(wait=True)
 
 
 def test_runner_denies_external_provenance_before_plugin_callbacks(tmp_path: Path) -> None:
     tool = CountingTool()
     registry = _registry()
-    registry._register(tool, provenance="external:test")
+    registry._register(tool, provenance=f"external:{tmp_path.resolve()}")
     service = ToolRunnerService(
         registry=registry,
         history_path=tmp_path / "history.json",
@@ -268,7 +352,7 @@ def test_runner_validates_runs_and_persists_history(tmp_path: Path) -> None:
     assert started["status"] == "queued"
     assert service.wait_for_idle(timeout=2.0)
 
-    rows = service.history(limit=10)
+    rows = service.history(execution_profile=profile, limit=10)
     assert rows[0]["status"] == "succeeded"
     assert rows[0]["result"] == {
         "status": "succeeded",
@@ -276,6 +360,7 @@ def test_runner_validates_runs_and_persists_history(tmp_path: Path) -> None:
         "warnings": [],
     }
     assert any(topic == "tools.progress" for topic, _ in events)
+    assert all(payload == {} for topic, payload in events if topic.startswith("tools."))
 
     service.shutdown(wait=True)
     persisted = json.loads(history_path.read_text(encoding="utf-8"))
@@ -294,10 +379,11 @@ def test_runner_cancels_active_tool(tmp_path: Path) -> None:
 
     started = service.run("blocking", {}, execution_profile=_profile(tmp_path))
     assert tool.started.wait(1.0)
-    cancelled = service.cancel(started["run_id"])
+    profile = _profile(tmp_path)
+    cancelled = service.cancel(started["run_id"], execution_profile=profile)
     assert cancelled["status"] in {"cancelling", "cancelled"}
     assert service.wait_for_idle(timeout=2.0)
-    assert service.history(limit=1)[0]["status"] == "cancelled"
+    assert service.history(execution_profile=profile, limit=1)[0]["status"] == "cancelled"
 
     service.shutdown(wait=True)
 
@@ -352,3 +438,850 @@ def test_runner_shutdown_timeout_is_bounded_and_persists_cancelling_state(tmp_pa
     finally:
         tool.release.set()
         assert service.wait_for_idle(timeout=1.0)
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert persisted[0]["status"] == "cancelled"
+
+
+def test_runner_shutdown_timeout_bounds_slow_history_write(tmp_path: Path) -> None:
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=tmp_path / "history.json",
+    )
+    profile = _profile(tmp_path)
+    row = service.run("echo", {"value": "done"}, execution_profile=profile)
+    assert service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )["status"] == "succeeded"
+    original_persist_now = service._persist_history_now
+    persist_entered = threading.Event()
+    release_persist = threading.Event()
+
+    def slow_persist_now(*, timeout=None):
+        persist_entered.set()
+        release_persist.wait(1.0)
+        return original_persist_now(timeout=timeout)
+
+    service._persist_history_now = slow_persist_now
+    started_at = time.monotonic()
+    try:
+        assert service.shutdown(wait=True, timeout=0.01) is False
+        assert persist_entered.wait(0.5)
+        assert time.monotonic() - started_at < 0.5
+    finally:
+        release_persist.set()
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_admission_is_bounded_per_owner_and_globally(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+        max_pending=2,
+        max_pending_per_owner=1,
+    )
+    gui = _profile(tmp_path, owner_id="gui:1", host_surface="desktop_gui")
+    sdk = _profile(tmp_path, owner_id="sdk:1", host_surface="sdk")
+    cli = _profile(tmp_path, owner_id="cli:1", host_surface="cli")
+
+    first = service.run("blocking", {}, execution_profile=gui)
+    assert first["status"] == "queued"
+    assert tool.started.wait(1.0)
+    rejected_owner = service.run("blocking", {}, execution_profile=gui)
+    assert rejected_owner == {
+        "status": "busy",
+        "code": "tool_capacity_reached",
+        "message": "tool runner capacity reached",
+    }
+    assert service.run("blocking", {}, execution_profile=sdk)["status"] == "queued"
+    rejected_global = service.run("blocking", {}, execution_profile=cli)
+    assert rejected_global == {
+        "status": "busy",
+        "code": "tool_capacity_reached",
+        "message": "tool runner capacity reached",
+    }
+    assert "run_id" not in rejected_owner
+    assert "run_id" not in rejected_global
+    assert len(service.history(execution_profile=gui)) == 1
+    assert len(service.history(execution_profile=sdk)) == 1
+    assert service.history(execution_profile=cli) == []
+
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_owner_cannot_read_cancel_or_clear_another_owner_run(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+    )
+    owner = _profile(tmp_path, owner_id="gui:1", host_surface="desktop_gui")
+    other = _profile(tmp_path, owner_id="gui:2", host_surface="desktop_gui")
+
+    row = service.run("blocking", {}, execution_profile=owner)
+    assert tool.started.wait(1.0)
+
+    assert service.get_run(row["run_id"], execution_profile=other) is None
+    assert service.history(execution_profile=other) == []
+    assert service.cancel(row["run_id"], execution_profile=other) == {
+        "status": "forbidden",
+        "code": "tool_owner_mismatch",
+        "message": "tool run belongs to another owner",
+        "run_id": row["run_id"],
+    }
+    assert service.clear_history(execution_profile=other)["removed"] == 0
+    assert service.get_run(row["run_id"], execution_profile=owner) is not None
+
+    assert service.cancel(row["run_id"], execution_profile=owner)["status"] in {
+        "cancelling",
+        "cancelled",
+    }
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_same_owner_id_is_isolated_between_host_surfaces(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+    )
+    gui = _profile(tmp_path, owner_id="session:shared", host_surface="desktop_gui")
+    web = _profile(tmp_path, owner_id="session:shared", host_surface="web")
+
+    row = service.run("blocking", {}, execution_profile=gui)
+    try:
+        assert tool.started.wait(1.0)
+        assert service.get_run(row["run_id"], execution_profile=web) is None
+        assert service.history(execution_profile=web) == []
+        assert service.cancel(row["run_id"], execution_profile=web) == {
+            "status": "forbidden",
+            "code": "tool_owner_mismatch",
+            "message": "tool run belongs to another owner",
+            "run_id": row["run_id"],
+        }
+        assert service.clear_history(execution_profile=web) == {
+            "status": "ok",
+            "removed": 0,
+        }
+        assert service.get_run(row["run_id"], execution_profile=gui) is not None
+    finally:
+        service.cancel(row["run_id"], execution_profile=gui)
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_per_owner_admission_counts_owner_id_across_host_surfaces(
+    tmp_path: Path,
+) -> None:
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+        max_pending=4,
+        max_pending_per_owner=1,
+    )
+    gui = _profile(tmp_path, owner_id="session:shared", host_surface="desktop_gui")
+    sdk = _profile(tmp_path, owner_id="session:shared", host_surface="sdk")
+    row = service.run("blocking", {}, execution_profile=gui)
+    try:
+        assert tool.started.wait(1.0)
+        assert service.run("blocking", {}, execution_profile=sdk) == {
+            "status": "busy",
+            "code": "tool_capacity_reached",
+            "message": "tool runner capacity reached",
+        }
+        assert service.get_run(row["run_id"], execution_profile=sdk) is None
+        assert service.history(execution_profile=sdk) == []
+    finally:
+        service.cancel(row["run_id"], execution_profile=gui)
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_loaded_history_is_newest_first_at_api_boundary(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps([_terminal_row("old", 1.0), _terminal_row("new", 2.0)]),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=history_path,
+    )
+    profile = _profile(
+        tmp_path,
+        owner_id="gui:history",
+        host_surface="desktop_gui",
+    )
+
+    assert [
+        row["run_id"] for row in service.history(execution_profile=profile)
+    ] == ["new", "old"]
+
+    service.shutdown(wait=True)
+
+
+def test_runner_clear_history_preserves_other_owner_terminal_rows(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps(
+            [
+                _terminal_row("gui-row", 1.0, owner_id="gui:1"),
+                _terminal_row(
+                    "sdk-row",
+                    2.0,
+                    owner_id="sdk:1",
+                    host_surface="sdk",
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=history_path,
+    )
+    gui = _profile(tmp_path, owner_id="gui:1", host_surface="desktop_gui")
+    sdk = _profile(tmp_path, owner_id="sdk:1", host_surface="sdk")
+
+    assert service.clear_history(execution_profile=gui) == {"status": "ok", "removed": 1}
+    assert service.history(execution_profile=gui) == []
+    assert [row["run_id"] for row in service.history(execution_profile=sdk)] == ["sdk-row"]
+
+    service.shutdown(wait=True)
+
+
+def test_runner_trims_oldest_terminal_rows_behind_an_active_run(tmp_path: Path) -> None:
+    blocking = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(blocking, EchoTool()),
+        history_path=tmp_path / "history.json",
+        max_workers=2,
+        max_pending=20,
+        max_pending_per_owner=20,
+        history_limit=10,
+    )
+    profile = _profile(tmp_path, owner_id="gui:trim", host_surface="desktop_gui")
+    active = service.run("blocking", {}, execution_profile=profile)
+    try:
+        assert blocking.started.wait(1.0)
+        terminal = None
+        for index in range(12):
+            terminal = service.run(
+                "echo",
+                {"value": str(index)},
+                execution_profile=profile,
+            )
+        assert terminal is not None
+        assert service.wait_for_run(
+            terminal["run_id"],
+            execution_profile=profile,
+            timeout=2.0,
+        )["status"] == "succeeded"
+
+        retained = service.history(execution_profile=profile, limit=20)
+        assert retained[-1]["run_id"] == active["run_id"]
+        assert len([row for row in retained if row["status"] == "succeeded"]) == 9
+
+        assert service.clear_history(execution_profile=profile) == {
+            "status": "ok",
+            "removed": 9,
+        }
+        assert service.get_run(active["run_id"], execution_profile=profile) is not None
+    finally:
+        service.cancel(active["run_id"], execution_profile=profile)
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_wait_for_run_times_out_without_cross_owner_visibility(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+    )
+    owner = _profile(tmp_path, owner_id="gui:wait", host_surface="desktop_gui")
+    other = _profile(tmp_path, owner_id="sdk:wait", host_surface="sdk")
+    row = service.run("blocking", {}, execution_profile=owner)
+    assert tool.started.wait(1.0)
+
+    assert service.wait_for_run(
+        row["run_id"],
+        execution_profile=owner,
+        timeout=0.01,
+    ) == {"status": "timeout", "run_id": row["run_id"]}
+    assert service.wait_for_run(
+        row["run_id"],
+        execution_profile=other,
+        timeout=0.01,
+    ) == {
+        "status": "forbidden",
+        "code": "tool_owner_mismatch",
+        "message": "tool run belongs to another owner",
+        "run_id": row["run_id"],
+    }
+
+    assert service.cancel(row["run_id"], execution_profile=owner)["status"] in {
+        "cancelling",
+        "cancelled",
+    }
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_wait_and_shutdown_timeout_include_history_barrier(tmp_path: Path) -> None:
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=tmp_path / "history.json",
+    )
+    profile = _profile(tmp_path)
+    service._history_loaded.wait(1.0)
+    service._history_loaded.clear()
+
+    started_at = time.monotonic()
+    assert service.wait_for_run(
+        "missing",
+        execution_profile=profile,
+        timeout=0.01,
+    ) == {"status": "timeout", "run_id": "missing"}
+    assert time.monotonic() - started_at < 0.2
+
+    started_at = time.monotonic()
+    assert service.shutdown(wait=True, timeout=0.01) is False
+    assert time.monotonic() - started_at < 0.2
+    service._history_loaded.set()
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_shutdown_wait_false_does_not_cancel_a_queued_history_load(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    real_executor = tool_runner_module.ThreadPoolExecutor
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+
+    def executor_factory(*args, **kwargs):
+        executor = real_executor(*args, **kwargs)
+        if kwargs.get("thread_name_prefix") == "tool-history":
+            executor.submit(
+                lambda: (blocker_started.set(), release_blocker.wait())
+            )
+        return executor
+
+    monkeypatch.setattr(tool_runner_module, "ThreadPoolExecutor", executor_factory)
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps(
+            [
+                _terminal_row(
+                    "loaded",
+                    1.0,
+                    owner_id="unit:runner",
+                    host_surface="test",
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=history_path,
+    )
+    assert blocker_started.wait(1.0)
+    shutdown_returned = threading.Event()
+    first_result: list[bool] = []
+
+    def call_shutdown() -> None:
+        first_result.append(service.shutdown(wait=False))
+        shutdown_returned.set()
+
+    caller = threading.Thread(target=call_shutdown, name="shutdown-wait-false-probe", daemon=True)
+    caller.start()
+    try:
+        returned_without_history = shutdown_returned.wait(0.2)
+    finally:
+        release_blocker.set()
+        caller.join(1.0)
+
+    assert returned_without_history is True
+    assert first_result == [False]
+    assert service._history_loaded.wait(1.0)
+    assert service.shutdown(wait=True, timeout=1.0) is True
+    assert [
+        row["run_id"]
+        for row in service.history(execution_profile=_profile(tmp_path))
+    ] == ["loaded"]
+    assert _active_tool_threads() == []
+
+
+def test_runner_cancel_terminal_run_does_not_emit_cancelling_event(tmp_path: Path) -> None:
+    events: list[tuple[str, dict]] = []
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=tmp_path / "history.json",
+        event_callback=lambda topic, payload: events.append((topic, payload)),
+    )
+    profile = _profile(tmp_path)
+    queued = service.run("echo", {"value": "done"}, execution_profile=profile)
+    assert service.wait_for_run(
+        queued["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )["status"] == "succeeded"
+    events.clear()
+
+    assert service.cancel(queued["run_id"], execution_profile=profile)["status"] == "succeeded"
+    assert events == []
+
+    service.shutdown(wait=True)
+
+
+def test_runner_shutdown_marks_queued_future_cancelled_and_flushes_history(tmp_path: Path) -> None:
+    tool = BlockingTool()
+    history_path = tmp_path / "history.json"
+    profile = _profile(tmp_path, owner_id="unit:shutdown")
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+    )
+    service.run("blocking", {"slot": 1}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    queued = service.run("blocking", {"slot": 2}, execution_profile=profile)
+
+    service.shutdown(wait=False)
+
+    persisted = {
+        row["run_id"]: row
+        for row in json.loads(history_path.read_text(encoding="utf-8"))
+    }
+    assert persisted[queued["run_id"]]["status"] == "cancelled"
+    assert persisted[queued["run_id"]]["finished_at"] is not None
+
+
+def test_runner_load_merges_duplicate_unsorted_and_tied_rows_and_drops_blank_identity(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history.json"
+    duplicate_old = _terminal_row("duplicate", 1.0)
+    duplicate_old["message"] = "old"
+    duplicate_new = _terminal_row("duplicate", 4.0)
+    duplicate_new["message"] = "new"
+    blank_host = _terminal_row("blank-host", 5.0)
+    blank_host["host_surface"] = "   "
+    blank_owner = _terminal_row("blank-owner", 6.0)
+    blank_owner["owner_id"] = ""
+    history_path.write_text(
+        json.dumps(
+            [
+                _terminal_row("tie-b", 3.0),
+                duplicate_old,
+                blank_host,
+                _terminal_row("tie-a", 3.0),
+                duplicate_new,
+                blank_owner,
+                _terminal_row("oldest", 0.0),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(registry=_registry(EchoTool()), history_path=history_path)
+    profile = _profile(tmp_path, owner_id="gui:history", host_surface="desktop_gui")
+
+    rows = service.history(execution_profile=profile)
+
+    assert [row["run_id"] for row in rows] == [
+        "duplicate",
+        "tie-b",
+        "tie-a",
+        "oldest",
+    ]
+    assert rows[0]["message"] == "new"
+    service.shutdown(wait=True)
+
+
+def test_runner_load_sorts_all_valid_rows_before_applying_history_limit(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps(
+            [_terminal_row("newest", 100.0)]
+            + [_terminal_row(f"old-{index}", float(index)) for index in range(1, 13)]
+        ),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=history_path,
+        history_limit=10,
+    )
+    profile = _profile(tmp_path, owner_id="gui:history", host_surface="desktop_gui")
+    try:
+        assert [
+            row["run_id"] for row in service.history(execution_profile=profile)
+        ] == [
+            "newest",
+            "old-12",
+            "old-11",
+            "old-10",
+            "old-9",
+            "old-8",
+            "old-7",
+            "old-6",
+            "old-5",
+            "old-4",
+        ]
+    finally:
+        service.shutdown(wait=True)
+
+
+def test_runner_rejects_blank_profile_identity_before_callbacks_or_state_access(
+    tmp_path: Path,
+) -> None:
+    tool = CountingTool()
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps(
+            [
+                _terminal_row(
+                    "existing",
+                    1.0,
+                    owner_id="unit:runner",
+                    host_surface="test",
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = ToolRunnerService(registry=_registry(tool), history_path=history_path)
+    invalid_host = _invalid_profile(tmp_path, field="host_surface")
+    invalid_owner = _invalid_profile(tmp_path, field="owner_id")
+
+    validation = service.validate("counting", {"mode": "read"}, execution_profile=invalid_host)
+    run = service.run("counting", {"mode": "read"}, execution_profile=invalid_owner)
+
+    assert validation["code"] == "tool_profile_identity_required"
+    assert run["code"] == "tool_profile_identity_required"
+    assert tool.requirements_calls == 0
+    assert tool.validate_calls == 0
+    assert tool.run_calls == 0
+    assert service.history(execution_profile=invalid_host) == []
+    assert service.get_run("existing", execution_profile=invalid_owner) is None
+    assert service.cancel("existing", execution_profile=invalid_host)["code"] == (
+        "tool_profile_identity_required"
+    )
+    assert service.wait_for_run(
+        "existing",
+        execution_profile=invalid_owner,
+        timeout=0,
+    )["code"] == "tool_profile_identity_required"
+    assert service.clear_history(execution_profile=invalid_host)["code"] == (
+        "tool_profile_identity_required"
+    )
+    assert service.history(
+        execution_profile=_profile(tmp_path, owner_id="unit:runner")
+    )[0]["run_id"] == "existing"
+    service.shutdown(wait=True)
+
+
+def test_runner_clear_history_preserves_all_active_rows_and_other_owner_terminals(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history.json"
+    history_path.write_text(
+        json.dumps(
+            [
+                _terminal_row("gui-terminal", 1.0, owner_id="gui:1"),
+                _terminal_row(
+                    "sdk-terminal",
+                    2.0,
+                    owner_id="sdk:1",
+                    host_surface="sdk",
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tool = BlockingTool()
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+        max_pending_per_owner=4,
+    )
+    gui = _profile(tmp_path, owner_id="gui:1", host_surface="desktop_gui")
+    sdk = _profile(tmp_path, owner_id="sdk:1", host_surface="sdk")
+    gui_active = service.run("blocking", {}, execution_profile=gui)
+    assert tool.started.wait(1.0)
+    sdk_active = service.run("blocking", {}, execution_profile=sdk)
+    try:
+        assert service.clear_history(execution_profile=gui) == {
+            "status": "ok",
+            "removed": 1,
+        }
+        assert service.get_run(gui_active["run_id"], execution_profile=gui) is not None
+        assert service.get_run(sdk_active["run_id"], execution_profile=sdk) is not None
+        assert [row["run_id"] for row in service.history(execution_profile=sdk)] == [
+            sdk_active["run_id"],
+            "sdk-terminal",
+        ]
+    finally:
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_wait_for_run_returns_existing_terminal_row(tmp_path: Path) -> None:
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=tmp_path / "history.json",
+    )
+    profile = _profile(tmp_path)
+    row = service.run("echo", {"value": "ready"}, execution_profile=profile)
+
+    terminal = service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )
+    repeated = service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=0,
+    )
+
+    assert terminal["status"] == "succeeded"
+    assert repeated == terminal
+    service.shutdown(wait=True)
+
+
+def test_runner_worker_start_cancellation_emits_and_persists_one_terminal_event(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    entered_execute = threading.Event()
+    history_path = tmp_path / "history.json"
+    profile = _profile(tmp_path)
+    service = ToolRunnerService(
+        registry=_registry(BlockingTool()),
+        history_path=history_path,
+        max_workers=1,
+        event_callback=lambda topic, payload: events.append(topic),
+    )
+    original_execute = service._execute
+
+    def execute_after_signal(*args):
+        entered_execute.set()
+        return original_execute(*args)
+
+    service._execute = execute_after_signal
+    with service._lock:
+        row = service.run("blocking", {}, execution_profile=profile)
+        assert entered_execute.wait(1.0)
+        requested = service.cancel(row["run_id"], execution_profile=profile)
+        assert requested["status"] == "cancelling"
+
+    terminal = service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )
+    assert terminal["status"] == "cancelled"
+    assert events.count("tools.cancelled") == 1
+    service.shutdown(wait=True)
+    assert _persisted_by_id(history_path)[row["run_id"]]["status"] == "cancelled"
+
+
+def test_runner_queued_and_repeated_cancel_transition_and_persist_only_once(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    tool = BlockingTool()
+    profile = _profile(tmp_path)
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+        event_callback=lambda topic, payload: events.append(topic),
+    )
+    running = service.run("blocking", {"slot": 1}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    queued = service.run("blocking", {"slot": 2}, execution_profile=profile)
+    generation_before_cancel = service._persist_generation
+
+    first = service.cancel(queued["run_id"], execution_profile=profile)
+    second = service.cancel(queued["run_id"], execution_profile=profile)
+
+    assert first["status"] == "cancelled"
+    assert second == first
+    assert events.count("tools.cancelled") == 1
+    assert service._persist_generation == generation_before_cancel + 1
+    service.cancel(running["run_id"], execution_profile=profile)
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_cancel_wins_finish_race_and_terminal_cancel_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    tool = ReturningTool()
+    profile = _profile(tmp_path)
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+        event_callback=lambda topic, payload: events.append(topic),
+    )
+    row = service.run("returning", {}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    with service._lock:
+        tool.release.set()
+        assert tool.returning.wait(1.0)
+        assert service.cancel(row["run_id"], execution_profile=profile)["status"] == (
+            "cancelling"
+        )
+
+    terminal = service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )
+    generation_at_terminal = service._persist_generation
+    event_count_at_terminal = len(events)
+
+    assert terminal["status"] == "cancelled"
+    assert events.count("tools.cancelled") == 1
+    assert events.count("tools.finished") == 0
+    assert service.cancel(row["run_id"], execution_profile=profile) == terminal
+    assert service.cancel(row["run_id"], execution_profile=profile) == terminal
+    assert len(events) == event_count_at_terminal
+    assert service._persist_generation == generation_at_terminal
+    service.shutdown(wait=True)
+
+
+def test_runner_terminal_visibility_marks_persistence_dirty_before_waiter_returns(
+    tmp_path: Path,
+) -> None:
+    terminal_emit_entered = threading.Event()
+    allow_terminal_emit = threading.Event()
+    tool = ReturningTool()
+
+    def block_terminal_event(topic: str, payload: dict) -> None:
+        del payload
+        if topic == "tools.finished":
+            terminal_emit_entered.set()
+            allow_terminal_emit.wait()
+
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "history.json",
+        max_workers=1,
+        event_callback=block_terminal_event,
+    )
+    profile = _profile(tmp_path)
+    row = service.run("returning", {}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    generation_before_terminal = service._persist_generation
+    try:
+        tool.release.set()
+        assert terminal_emit_entered.wait(1.0)
+        terminal = service.wait_for_run(
+            row["run_id"],
+            execution_profile=profile,
+            timeout=0,
+        )
+        assert terminal["status"] == "succeeded"
+        assert service._persist_generation == generation_before_terminal + 1
+    finally:
+        allow_terminal_emit.set()
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_cancel_on_succeeded_run_has_no_new_event_or_persist(tmp_path: Path) -> None:
+    events: list[str] = []
+    profile = _profile(tmp_path)
+    service = ToolRunnerService(
+        registry=_registry(EchoTool()),
+        history_path=tmp_path / "history.json",
+        event_callback=lambda topic, payload: events.append(topic),
+    )
+    row = service.run("echo", {"value": "done"}, execution_profile=profile)
+    terminal = service.wait_for_run(
+        row["run_id"],
+        execution_profile=profile,
+        timeout=1.0,
+    )
+    generation = service._persist_generation
+    event_count = len(events)
+
+    assert terminal["status"] == "succeeded"
+    assert service.cancel(row["run_id"], execution_profile=profile) == terminal
+    assert service.cancel(row["run_id"], execution_profile=profile) == terminal
+    assert len(events) == event_count
+    assert service._persist_generation == generation
+    service.shutdown(wait=True)
+
+
+def test_runner_repeated_shutdown_waits_for_late_terminal_persist_and_joins_threads(
+    tmp_path: Path,
+) -> None:
+    tool = StubbornTool()
+    history_path = tmp_path / "history.json"
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+    )
+    profile = _profile(tmp_path)
+    row = service.run("stubborn", {}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    original_persist_now = service._persist_history_now
+    late_persist_entered = threading.Event()
+    allow_late_persist = threading.Event()
+
+    def controlled_persist_now(*, timeout=None):
+        if threading.current_thread().name.startswith("tool-runner"):
+            late_persist_entered.set()
+            allow_late_persist.wait()
+        return original_persist_now(timeout=timeout)
+
+    service._persist_history_now = controlled_persist_now
+    assert service.shutdown(wait=False) is False
+    assert _persisted_by_id(history_path)[row["run_id"]]["status"] == "cancelling"
+
+    tool.release.set()
+    assert late_persist_entered.wait(1.0)
+    zero_budget_result = service.shutdown(wait=True, timeout=0)
+    allow_late_persist.set()
+    final_result = service.shutdown(wait=True, timeout=1.0)
+
+    assert zero_budget_result is False
+    assert final_result is True
+    assert _persisted_by_id(history_path)[row["run_id"]]["status"] == "cancelled"
+    assert _active_tool_threads() == []
+
+
+def test_runner_shutdown_timeout_can_be_repeated_to_flush_late_terminal_state(
+    tmp_path: Path,
+) -> None:
+    tool = StubbornTool()
+    history_path = tmp_path / "history.json"
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=history_path,
+        max_workers=1,
+    )
+    profile = _profile(tmp_path)
+    row = service.run("stubborn", {}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+
+    assert service.shutdown(wait=True, timeout=0) is False
+    assert _persisted_by_id(history_path)[row["run_id"]]["status"] == "cancelling"
+    tool.release.set()
+    assert service.shutdown(wait=True, timeout=1.0) is True
+
+    assert _persisted_by_id(history_path)[row["run_id"]]["status"] == "cancelled"
+    assert _active_tool_threads() == []
