@@ -15,7 +15,7 @@ from app.core.tools.contracts import (
     ToolRunStatus,
 )
 from app.core.tools.builtin.download_residue import TOOL as DOWNLOAD_RESIDUE_TOOL
-from shared.execution_profile import public_web_profile
+from shared.execution_profile import local_execution_profile, public_web_profile
 
 
 def test_manifest_serializes_stable_frontend_contract() -> None:
@@ -52,6 +52,24 @@ def test_context_authorizes_only_paths_inside_approved_roots(tmp_path: Path) -> 
     assert context.authorize_path(source) == source.resolve()
     with pytest.raises(PermissionError):
         context.authorize_path(outside)
+
+
+def test_path_authorization_rejects_empty_host_roots(tmp_path: Path) -> None:
+    profile = local_execution_profile(
+        host_surface="test",
+        owner_id="unit:path",
+        approved_roots=(),
+        tool_permissions=("read_file",),
+        allow_external_plugins=False,
+    )
+    context = ToolContext(
+        parameters={},
+        execution_profile=profile,
+        provenance="builtin",
+    )
+
+    with pytest.raises(PermissionError, match="approved root"):
+        context.authorize_path(tmp_path / "video.mp4")
 
 
 def test_cancel_token_interrupts_context() -> None:

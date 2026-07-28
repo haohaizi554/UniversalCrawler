@@ -73,7 +73,8 @@ class ToolGrantEvaluator:
                 "tool_run_disabled",
                 "tool execution is disabled for this host",
             )
-        if not provenance.startswith("builtin") and not execution_profile.allow_external_plugins:
+        external_provenance = provenance.startswith(("external:", "entry_point:"))
+        if external_provenance and not execution_profile.allow_external_plugins:
             return ToolGrant(
                 False,
                 "external_plugins_disabled",
@@ -283,13 +284,14 @@ class ToolContext:
     def authorize_path(self, path: str | os.PathLike[str]) -> Path:
         """Resolve a path and enforce the approved-root boundary."""
 
-        if self.path_authorizer is not None:
-            return Path(self.path_authorizer(path)).expanduser().resolve()
-        resolved = Path(path).expanduser().resolve()
         profile = self.execution_profile
         source_roots = profile.approved_roots if profile is not None else self.approved_roots
         roots = tuple(Path(root).expanduser().resolve() for root in source_roots if str(root).strip())
-        if roots and not any(_is_relative_to(resolved, root) for root in roots):
+        if not roots:
+            raise PermissionError("at least one approved root is required")
+        candidate = self.path_authorizer(path) if self.path_authorizer is not None else path
+        resolved = Path(candidate).expanduser().resolve()
+        if not any(_is_relative_to(resolved, root) for root in roots):
             raise PermissionError("path is outside approved roots")
         return resolved
 

@@ -18,13 +18,19 @@ from app.core.tools.contracts import (
     CancellationToken,
     ToolCancelledError,
     ToolContext,
+    ToolDescriptor,
+    ToolGrant,
+    ToolGrantEvaluator,
+    ToolRequirements,
     ToolRunResult,
     ToolRunStatus,
     ToolValidationResult,
 )
 from app.core.tools.registry import ToolRegistry
 from app.debug_logger import debug_logger
+from app.services.tool_history_projection import project_history_record
 from app.utils.runtime_paths import user_cache_root, user_data_root
+from shared.execution_profile import ExecutionProfile
 
 ToolEventCallback = Callable[[str, dict[str, Any]], None]
 
@@ -35,6 +41,8 @@ class _RunRecord:
     tool_id: str
     status: ToolRunStatus
     parameters: dict[str, Any]
+    host_surface: str = ""
+    owner_id: str = ""
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -47,6 +55,8 @@ class _RunRecord:
         payload = {
             "run_id": self.run_id,
             "tool_id": self.tool_id,
+            "host_surface": self.host_surface,
+            "owner_id": self.owner_id,
             "status": self.status.value,
             "parameters": _json_value(self.parameters),
             "created_at": self.created_at,
@@ -59,6 +69,9 @@ class _RunRecord:
         if self.result is not None:
             payload["result"] = self.result.to_dict()
         return payload
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return project_history_record(self.to_dict())
 
 
 class ToolRunnerService:
@@ -118,16 +131,42 @@ class ToolRunnerService:
         tool_id: str,
         params: Mapping[str, Any] | None,
         *,
-        approved_roots: tuple[str, ...] = (),
+        execution_profile: ExecutionProfile,
     ) -> dict[str, Any]:
-        tool = self.registry.get(tool_id)
-        if tool is None:
+        descriptor = self.registry.descriptor(tool_id)
+        if descriptor is None:
             return {"status": "error", "valid": False, "errors": ["unknown tool"], "tool_id": tool_id}
+        return self._validate_descriptor(
+            descriptor,
+            dict(params or {}),
+            execution_profile,
+        )
+
+    def _validate_descriptor(
+        self,
+        descriptor: ToolDescriptor,
+        parameters: dict[str, Any],
+        execution_profile: ExecutionProfile,
+    ) -> dict[str, Any]:
+        tool = descriptor.tool
+        try:
+            grant = self._evaluate_grant(descriptor, parameters, execution_profile)
+        except Exception as exc:
+            debug_logger.log_exception("ToolRunnerService", "requirements", exc)
+            return {
+                "status": "error",
+                "valid": False,
+                "errors": [str(exc)],
+                "tool_id": tool.manifest.id,
+            }
+        if not grant.allowed:
+            return _forbidden_payload(tool.manifest.id, grant)
         context = self._make_context(
             tool_id=tool.manifest.id,
             run_id="",
-            parameters=dict(params or {}),
-            approved_roots=approved_roots,
+            parameters=parameters,
+            execution_profile=execution_profile,
+            provenance=descriptor.provenance,
             cancellation=CancellationToken(),
         )
         try:
@@ -144,38 +183,91 @@ class ToolRunnerService:
         tool_id: str,
         params: Mapping[str, Any] | None,
         *,
-        approved_roots: tuple[str, ...] = (),
+        execution_profile: ExecutionProfile,
     ) -> dict[str, Any]:
         if self._closed:
             return {"status": "error", "message": "tool runner is shut down"}
-        tool = self.registry.get(tool_id)
-        if tool is None:
+        descriptor = self.registry.descriptor(tool_id)
+        if descriptor is None:
             return {"status": "error", "message": "unknown tool", "tool_id": str(tool_id or "")}
-        validation = self.validate(tool.manifest.id, params or {}, approved_roots=approved_roots)
+        tool = descriptor.tool
+        validation = self._validate_descriptor(
+            descriptor,
+            dict(params or {}),
+            execution_profile,
+        )
         if validation.get("status") != "ok":
             return validation
         normalized_parameters = dict(validation.get("parameters") or params or {})
+        try:
+            grant = self._evaluate_grant(
+                descriptor,
+                normalized_parameters,
+                execution_profile,
+            )
+        except Exception as exc:
+            debug_logger.log_exception("ToolRunnerService", "requirements.normalized", exc)
+            return {
+                "status": "error",
+                "message": str(exc),
+                "tool_id": tool.manifest.id,
+            }
+        if not grant.allowed:
+            return _forbidden_payload(tool.manifest.id, grant)
         run_id = f"tool_{uuid.uuid4().hex}"
         token = CancellationToken()
-        record = _RunRecord(run_id, tool.manifest.id, ToolRunStatus.QUEUED, _redact_parameters(normalized_parameters))
+        record = _RunRecord(
+            run_id,
+            tool.manifest.id,
+            ToolRunStatus.QUEUED,
+            _redact_parameters(normalized_parameters),
+            host_surface=execution_profile.host_surface,
+            owner_id=execution_profile.owner_id,
+        )
         with self._lock:
             self._records[run_id] = record
             self._order.append(run_id)
             self._trim_history_locked()
             self._tokens[run_id] = token
-            queued_payload = record.to_dict()
+            queued_payload = record.to_public_dict()
             future = self._executor.submit(
                 self._execute,
                 run_id,
                 tool,
                 normalized_parameters,
-                tuple(str(root) for root in approved_roots),
+                execution_profile,
+                descriptor.provenance,
                 token,
             )
             self._futures[run_id] = future
         self._emit("tools.queued", queued_payload)
         self._schedule_persist()
         return queued_payload
+
+    @staticmethod
+    def _evaluate_grant(
+        descriptor: ToolDescriptor,
+        parameters: Mapping[str, Any],
+        execution_profile: ExecutionProfile,
+    ) -> ToolGrant:
+        declared_permissions = frozenset(descriptor.tool.manifest.permissions)
+        preliminary = ToolGrantEvaluator.evaluate(
+            requirements=ToolRequirements(),
+            declared_permissions=declared_permissions,
+            provenance=descriptor.provenance,
+            execution_profile=execution_profile,
+        )
+        if not preliminary.allowed:
+            return preliminary
+        requirements = descriptor.tool.requirements_for(dict(parameters))
+        if not isinstance(requirements, ToolRequirements):
+            raise TypeError("requirements_for() must return ToolRequirements")
+        return ToolGrantEvaluator.evaluate(
+            requirements=requirements,
+            declared_permissions=declared_permissions,
+            provenance=descriptor.provenance,
+            execution_profile=execution_profile,
+        )
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         normalized = str(run_id or "").strip()
@@ -186,7 +278,7 @@ class ToolRunnerService:
             if record is None:
                 return {"status": "error", "message": "unknown tool run", "run_id": normalized}
             if record.status in {ToolRunStatus.SUCCEEDED, ToolRunStatus.FAILED, ToolRunStatus.CANCELLED}:
-                return record.to_dict()
+                return record.to_public_dict()
             if token is not None:
                 token.cancel()
             record.status = ToolRunStatus.CANCELLING
@@ -198,7 +290,7 @@ class ToolRunnerService:
                 record.result = ToolRunResult.cancelled()
                 self._tokens.pop(normalized, None)
                 self._futures.pop(normalized, None)
-            payload = record.to_dict()
+            payload = record.to_public_dict()
         self._emit("tools.cancelled" if cancelled_before_start else "tools.cancelling", payload)
         self._schedule_persist()
         return payload
@@ -214,7 +306,11 @@ class ToolRunnerService:
         normalized_tool = str(tool_id or "").strip().lower()
         row_limit = max(1, min(self.history_limit, int(limit or self.history_limit)))
         with self._lock:
-            rows = [self._records[run_id].to_dict() for run_id in reversed(self._order) if run_id in self._records]
+            rows = [
+                self._records[run_id].to_public_dict()
+                for run_id in reversed(self._order)
+                if run_id in self._records
+            ]
         if normalized_tool:
             rows = [row for row in rows if row.get("tool_id") == normalized_tool]
         if normalized_status:
@@ -231,7 +327,7 @@ class ToolRunnerService:
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             record = self._records.get(str(run_id or ""))
-            return record.to_dict() if record is not None else None
+            return record.to_public_dict() if record is not None else None
 
     def snapshot(self, *, history_limit: int = 20) -> dict[str, Any]:
         return {
@@ -307,7 +403,8 @@ class ToolRunnerService:
         run_id: str,
         tool: Any,
         parameters: dict[str, Any],
-        approved_roots: tuple[str, ...],
+        execution_profile: ExecutionProfile,
+        provenance: str,
         token: CancellationToken,
     ) -> None:
         with self._lock:
@@ -323,13 +420,14 @@ class ToolRunnerService:
             record.status = ToolRunStatus.RUNNING
             record.started_at = time.time()
             record.message = "tool run started"
-            running_payload = record.to_dict()
+            running_payload = record.to_public_dict()
         self._emit("tools.running", running_payload)
         context = self._make_context(
             tool_id=tool.manifest.id,
             run_id=run_id,
             parameters=parameters,
-            approved_roots=approved_roots,
+            execution_profile=execution_profile,
+            provenance=provenance,
             cancellation=token,
         )
         try:
@@ -351,7 +449,7 @@ class ToolRunnerService:
             record.message = result.message
             record.progress = 100 if result_status == ToolRunStatus.SUCCEEDED else record.progress
             record.finished_at = time.time()
-            completed_payload = record.to_dict()
+            completed_payload = record.to_public_dict()
             self._finish_run_locked(run_id)
         self._emit("tools.finished", completed_payload)
         self._schedule_persist()
@@ -362,7 +460,8 @@ class ToolRunnerService:
         tool_id: str,
         run_id: str,
         parameters: dict[str, Any],
-        approved_roots: tuple[str, ...],
+        execution_profile: ExecutionProfile,
+        provenance: str,
         cancellation: CancellationToken,
     ) -> ToolContext:
         settings: Mapping[str, Any] = {}
@@ -374,7 +473,8 @@ class ToolRunnerService:
         return ToolContext(
             parameters=dict(parameters),
             run_id=run_id,
-            approved_roots=approved_roots,
+            execution_profile=execution_profile,
+            provenance=provenance,
             settings=settings,
             services=self._services,
             cancellation=cancellation,
@@ -401,7 +501,7 @@ class ToolRunnerService:
             if message:
                 record.message = str(message)
             record.progress_details = dict(details or {})
-            payload = record.to_dict()
+            payload = record.to_public_dict()
         self._emit("tools.progress", payload)
 
     def _finish_run_locked(self, run_id: str) -> None:
@@ -467,7 +567,11 @@ class ToolRunnerService:
         while True:
             with self._lock:
                 generation = self._persist_generation
-                snapshot = [self._records[run_id].to_dict() for run_id in self._order if run_id in self._records]
+                snapshot = [
+                    self._records[run_id].to_public_dict()
+                    for run_id in self._order
+                    if run_id in self._records
+                ]
             try:
                 with self._history_write_lock:
                     _atomic_write_json(self.history_path, snapshot)
@@ -481,7 +585,7 @@ class ToolRunnerService:
     def _persist_history_now(self) -> None:
         with self._lock:
             snapshot = [
-                self._records[run_id].to_dict()
+                self._records[run_id].to_public_dict()
                 for run_id in self._order
                 if run_id in self._records
             ]
@@ -554,6 +658,8 @@ def _record_from_dict(value: Any) -> _RunRecord | None:
             tool_id=str(value["tool_id"]),
             status=status,
             parameters=dict(value.get("parameters") or {}),
+            host_surface=str(value.get("host_surface") or ""),
+            owner_id=str(value.get("owner_id") or ""),
             created_at=float(value.get("created_at") or time.time()),
             started_at=float(value["started_at"]) if value.get("started_at") is not None else None,
             finished_at=float(value["finished_at"]) if value.get("finished_at") is not None else None,
@@ -574,6 +680,15 @@ def _record_from_dict(value: Any) -> _RunRecord | None:
         return record
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _forbidden_payload(tool_id: str, grant: ToolGrant) -> dict[str, Any]:
+    return {
+        "status": "forbidden",
+        "code": grant.code,
+        "message": grant.message,
+        "tool_id": str(tool_id),
+    }
 
 
 def _redact_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
