@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,6 +15,9 @@ from typing import Any, Protocol, runtime_checkable
 from shared.execution_profile import ExecutionProfile
 
 _TOOL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+_DISTRIBUTION_NAME_PATTERN = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$"
+)
 
 
 class ToolRunStatus(str, Enum):
@@ -73,8 +77,14 @@ class ToolGrantEvaluator:
                 "tool_run_disabled",
                 "tool execution is disabled for this host",
             )
-        external_provenance = provenance.startswith(("external:", "entry_point:"))
-        if external_provenance and not execution_profile.allow_external_plugins:
+        provenance_class = _classify_tool_provenance(str(provenance or ""))
+        if provenance_class is None:
+            return ToolGrant(
+                False,
+                "untrusted_tool_provenance",
+                "tool provenance is not trusted",
+            )
+        if provenance_class == "external" and not execution_profile.allow_external_plugins:
             return ToolGrant(
                 False,
                 "external_plugins_disabled",
@@ -375,6 +385,41 @@ class ToolDescriptor:
 
     tool: ToolPlugin
     provenance: str
+
+
+def _classify_tool_provenance(provenance: str) -> str | None:
+    if provenance == "builtin":
+        return "builtin"
+    if provenance == "explicit":
+        return "external"
+    if provenance.startswith("external:"):
+        suffix = provenance.removeprefix("external:")
+        return "external" if _is_resolved_absolute_path(suffix) else None
+    if provenance.startswith("entry_point:"):
+        suffix = provenance.removeprefix("entry_point:")
+        if _is_safe_provenance_suffix(suffix) and _DISTRIBUTION_NAME_PATTERN.fullmatch(
+            suffix
+        ):
+            return "external"
+    return None
+
+
+def _is_resolved_absolute_path(value: str) -> bool:
+    if not _is_safe_provenance_suffix(value):
+        return False
+    try:
+        path = Path(value)
+        return path.is_absolute() and path == path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _is_safe_provenance_suffix(value: str) -> bool:
+    return (
+        bool(value)
+        and value == value.strip()
+        and not any(unicodedata.category(character).startswith("C") for character in value)
+    )
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
