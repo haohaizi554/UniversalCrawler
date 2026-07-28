@@ -11,10 +11,13 @@ from cli.exit_codes import CliExitCode, exit_code_for_status
     ("status", "expected"),
     [
         ("ok", CliExitCode.OK),
+        ("succeeded", CliExitCode.OK),
         ("error", CliExitCode.ERROR),
+        ("failed", CliExitCode.ERROR),
         ("usage", CliExitCode.USAGE),
         ("timeout", CliExitCode.TIMEOUT),
         ("cancelled", CliExitCode.CANCELLED),
+        ("canceled", CliExitCode.CANCELLED),
     ],
 )
 def test_statuses_map_to_stable_process_codes(

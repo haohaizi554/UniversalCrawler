@@ -52,6 +52,12 @@ from app.ui.layout.window_chrome_controller import FramelessWindowChromeControll
 from shared.localization import normalize_language, tr
 from shared.release_identity import ReleaseIdentity, load_runtime_release_identity
 from shared.version import format_version_label
+from shared.execution_profile import (
+    DEFAULT_GUI_TOOL_OWNER_ID,
+    DEFAULT_LOCAL_TOOL_PERMISSIONS,
+    ExecutionProfile,
+    local_execution_profile,
+)
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
@@ -222,7 +228,11 @@ class MainWindow(QMainWindow):
         self._owns_event_bus = event_bus is None
         self._owns_app_state = app_state is None
         self.app_state = app_state or AppState(event_bus=self.event_bus)
-        self._frontend_state_service = FrontendStateService(app_state=self.app_state, gui_runtime_adapter=QtGuiRuntimeAdapter())
+        self._frontend_state_service = FrontendStateService(
+            app_state=self.app_state,
+            gui_runtime_adapter=QtGuiRuntimeAdapter(),
+            execution_profile_provider=self._build_tool_execution_profile,
+        )
         self._owns_frontend_state_service = True
         self._connections = ConnectionRegistry()
         self._frontend_refresh_pending_mock = False
@@ -354,6 +364,22 @@ class MainWindow(QMainWindow):
             self._save_dir_lock = lock
         with lock:
             self._current_save_dir = str(value)
+
+    def _build_tool_execution_profile(self) -> ExecutionProfile:
+        roots: tuple[Path, ...] = ()
+        configured_root = self.current_save_dir.strip()
+        if configured_root:
+            try:
+                roots = (Path(configured_root).expanduser().resolve(),)
+            except (OSError, RuntimeError, ValueError):
+                roots = ()
+        return local_execution_profile(
+            host_surface="desktop_gui",
+            owner_id=DEFAULT_GUI_TOOL_OWNER_ID,
+            approved_roots=roots,
+            tool_permissions=DEFAULT_LOCAL_TOOL_PERMISSIONS,
+            allow_external_plugins=False,
+        )
 
     def _build_ui(self) -> None:
         self.window_chrome = WindowChromeFrame(

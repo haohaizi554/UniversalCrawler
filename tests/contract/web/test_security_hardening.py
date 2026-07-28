@@ -72,7 +72,7 @@ class WebSecurityHardeningTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         profile = run_cli_search.call_args.kwargs["execution_profile"]
         self.assertEqual(profile.host_surface, "public_web")
-        self.assertEqual(profile.owner_id, self.context.session_id)
+        self.assertEqual(profile.owner_id, f"web:{self.context.session_id}")
         self.assertEqual(
             profile.approved_roots,
             frozenset(Path(root).resolve() for root in self.context.approved_roots_snapshot()),
@@ -143,8 +143,8 @@ class WebSecurityHardeningTests(unittest.TestCase):
         self.assertEqual(len(observed_profiles), 2)
         profile_a, profile_b = observed_profiles
         self.assertIsNot(profile_a, profile_b)
-        self.assertEqual(profile_a.owner_id, context_a.session_id)
-        self.assertEqual(profile_b.owner_id, context_b.session_id)
+        self.assertEqual(profile_a.owner_id, f"web:{context_a.session_id}")
+        self.assertEqual(profile_b.owner_id, f"web:{context_b.session_id}")
         self.assertEqual(
             profile_a.approved_roots,
             frozenset(Path(root).resolve() for root in context_a.approved_roots_snapshot()),

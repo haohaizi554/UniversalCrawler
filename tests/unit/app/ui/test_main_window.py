@@ -3,6 +3,7 @@
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,7 @@ from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
 from app.ui.viewmodels.frontend_action_worker import FrontendActionRequest, FrontendActionResult
 from app.ui.viewmodels.frontend_snapshot_worker import FrontendSnapshotResult, build_frontend_snapshot
+from shared.execution_profile import DEFAULT_LOCAL_TOOL_PERMISSIONS
 
 class MainWindowTests(unittest.TestCase):
 
@@ -435,6 +437,35 @@ class MainWindowTests(unittest.TestCase):
         window.on_btn_file_association_clicked()
 
         window._submit_frontend_action.assert_not_called()
+
+    def test_tool_action_is_submitted_once_through_existing_frontend_worker(self):
+        window = self._make_window()
+        window._submit_frontend_action = Mock(return_value=True)
+        payload = {"tool_id": "media_health", "parameters": {"path": "video.mp4"}}
+
+        MainWindow._handle_tool_action(window, "tool_start", payload)
+
+        window._submit_frontend_action.assert_called_once_with("tool_start", payload)
+
+    def test_gui_tool_profile_uses_durable_owner_and_reads_current_save_root(self):
+        window = self._make_window()
+        first_root = Path("D:/downloads-a")
+        second_root = Path("D:/downloads-b")
+        window.__dict__["_save_dir_lock"] = threading.RLock()
+        window.__dict__["_current_save_dir"] = str(first_root)
+        window.__dict__["_tool_execution_owner_id"] = "gui:legacy-process-owner"
+
+        first = MainWindow._build_tool_execution_profile(window)
+        window.current_save_dir = str(second_root)
+        second = MainWindow._build_tool_execution_profile(window)
+
+        self.assertEqual(first.host_surface, "desktop_gui")
+        self.assertEqual(first.owner_id, second.owner_id)
+        self.assertEqual(first.owner_id, "gui:local")
+        self.assertEqual(first.approved_roots, frozenset({first_root.resolve()}))
+        self.assertEqual(second.approved_roots, frozenset({second_root.resolve()}))
+        self.assertEqual(first.tool_permissions, DEFAULT_LOCAL_TOOL_PERMISSIONS)
+        self.assertFalse(first.allow_external_plugins)
 
     def test_update_check_request_uses_latest_worker(self):
         from shared.release_identity import ReleaseIdentity

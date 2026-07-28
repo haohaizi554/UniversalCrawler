@@ -10,9 +10,9 @@ from fastapi import Request
 
 from app.web.api_result import error_result, finalize_api_result
 from app.web.logging_utils import log_web_exception
+from app.web.session_runtime import build_public_web_session_profile
 from shared.execution_profile import (
     ExecutionProfileEscalation,
-    public_web_profile,
     reject_execution_profile_overrides,
 )
 from shared.runtime_options import merge_convenience_params
@@ -42,8 +42,8 @@ class WebSearchService:
         runtime = self._runtime_provider()
         context = self._get_request_context(request)
 
-        execution_profile = public_web_profile(
-            owner_id=context.session_id,
+        execution_profile = build_public_web_session_profile(
+            context.session_id,
             approved_roots=context.approved_roots_snapshot(),
         )
         try:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Header, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from app.exceptions import ConfigValidationError
 from app.services import update_check_service
@@ -44,6 +44,20 @@ class FrontendActionRequest(_RequestModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     frontend_version: int | None = Field(default=0, ge=0)
     request_id: str = Field(default="", max_length=80)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _admit_tool_denial_before_detail_validation(cls, value: Any, handler):
+        if isinstance(value, dict):
+            action = value.get("action")
+            if WebControllerConfigService.is_tool_action(action):
+                return cls.model_construct(
+                    action=action,
+                    payload={},
+                    frontend_version=0,
+                    request_id="",
+                )
+        return handler(value)
 
 class UpdateCheckRequest(_RequestModel):
     local_version: str = Field(default="", max_length=40)
@@ -198,6 +212,8 @@ def build_rest_router(
 
     @router.post("/api/frontend/action")
     async def frontend_action(request: Request, body: FrontendActionRequest):
+        if WebControllerConfigService.is_tool_action(body.action):
+            return WebControllerConfigService.tool_run_disabled_result()
         context = get_request_context(request)
         controller = context.controller
         approved_roots = context.approved_roots_snapshot()

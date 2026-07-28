@@ -12,6 +12,7 @@
 - 验证响应体字段（status, error）而非仅状态码（API 用 200+error body 而非 4xx）
 """
 
+import json
 import os
 import sys
 import unittest
@@ -19,7 +20,7 @@ import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 def _create_test_client():
     """创建 FastAPI TestClient（fixture）。"""
@@ -187,6 +188,22 @@ class StateEndpointTests(unittest.TestCase):
         ):
             self.assertIn(key, data)
 
+        self.assertTrue(data["toolbox_items"])
+        self.assertTrue(
+            all(
+                enabled is False
+                for item in data["toolbox_items"]
+                for enabled in item["actions"].values()
+            )
+        )
+        self.assertTrue(data["toolbox_display_projection"]["actions"])
+        self.assertTrue(
+            all(
+                enabled is False
+                for enabled in data["toolbox_display_projection"]["actions"].values()
+            )
+        )
+
     def test_frontend_delta_endpoint_matches_rest_router_contract(self):
         response = self.client.get("/api/frontend/delta?since_version=0")
         self.assertEqual(response.status_code, 200)
@@ -210,6 +227,172 @@ class StateEndpointTests(unittest.TestCase):
         response = self.client.get("/api/i18n/zh-CN")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {})
+
+
+class FrontendToolBoundaryEndpointTests(unittest.TestCase):
+    """Real HTTP and WebSocket transports preserve the public-host tool boundary."""
+
+    CANONICAL_DENIAL = {
+        "status": "forbidden",
+        "code": "tool_run_disabled",
+        "message": "tool execution is disabled for this host",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = _create_test_client()
+
+    def test_frontend_action_openapi_preserves_strict_request_contract(self):
+        document = self.client.get("/openapi.json").json()
+        request_schema = document["paths"]["/api/frontend/action"]["post"][
+            "requestBody"
+        ]["content"]["application/json"]["schema"]
+        component_name = request_schema["$ref"].rsplit("/", 1)[-1]
+        properties = document["components"]["schemas"][component_name]["properties"]
+
+        self.assertEqual(properties["payload"]["type"], "object")
+        self.assertEqual(
+            properties["frontend_version"]["anyOf"],
+            [
+                {"minimum": 0, "type": "integer"},
+                {"type": "null"},
+            ],
+        )
+        self.assertEqual(properties["frontend_version"]["default"], 0)
+        self.assertEqual(properties["request_id"]["type"], "string")
+        self.assertEqual(properties["request_id"]["maxLength"], 80)
+
+    def test_rest_denies_malformed_tool_payload_before_frontend_service(self):
+        service = self.client._ucrawl_context.controller.frontend_state_service
+
+        with patch.object(
+            service,
+            "handle_action",
+            side_effect=AssertionError("public REST tool action reached the frontend service"),
+        ) as handle_action:
+            response = self.client.post(
+                "/api/frontend/action",
+                json={
+                    "action": "tool_start",
+                    "payload": ["truthy", "not-a-mapping"],
+                    "frontend_version": ["not-an-integer"],
+                    "request_id": ["not-a-string"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            {key: body.get(key) for key in self.CANONICAL_DENIAL},
+            self.CANONICAL_DENIAL,
+        )
+        handle_action.assert_not_called()
+
+    def test_rest_non_tool_null_frontend_version_is_accepted_as_zero(self):
+        response = self.client.post(
+            "/api/frontend/action",
+            json={
+                "action": "refresh_logs",
+                "payload": {},
+                "frontend_version": None,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertNotIn("detail", body)
+        self.assertEqual(body["frontend_delta"]["base_version"], 0)
+
+    def test_rest_non_tool_validation_preserves_fastapi_422_contract(self):
+        cases = (
+            (
+                {
+                    "action": "update_basic_setting",
+                    "payload": [],
+                },
+                {
+                    "type": "dict_type",
+                    "loc": ["body", "payload"],
+                    "msg": "Input should be a valid dictionary",
+                    "input": [],
+                },
+            ),
+            (
+                {
+                    "action": "update_basic_setting",
+                    "request_id": [],
+                },
+                {
+                    "type": "string_type",
+                    "loc": ["body", "request_id"],
+                    "msg": "Input should be a valid string",
+                    "input": [],
+                },
+            ),
+            (
+                {
+                    "action": "update_basic_setting",
+                    "frontend_version": -1,
+                },
+                {
+                    "type": "greater_than_equal",
+                    "loc": ["body", "frontend_version"],
+                    "msg": "Input should be greater than or equal to 0",
+                    "input": -1,
+                    "ctx": {"ge": 0},
+                },
+            ),
+        )
+
+        for request_body, expected_error in cases:
+            with self.subTest(request_body=request_body):
+                response = self.client.post(
+                    "/api/frontend/action",
+                    json=request_body,
+                )
+
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json(), {"detail": [expected_error]})
+
+    def test_websocket_denial_matches_rest_and_precedes_payload_validation(self):
+        context = self.client._ucrawl_context
+        service = context.controller.frontend_state_service
+
+        with (
+            patch.object(
+                service,
+                "handle_action",
+                side_effect=AssertionError("public WebSocket tool action reached the frontend service"),
+            ) as handle_action,
+            patch.object(context.controller, "async_scan_local_dir", new=AsyncMock()),
+            self.client.websocket_connect("/ws") as websocket,
+        ):
+            initial_types = [websocket.receive_json()["type"] for _ in range(4)]
+            self.assertEqual(
+                initial_types,
+                ["init_state", "frontend_state", "platforms", "config"],
+            )
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "frontend_action",
+                        "data": {
+                            "action": "tool_start",
+                            "payload": ["truthy", "not-a-mapping"],
+                            "frontend_version": ["not-an-integer"],
+                            "request_id": ["not-a-string"],
+                        },
+                    }
+                )
+            )
+            message = websocket.receive_json()
+
+        self.assertEqual(message["type"], "frontend_action_result")
+        self.assertEqual(
+            {key: message["data"].get(key) for key in self.CANONICAL_DENIAL},
+            self.CANONICAL_DENIAL,
+        )
+        handle_action.assert_not_called()
 
 class ScanEndpointTests(unittest.TestCase):
     """POST /api/scan 扫描本地目录。"""
@@ -350,6 +533,36 @@ class SearchEndpointValidationTests(unittest.TestCase):
         })
         self.assertEqual(r.status_code, 200)
         self.assertTrue(_is_error_response(r.json()))
+
+    def test_search_uses_canonical_web_owner_with_session_roots(self):
+        captured: dict[str, Any] = {}
+
+        def fake_run_cli_search(**kwargs):
+            captured.update(kwargs)
+            return {"status": "ok", "items": []}
+
+        with TemporaryDirectory() as tmp, patch(
+            "app.web.server.run_cli_search",
+            side_effect=fake_run_cli_search,
+        ):
+            approved = self.client._ucrawl_context.approve_directory(tmp)
+            response = self.client.post(
+                "/api/search",
+                json={
+                    "source": "douyin",
+                    "keyword": "profile-contract",
+                    "save_dir": approved,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+        profile = captured["execution_profile"]
+        self.assertEqual(
+            profile.owner_id,
+            f"web:{self.client._ucrawl_context.session_id}",
+        )
+        self.assertIn(Path(approved).resolve(), profile.approved_roots)
 
 class CrawlStartStopTests(unittest.TestCase):
     """POST /api/crawl/start + /api/crawl/stop 输入校验。"""

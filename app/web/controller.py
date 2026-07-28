@@ -1297,6 +1297,8 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
         return icon_manifest()
 
     def handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
+        if WebControllerConfigService.is_tool_action(action):
+            return WebControllerConfigService.tool_run_disabled_result()
         return self.frontend_state_service.handle_action(action, payload or {})
 
     async def async_handle_frontend_action(
@@ -1306,6 +1308,8 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
         approved_roots: tuple[str, ...] | None = None,
     ) -> dict:
         """Web 前端动作统一入口；删除动作走异步文件服务，其余复用状态服务。"""
+        if WebControllerConfigService.is_tool_action(action):
+            return WebControllerConfigService.tool_run_disabled_result()
         try:
             normalized_payload = WebControllerConfigService.authorize_frontend_action_payload(
                 action,
@@ -1324,9 +1328,6 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
                     else "config_not_allowed"
                 },
             }
-
-        if str(action or "").strip() in WebControllerConfigService._TOOL_ACTIONS:
-            normalized_payload["_approved_roots"] = tuple(approved_roots or ())
 
         async def _delete() -> dict:
             video_id = str(normalized_payload.get("id") or normalized_payload.get("video_id") or "")

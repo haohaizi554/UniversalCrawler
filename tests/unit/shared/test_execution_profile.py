@@ -92,10 +92,28 @@ def test_local_factory_requires_real_owner_and_surface(tmp_path):
     assert profile.approved_roots == frozenset({tmp_path.resolve()})
 
 
-@pytest.mark.parametrize("owner_id", ["", " ", "\t"])
+@pytest.mark.parametrize(
+    "owner_id",
+    ["", " ", "\t", " owner", "owner ", None, 1],
+)
 def test_factories_reject_empty_owner(owner_id, tmp_path):
     with pytest.raises(ValueError, match="owner_id"):
         public_web_profile(owner_id=owner_id, approved_roots=(tmp_path,))
+
+
+@pytest.mark.parametrize(
+    "host_surface",
+    ["", " ", "\t", "CLI", "cli ", "public_web", "unknown", None, 1],
+)
+def test_local_factory_rejects_invalid_host_surface(host_surface, tmp_path):
+    with pytest.raises(ValueError, match="host_surface"):
+        local_execution_profile(
+            host_surface=host_surface,
+            owner_id="pid-123",
+            approved_roots=(tmp_path,),
+            tool_permissions=(),
+            allow_external_plugins=False,
+        )
 
 
 @pytest.fixture

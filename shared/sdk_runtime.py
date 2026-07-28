@@ -13,13 +13,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 from shared.cli_runner_runtime import CLIRunner
-from shared.execution_profile import ExecutionProfile, local_execution_profile
+from shared.execution_profile import (
+    DEFAULT_LOCAL_TOOL_PERMISSIONS,
+    ExecutionProfile,
+    local_execution_profile,
+)
 from shared.selection_base import SelectionStrategy, is_selection_strategy
 
 # 保持 CLI/SDK 输出实时刷新，便于长任务反馈
@@ -77,10 +83,9 @@ class UcrawlSDK:
             verbose: 是否输出 spider 日志到 stderr (默认 False)
             config: 全局默认配置 (会被 search() 的 config 参数覆盖)
         """
-        self.save_dir = save_dir or get_default_save_dir()
-        # 在回退到默认目录后仍校验调用方显式传入的原始类型。
         if save_dir is not None and not isinstance(save_dir, str):
             raise TypeError("save_dir 必须是字符串或 None")
+        self.save_dir = save_dir or get_default_save_dir()
         self.verbose = verbose
         # 必须先校验再 dict()，避免把字符串等可迭代对象误当配置映射。
         if config is not None and not isinstance(config, dict):
@@ -91,19 +96,39 @@ class UcrawlSDK:
         ):
             raise TypeError("execution_profile must be an ExecutionProfile or None")
         self._execution_profile_supplied = execution_profile is not None
+        self._execution_owner_id = (
+            execution_profile.owner_id
+            if execution_profile is not None
+            else self._default_execution_owner_id(self.save_dir)
+        )
         self.execution_profile = execution_profile or self._local_execution_profile(
             self.save_dir
         )
         self._tools_api = None
+        self._tools_condition = threading.Condition()
+        self._tools_creating = False
+        self._tools_creation_thread_id: int | None = None
+        self._tools_closing = False
+        self._tools_close_thread_id: int | None = None
+        self._last_cleanup_error: BaseException | None = None
+        self._closed = False
 
     @staticmethod
-    def _local_execution_profile(save_dir: str) -> ExecutionProfile:
+    def _default_execution_owner_id(save_dir: str) -> str:
+        canonical_root = Path(save_dir).expanduser().resolve()
+        canonical_text = os.path.normcase(os.path.normpath(str(canonical_root)))
+        digest = hashlib.sha256(
+            canonical_text.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        return f"sdk:local:{digest}"
+
+    def _local_execution_profile(self, save_dir: str) -> ExecutionProfile:
         return local_execution_profile(
             host_surface="sdk",
-            owner_id=f"sdk-pid-{os.getpid()}",
+            owner_id=self._execution_owner_id,
             approved_roots=(Path(save_dir).expanduser().resolve(),),
-            tool_permissions=(),
-            allow_external_plugins=True,
+            tool_permissions=DEFAULT_LOCAL_TOOL_PERMISSIONS,
+            allow_external_plugins=False,
         )
 
     def _execution_profile_for_save_dir(self, save_dir: str) -> ExecutionProfile:
@@ -115,24 +140,164 @@ class UcrawlSDK:
         return self._local_execution_profile(save_dir)
 
     def __enter__(self) -> "UcrawlSDK":
+        with self._tools_condition:
+            if self._closed:
+                raise RuntimeError("UcrawlSDK is closed")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        del exc_type, exc_tb
+        cleanup_error: BaseException | None = None
+        try:
+            if not self.close():
+                cleanup_error = RuntimeError(
+                    "UcrawlSDK tool runner shutdown did not complete"
+                )
+        except BaseException as error:
+            cleanup_error = error
+
+        if cleanup_error is None:
+            return False
+        if exc_val is None:
+            raise cleanup_error
+        try:
+            self._record_cleanup_failure(exc_val, cleanup_error)
+        except BaseException:
+            pass
         return False
 
-    def close(self):
-        """保留幂等清理接口；当前实例不持有跨调用的运行资源。"""
-        return None
+    def close(self) -> bool:
+        """Close the cached tool facade, retaining failed cleanup for retry."""
+        close_thread_id = threading.get_ident()
+        with self._tools_condition:
+            if (
+                self._tools_creating
+                and self._tools_creation_thread_id == close_thread_id
+            ):
+                raise RuntimeError(
+                    "UcrawlSDK tool facade construction is reentrant"
+                )
+            self._closed = True
+            while self._tools_creating:
+                self._tools_condition.wait()
+            while self._tools_closing:
+                if self._tools_close_thread_id == close_thread_id:
+                    return False
+                self._tools_condition.wait()
+            tools_api = self._tools_api
+            if tools_api is None:
+                return True
+            self._tools_closing = True
+            self._tools_close_thread_id = close_thread_id
+
+        try:
+            completed = tools_api.close() is True
+        except BaseException as error:
+            with self._tools_condition:
+                self._set_last_cleanup_error(error)
+                self._tools_closing = False
+                self._tools_close_thread_id = None
+                self._tools_condition.notify_all()
+            raise
+
+        with self._tools_condition:
+            if completed and self._tools_api is tools_api:
+                self._tools_api = None
+                self._set_last_cleanup_error(None)
+            elif not completed:
+                self._set_last_cleanup_error(
+                    RuntimeError(
+                        "UcrawlSDK tool runner shutdown did not complete"
+                    )
+                )
+            self._tools_closing = False
+            self._tools_close_thread_id = None
+            self._tools_condition.notify_all()
+        return completed
 
     @property
     def tools(self):
         """Return the cached thin facade for application tools."""
-        if self._tools_api is None:
+        access_thread_id = threading.get_ident()
+        with self._tools_condition:
+            while self._tools_creating:
+                if self._tools_creation_thread_id == access_thread_id:
+                    raise RuntimeError(
+                        "UcrawlSDK tool facade construction is reentrant"
+                    )
+                if self._closed:
+                    raise RuntimeError("UcrawlSDK is closed")
+                self._tools_condition.wait()
+            if self._closed:
+                raise RuntimeError("UcrawlSDK is closed")
+            if self._tools_api is not None:
+                return self._tools_api
+            self._tools_creating = True
+            self._tools_creation_thread_id = access_thread_id
+
+        try:
             from ucrawl.tools import ToolsAPI
 
-            self._tools_api = ToolsAPI()
-        return self._tools_api
+            tools_api = ToolsAPI(execution_profile=self.execution_profile)
+        except BaseException:
+            with self._tools_condition:
+                self._tools_creating = False
+                self._tools_creation_thread_id = None
+                self._tools_condition.notify_all()
+            raise
+
+        with self._tools_condition:
+            self._tools_creating = False
+            self._tools_creation_thread_id = None
+            self._tools_api = tools_api
+            self._tools_condition.notify_all()
+            if self._closed:
+                raise RuntimeError("UcrawlSDK is closed")
+            return tools_api
+
+    def _record_cleanup_failure(
+        self,
+        body_error: BaseException,
+        cleanup_error: BaseException,
+    ) -> None:
+        self._set_last_cleanup_error(cleanup_error)
+        note = "UcrawlSDK cleanup failed with unknown error"
+        try:
+            detail = str(cleanup_error)
+        except BaseException:
+            try:
+                error_name = type(cleanup_error).__name__
+            except BaseException:
+                error_name = None
+            if type(error_name) is str and error_name:
+                note = "UcrawlSDK cleanup failed with " + error_name
+        else:
+            if type(detail) is str and detail:
+                note = "UcrawlSDK cleanup failed: " + detail
+        try:
+            add_note = getattr(body_error, "add_note", None)
+        except BaseException:
+            add_note = None
+        if callable(add_note):
+            try:
+                add_note(note)
+                return
+            except BaseException:
+                pass
+        try:
+            setattr(body_error, "_ucrawl_sdk_cleanup_error", cleanup_error)
+        except BaseException:
+            pass
+
+    def _set_last_cleanup_error(
+        self,
+        cleanup_error: BaseException | None,
+    ) -> None:
+        """Record diagnostics without letting hostile state replace cleanup."""
+        try:
+            object.__setattr__(self, "_last_cleanup_error", cleanup_error)
+        except BaseException:
+            pass
 
     def _get_runner_class(self):
         """返回 SDK 搜索流程使用的执行器类。

@@ -29,8 +29,8 @@ class WebControllerConfigServiceTests(unittest.TestCase):
                         ("C:/trusted",),
                     )
 
-    def test_tool_actions_validate_minimum_fields_and_types(self) -> None:
-        invalid_payloads = (
+    def test_tool_actions_skip_action_specific_validation_before_public_denial(self) -> None:
+        malformed_payloads = (
             ("tool_validate", {"parameters": {}}),
             ("tool_validate", {"tool_id": 7, "parameters": {}}),
             ("tool_start", {"tool_id": "media_health"}),
@@ -45,14 +45,16 @@ class WebControllerConfigServiceTests(unittest.TestCase):
             ("run_tool", {"id": 7}),
         )
 
-        for action, payload in invalid_payloads:
+        for action, payload in malformed_payloads:
             with self.subTest(action=action, payload=payload):
-                with self.assertRaises(ValueError):
+                self.assertEqual(
                     WebControllerConfigService.authorize_frontend_action_payload(
                         action,
                         payload,
                         ("C:/trusted",),
-                    )
+                    ),
+                    payload,
+                )
 
     def test_tool_actions_accept_current_and_legacy_minimum_payloads(self) -> None:
         valid_payloads = (

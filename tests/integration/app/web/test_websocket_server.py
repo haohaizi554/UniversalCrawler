@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +18,10 @@ class _FakeController:
     def __init__(self, _loop, _broadcast):
         self.bridge = _FakeBridge()
         self.current_save_dir = "downloads"
+        self.tool_profile_providers = []
+        self.frontend_state_service = SimpleNamespace(
+            set_tool_execution_profile_provider=self.tool_profile_providers.append,
+        )
         self.videos = {}
         self.file_service = SimpleNamespace(scan_directory=lambda *_args, **_kwargs: None)
         self.async_scan_local_dir = AsyncMock()
@@ -41,9 +46,10 @@ class _FakeController:
 class _FakeWorkflowService:
     instances = []
 
-    def __init__(self, controller, broadcast):
+    def __init__(self, controller, broadcast, *, execution_profile_factory=None):
         self.controller = controller
         self.broadcast = broadcast
+        self.execution_profile_factory = execution_profile_factory
         self.start_crawl_completed = threading.Event()
 
         async def _start_crawl(*_args, **_kwargs):
@@ -87,6 +93,25 @@ class WebsocketServerTests(unittest.TestCase):
         self.assertEqual(first["type"], "init_state")
         self.assertEqual(second["type"], "platforms")
         self.assertEqual(third["type"], "config")
+        workflow = _FakeWorkflowService.instances[-1]
+        self.assertTrue(callable(workflow.execution_profile_factory))
+        profile = workflow.execution_profile_factory()
+        matching_context = next(
+            context
+            for context in client.app.state.web_session_registry._contexts.values()
+            if context.controller is workflow.controller
+        )
+        self.assertEqual(profile.host_surface, "public_web")
+        self.assertEqual(profile.owner_id, f"web:{matching_context.session_id}")
+        self.assertFalse(profile.allow_tool_execution)
+        self.assertIn(
+            Path(matching_context.controller.current_save_dir).resolve(),
+            profile.approved_roots,
+        )
+        self.assertEqual(len(workflow.controller.tool_profile_providers), 1)
+        frontend_profile = workflow.controller.tool_profile_providers[0]()
+        self.assertEqual(frontend_profile.owner_id, profile.owner_id)
+        self.assertEqual(frontend_profile.approved_roots, frozenset())
 
     def test_websocket_start_crawl_dispatches_to_workflow(self):
         client = self._create_client()

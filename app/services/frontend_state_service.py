@@ -54,6 +54,7 @@ from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
 from shared.settings_metadata import GROUP_DESCRIPTIONS, GROUP_HINTS, GROUP_ICONS
 from shared.failed_page_projection import prepare_failed_item_for_display
+from shared.execution_profile import ExecutionProfile
 from shared.release_identity import load_runtime_release_identity
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
@@ -107,6 +108,8 @@ class FrontendStateService(FrontendToolboxStateMixin):
         failed_record_store: FailedRecordStore | None = None,
         gui_runtime_adapter: Any | None = None,
         tool_runner_service: ToolRunnerService | None = None,
+        execution_profile: ExecutionProfile | None = None,
+        execution_profile_provider: Callable[[], ExecutionProfile] | None = None,
     ) -> None:
         self.controller = controller
         self.config = config_manager
@@ -146,6 +149,7 @@ class FrontendStateService(FrontendToolboxStateMixin):
         self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
+        self._initialize_tool_execution_profile(execution_profile, execution_profile_provider)
         self._owns_tool_runner_service = tool_runner_service is None
         self.tool_runner_service = tool_runner_service or ToolRunnerService(
             event_callback=self._emit_frontend_event,
@@ -739,6 +743,13 @@ class FrontendStateService(FrontendToolboxStateMixin):
     def handle_action(self, action: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         if self._destroyed:
             return FrontendActionResult("error", "frontend state service destroyed").to_dict()
+        execution_profile: ExecutionProfile | None = None
+        if action in self._TOOL_ACTIONS:
+            execution_profile = self._capture_tool_execution_profile()
+            if not execution_profile.allow_tool_execution:
+                return dict(self._TOOL_RUN_DISABLED_RESULT)
+        if payload is not None and not isinstance(payload, Mapping):
+            return FrontendActionResult("error", "payload must be an object").to_dict()
         payload = payload or {}
         handler = {
             "delete_item": self._action_delete_item,
@@ -768,6 +779,8 @@ class FrontendStateService(FrontendToolboxStateMixin):
         }.get(action)
         if handler is None:
             return FrontendActionResult("error", f"unknown frontend action: {action}").to_dict()
+        if execution_profile is not None:
+            return handler(payload, execution_profile=execution_profile).to_dict()
         return handler(payload).to_dict()
 
     @staticmethod

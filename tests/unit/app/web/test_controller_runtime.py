@@ -421,39 +421,48 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertTrue(worker_threads)
         self.assertNotEqual(worker_threads[0], main_thread)
 
-    def test_async_tool_actions_receive_only_session_approved_roots(self):
+    def test_sync_and_async_tool_actions_deny_before_payload_validation_or_service(self):
         import asyncio
         from app.web.controller import WebController
+        from app.web.controller_config_service import WebControllerConfigService
 
         controller = WebController(None, lambda *_args, **_kwargs: None)
         controller.frontend_state_service.handle_action = Mock(return_value={"status": "ok"})
-        trusted_roots = ("C:/trusted", "D:/also-trusted")
         action_payloads = (
-            ("tool_validate", {"tool_id": "media_health", "parameters": {}}),
-            ("tool_start", {"tool_id": "media_health", "parameters": {}}),
-            ("tool_cancel", {"tool_id": "media_health", "run_id": "run-7"}),
-            ("tool_open_result", {"tool_id": "media_health", "result_id": "result-9"}),
-            ("tool_clear_history", {"tool_id": "media_health"}),
-            ("tool_reload", {}),
-            ("run_tool", {"id": "metadata_viewer"}),
+            ("tool_validate", {"parameters": []}),
+            ("tool_start", {}),
+            ("tool_cancel", {"run_id": 7}),
+            ("tool_open_result", {"result_path": []}),
+            ("tool_clear_history", {}),
+            ("tool_reload", {"force": "yes"}),
+            ("run_tool", {"parameters": []}),
         )
+        forbidden = {
+            "status": "forbidden",
+            "code": "tool_run_disabled",
+            "message": "tool execution is disabled for this host",
+        }
 
         try:
             for action, payload in action_payloads:
                 with self.subTest(action=action):
-                    controller.frontend_state_service.handle_action.reset_mock()
-                    result = asyncio.run(
-                        controller.async_handle_frontend_action(
-                            action,
-                            {**payload, "_approved_roots": ("C:/attacker",)},
-                            approved_roots=trusted_roots,
+                    sync_result = controller.handle_frontend_action(action, payload)
+                    with patch.object(
+                        WebControllerConfigService,
+                        "authorize_frontend_action_payload",
+                        side_effect=AssertionError("tool payload validation must not run"),
+                    ):
+                        async_result = asyncio.run(
+                            controller.async_handle_frontend_action(
+                                action,
+                                payload,
+                                approved_roots=("C:/trusted",),
+                            )
                         )
-                    )
 
-                    self.assertEqual(result["status"], "ok")
-                    forwarded = controller.frontend_state_service.handle_action.call_args.args[1]
-                    self.assertEqual(forwarded["_approved_roots"], trusted_roots)
-                    self.assertNotIn("C:/attacker", forwarded["_approved_roots"])
+                    self.assertEqual(sync_result, forbidden)
+                    self.assertEqual(async_result, forbidden)
+                    controller.frontend_state_service.handle_action.assert_not_called()
         finally:
             controller.shutdown()
 

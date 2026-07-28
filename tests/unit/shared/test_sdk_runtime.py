@@ -5,9 +5,14 @@
 - 黑盒测试：不 mock CLIRunner，跑真实 SDK
 """
 
+import hashlib
 import os
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -317,6 +322,428 @@ class UcrawlSDKCloseTests(unittest.TestCase):
         sdk = UcrawlSDK()
         sdk.close()
         sdk.close()
+
+    def test_default_profile_has_stable_private_owner_and_local_tool_grants(self):
+        """Changing the SDK owner per instance would orphan durable history."""
+        from shared.execution_profile import DEFAULT_LOCAL_TOOL_PERMISSIONS
+        from shared.sdk_runtime import UcrawlSDK
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_root = Path(temp_dir, "first")
+            alias_of_first = first_root / ".." / "first"
+            second_root = Path(temp_dir, "second")
+
+            first = UcrawlSDK(save_dir=str(first_root))
+            same = UcrawlSDK(save_dir=str(alias_of_first))
+            different = UcrawlSDK(save_dir=str(second_root))
+
+            self.assertEqual(
+                first.execution_profile.owner_id,
+                same.execution_profile.owner_id,
+            )
+            self.assertNotEqual(
+                first.execution_profile.owner_id,
+                different.execution_profile.owner_id,
+            )
+            self.assertNotIn(
+                str(first_root.resolve()).casefold(),
+                first.execution_profile.owner_id.casefold(),
+            )
+            canonical_text = os.path.normcase(
+                os.path.normpath(str(first_root.expanduser().resolve()))
+            )
+            expected_digest = hashlib.sha256(
+                canonical_text.encode("utf-8", errors="surrogatepass")
+            ).hexdigest()
+            self.assertEqual(
+                first.execution_profile.owner_id,
+                f"sdk:local:{expected_digest}",
+            )
+            self.assertRegex(
+                first.execution_profile.owner_id,
+                r"^sdk:local:[0-9a-f]{64}$",
+            )
+            self.assertEqual(
+                first.execution_profile.tool_permissions,
+                DEFAULT_LOCAL_TOOL_PERMISSIONS,
+            )
+            self.assertFalse(first.execution_profile.allow_external_plugins)
+
+    def test_default_profile_owner_is_stable_across_process_restarts(self):
+        """A process-derived owner would lose durable history after restart."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_root = str(Path(temp_dir, "durable-root"))
+            script = (
+                "import sys; "
+                "from shared.sdk_runtime import UcrawlSDK; "
+                "sdk = UcrawlSDK(save_dir=sys.argv[1]); "
+                "print(sdk.execution_profile.owner_id); "
+                "assert sdk.close() is True"
+            )
+            command = [sys.executable, "-c", script, save_root]
+            first = subprocess.check_output(command, text=True).strip()
+            second = subprocess.check_output(command, text=True).strip()
+
+            self.assertEqual(first, second)
+            self.assertNotIn(str(Path(save_root).resolve()).casefold(), first.casefold())
+
+    def test_explicit_profile_is_preserved_and_call_save_dir_keeps_initial_owner(self):
+        """An explicit host grant and the initial owner must not be silently replaced."""
+        from shared.execution_profile import (
+            DEFAULT_LOCAL_TOOL_PERMISSIONS,
+            local_execution_profile,
+        )
+        from shared.sdk_runtime import UcrawlSDK
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            initial = Path(temp_dir, "initial")
+            per_call = Path(temp_dir, "per-call")
+            explicit = local_execution_profile(
+                host_surface="sdk",
+                owner_id="sdk:explicit",
+                approved_roots=(initial,),
+                tool_permissions=DEFAULT_LOCAL_TOOL_PERMISSIONS,
+                allow_external_plugins=False,
+            )
+            supplied = UcrawlSDK(save_dir=str(initial), execution_profile=explicit)
+            implicit = UcrawlSDK(save_dir=str(initial))
+
+            self.assertIs(supplied.execution_profile, explicit)
+            self.assertIs(supplied._execution_profile_for_save_dir(str(per_call)), explicit)
+            derived = implicit._execution_profile_for_save_dir(str(per_call))
+            self.assertEqual(derived.owner_id, implicit.execution_profile.owner_id)
+            self.assertEqual(derived.approved_roots, frozenset({per_call.resolve()}))
+
+    def test_tools_property_reentrant_construction_fails_fast_without_self_deadlock(self):
+        """A facade constructor must not wait on its own reentrant ``sdk.tools`` call."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        sdk = UcrawlSDK()
+        factory_entered = threading.Event()
+        access_finished = threading.Event()
+        outcomes = {}
+
+        class Facade:
+            def close(self) -> bool:
+                return True
+
+        facade = Facade()
+
+        def create_facade(*, execution_profile):
+            self.assertIs(execution_profile, sdk.execution_profile)
+            factory_entered.set()
+            try:
+                _ = sdk.tools
+            except BaseException as error:
+                outcomes["reentrant_error"] = error
+            return facade
+
+        def access_tools() -> None:
+            try:
+                outcomes["facade"] = sdk.tools
+            except BaseException as error:
+                outcomes["outer_error"] = error
+            finally:
+                access_finished.set()
+
+        with patch("ucrawl.tools.ToolsAPI", side_effect=create_facade):
+            worker = threading.Thread(target=access_tools, daemon=True)
+            worker.start()
+            self.assertTrue(factory_entered.wait(2.0))
+            self.assertTrue(
+                access_finished.wait(1.0),
+                "same-thread sdk.tools reentrancy deadlocked facade construction",
+            )
+
+        self.assertIs(outcomes.get("facade"), facade)
+        self.assertNotIn("outer_error", outcomes)
+        self.assertIsInstance(outcomes.get("reentrant_error"), RuntimeError)
+        self.assertTrue(sdk.close())
+
+    def test_close_reentrant_during_tools_construction_fails_fast_without_sealing_sdk(self):
+        """A facade constructor must not wait on its own reentrant ``sdk.close`` call."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        sdk = UcrawlSDK()
+        factory_entered = threading.Event()
+        access_finished = threading.Event()
+        outcomes = {}
+
+        class Facade:
+            def close(self) -> bool:
+                return True
+
+        facade = Facade()
+
+        def create_facade(*, execution_profile):
+            self.assertIs(execution_profile, sdk.execution_profile)
+            factory_entered.set()
+            try:
+                sdk.close()
+            except BaseException as error:
+                outcomes["reentrant_error"] = error
+            return facade
+
+        def access_tools() -> None:
+            try:
+                outcomes["facade"] = sdk.tools
+            except BaseException as error:
+                outcomes["outer_error"] = error
+            finally:
+                access_finished.set()
+
+        with patch("ucrawl.tools.ToolsAPI", side_effect=create_facade):
+            worker = threading.Thread(target=access_tools, daemon=True)
+            worker.start()
+            self.assertTrue(factory_entered.wait(2.0))
+            self.assertTrue(
+                access_finished.wait(1.0),
+                "same-thread sdk.close reentrancy deadlocked facade construction",
+            )
+
+        self.assertIs(outcomes.get("facade"), facade)
+        self.assertNotIn("outer_error", outcomes)
+        self.assertIsInstance(outcomes.get("reentrant_error"), RuntimeError)
+        self.assertTrue(sdk.close())
+
+    def test_tools_property_creates_one_facade_under_concurrent_access(self):
+        """Removing creation serialization would leak duplicate runner pools."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        sdk = UcrawlSDK()
+        factory_entered = threading.Event()
+        release_factory = threading.Event()
+        factory_calls = 0
+
+        class Facade:
+            def close(self) -> bool:
+                return True
+
+        facade = Facade()
+
+        def create_facade(*, execution_profile):
+            nonlocal factory_calls
+            self.assertIs(execution_profile, sdk.execution_profile)
+            factory_calls += 1
+            factory_entered.set()
+            self.assertTrue(release_factory.wait(2.0))
+            return facade
+
+        with patch("ucrawl.tools.ToolsAPI", side_effect=create_facade):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(lambda: sdk.tools)
+                self.assertTrue(factory_entered.wait(2.0))
+                second = pool.submit(lambda: sdk.tools)
+                release_factory.set()
+                self.assertIs(first.result(timeout=2.0), facade)
+                self.assertIs(second.result(timeout=2.0), facade)
+
+        self.assertEqual(factory_calls, 1)
+        self.assertTrue(sdk.close())
+
+    def test_close_false_and_exception_retain_same_facade_for_retry(self):
+        """Detaching before successful shutdown would make failed cleanup unrecoverable."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        class RetriableFacade:
+            def __init__(self):
+                self.calls = 0
+
+            def close(self) -> bool:
+                self.calls += 1
+                if self.calls == 1:
+                    return False
+                if self.calls == 2:
+                    raise RuntimeError("cleanup unavailable")
+                return True
+
+        facade = RetriableFacade()
+        sdk = UcrawlSDK()
+        sdk._tools_api = facade
+
+        self.assertFalse(sdk.close())
+        self.assertIs(sdk._tools_api, facade)
+        with self.assertRaisesRegex(RuntimeError, "UcrawlSDK is closed"):
+            _ = sdk.tools
+        with self.assertRaisesRegex(RuntimeError, "cleanup unavailable"):
+            sdk.close()
+        self.assertIs(sdk._tools_api, facade)
+        self.assertTrue(sdk.close())
+        self.assertIsNone(sdk._tools_api)
+
+    def test_concurrent_close_waits_for_the_single_successful_shutdown(self):
+        """A second close must not race the same facade shutdown."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        close_entered = threading.Event()
+        release_close = threading.Event()
+        second_started = threading.Event()
+
+        class BlockingFacade:
+            calls = 0
+
+            def close(self) -> bool:
+                self.calls += 1
+                close_entered.set()
+                self.assert_release()
+                return True
+
+            @staticmethod
+            def assert_release() -> None:
+                if not release_close.wait(2.0):
+                    raise AssertionError("test did not release facade close")
+
+        facade = BlockingFacade()
+        sdk = UcrawlSDK()
+        sdk._tools_api = facade
+
+        def close_second() -> bool:
+            second_started.set()
+            return sdk.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(sdk.close)
+            self.assertTrue(close_entered.wait(2.0))
+            second = pool.submit(close_second)
+            self.assertTrue(second_started.wait(2.0))
+            self.assertFalse(second.done())
+            release_close.set()
+            self.assertTrue(first.result(timeout=2.0))
+            self.assertTrue(second.result(timeout=2.0))
+
+        self.assertEqual(facade.calls, 1)
+
+    def test_context_cleanup_failure_does_not_replace_body_exception(self):
+        """Cleanup errors are secondary when the context body already failed."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        class FailingFacade:
+            def close(self) -> bool:
+                raise RuntimeError("cleanup unavailable")
+
+        sdk = UcrawlSDK()
+        sdk._tools_api = FailingFacade()
+
+        with self.assertRaisesRegex(ValueError, "body failed") as raised:
+            with sdk:
+                raise ValueError("body failed")
+
+        self.assertTrue(
+            any(
+                "cleanup unavailable" in note
+                for note in getattr(raised.exception, "__notes__", ())
+            )
+        )
+
+    def test_context_cleanup_annotation_cannot_replace_hostile_body_exception(self):
+        """Annotation lookup and cleanup formatting remain secondary failures."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        class HostileBodyError(ValueError):
+            def __getattribute__(self, name):
+                if name == "add_note":
+                    raise RuntimeError("annotation lookup failed")
+                return super().__getattribute__(name)
+
+        class UnprintableCleanupError(RuntimeError):
+            def __str__(self) -> str:
+                raise RuntimeError("cleanup formatting failed")
+
+        class FailingFacade:
+            def close(self) -> bool:
+                raise UnprintableCleanupError()
+
+        sdk = UcrawlSDK()
+        sdk._tools_api = FailingFacade()
+        body_error = HostileBodyError("body failed")
+
+        with self.assertRaises(HostileBodyError) as raised:
+            with sdk:
+                raise body_error
+
+        self.assertIs(raised.exception, body_error)
+
+    def test_context_cleanup_metadata_cannot_replace_body_exception(self):
+        """Hostile cleanup text and type metadata must remain secondary."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        class HostileExceptionType(type):
+            def __getattribute__(cls, name):
+                if name == "__name__":
+                    raise RuntimeError("cleanup type-name lookup failed")
+                return super().__getattribute__(name)
+
+        class HostileCleanupError(
+            RuntimeError,
+            metaclass=HostileExceptionType,
+        ):
+            def __str__(self) -> str:
+                raise RuntimeError("cleanup formatting failed")
+
+        class FailingFacade:
+            def close(self) -> bool:
+                raise HostileCleanupError()
+
+        sdk = UcrawlSDK()
+        sdk._tools_api = FailingFacade()
+        body_error = ValueError("body failed")
+
+        try:
+            with sdk:
+                raise body_error
+        except BaseException as raised:
+            same_body = raised is body_error
+            notes = (
+                tuple(getattr(raised, "__notes__", ()))
+                if same_body
+                else ()
+            )
+            raised.__traceback__ = None
+            raised.__context__ = None
+            raised.__cause__ = None
+        else:  # pragma: no cover - the body always raises
+            self.fail("context body exception was suppressed")
+
+        self.assertTrue(same_body, "cleanup replaced the context body exception")
+        self.assertIn(
+            "UcrawlSDK cleanup failed with unknown error",
+            notes,
+        )
+
+    def test_context_cleanup_state_recording_cannot_replace_body_exception(self):
+        """A hostile SDK state target must not make cleanup replace the body error."""
+        from shared.sdk_runtime import UcrawlSDK
+
+        class HostileCleanupStateSDK(UcrawlSDK):
+            def __setattr__(self, name, value):
+                if name == "_last_cleanup_error" and getattr(
+                    self,
+                    "_reject_cleanup_state",
+                    False,
+                ):
+                    raise RuntimeError("cleanup state recording failed")
+                super().__setattr__(name, value)
+
+        class FailingFacade:
+            def close(self) -> bool:
+                raise RuntimeError("cleanup unavailable")
+
+        sdk = HostileCleanupStateSDK()
+        sdk._tools_api = FailingFacade()
+        sdk._reject_cleanup_state = True
+        body_error = ValueError("body failed")
+
+        with self.assertRaises(ValueError) as raised:
+            with sdk:
+                raise body_error
+
+        self.assertIs(raised.exception, body_error)
+        self.assertTrue(
+            any(
+                "cleanup unavailable" in note
+                for note in getattr(raised.exception, "__notes__", ())
+            )
+        )
 
 if __name__ == "__main__":
     unittest.main()

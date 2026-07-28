@@ -12,10 +12,10 @@ from app.core.tools.contracts import (
     ToolRunResult,
     ToolValidationResult,
 )
-from app.core.tools.registry import ToolRegistry
+from app.core.tools.registry import ToolRegistry, ToolReloadResult
 from app.services.tool_history_projection import project_history_record
 from app.services.tool_runner_service import ToolRunnerService
-from shared.execution_profile import local_execution_profile
+from shared.execution_profile import local_execution_profile, public_web_profile
 
 
 class EchoTool:
@@ -277,7 +277,6 @@ def test_history_projection_drops_nested_unknown_and_secret_fields() -> None:
         "result": {
             "status": "failed",
             "message": "safe",
-            "has_output": True,
         },
     }
 
@@ -468,6 +467,77 @@ def test_runner_private_result_lookup_is_owner_scoped_and_never_public(
     assert "private-result-sentinel" not in persisted_text
 
 
+def test_runner_rejects_non_exact_execution_profiles_before_owner_state_access(
+    tmp_path: Path,
+) -> None:
+    class IdentityString(str):
+        pass
+
+    class ForgedExecutionProfile:
+        host_surface = "desktop_gui"
+        owner_id = "gui:victim"
+
+    output_path = tmp_path / "private-artifact.txt"
+    output_path.write_text("artifact", encoding="utf-8")
+    owner = _profile(tmp_path, owner_id="gui:victim", host_surface="desktop_gui")
+    mutated_host = _profile(
+        tmp_path,
+        owner_id="gui:victim",
+        host_surface="desktop_gui",
+    )
+    object.__setattr__(mutated_host, "host_surface", IdentityString("desktop_gui"))
+    mutated_owner = _profile(
+        tmp_path,
+        owner_id="gui:victim",
+        host_surface="desktop_gui",
+    )
+    object.__setattr__(mutated_owner, "owner_id", IdentityString("gui:victim"))
+    service = ToolRunnerService(
+        registry=_registry(OutputTool()),
+        history_path=tmp_path / "tool-history.json",
+        max_workers=1,
+    )
+
+    queued = service.run(
+        "output",
+        {"path": str(output_path)},
+        execution_profile=owner,
+    )
+    terminal = service.wait_for_run(
+        queued["run_id"],
+        execution_profile=owner,
+        timeout=2.0,
+    )
+
+    assert terminal["status"] == "succeeded"
+    for invalid_profile in (
+        ForgedExecutionProfile(),
+        mutated_host,
+        mutated_owner,
+    ):
+        assert service.history(execution_profile=invalid_profile) == []
+        assert (
+            service.get_run(
+                queued["run_id"],
+                execution_profile=invalid_profile,
+            )
+            is None
+        )
+        assert (
+            service.lookup_private_result(
+                queued["run_id"],
+                execution_profile=invalid_profile,
+            )
+            is None
+        )
+
+    assert service.lookup_private_result(
+        queued["run_id"],
+        execution_profile=owner,
+    ) is not None
+    assert service.shutdown(wait=True)
+
+
 def test_runner_cancels_active_tool(tmp_path: Path) -> None:
     tool = BlockingTool()
     service = ToolRunnerService(
@@ -650,7 +720,10 @@ def test_runner_same_owner_id_is_isolated_between_host_surfaces(tmp_path: Path) 
         max_workers=1,
     )
     gui = _profile(tmp_path, owner_id="session:shared", host_surface="desktop_gui")
-    web = _profile(tmp_path, owner_id="session:shared", host_surface="web")
+    web = public_web_profile(
+        owner_id="session:shared",
+        approved_roots=(tmp_path,),
+    )
 
     row = service.run("blocking", {}, execution_profile=gui)
     try:
@@ -670,6 +743,89 @@ def test_runner_same_owner_id_is_isolated_between_host_surfaces(tmp_path: Path) 
         assert service.get_run(row["run_id"], execution_profile=gui) is not None
     finally:
         service.cancel(row["run_id"], execution_profile=gui)
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_reload_denies_untrusted_profiles_before_registry_callback(
+    tmp_path: Path,
+) -> None:
+    registry = _registry()
+    reload_calls: list[bool] = []
+
+    def reload_external(*, force: bool = False) -> ToolReloadResult:
+        reload_calls.append(force)
+        return ToolReloadResult(added=("new_tool",))
+
+    registry.reload_external = reload_external  # type: ignore[method-assign]
+    events: list[tuple[str, dict]] = []
+    service = ToolRunnerService(
+        registry=registry,
+        history_path=tmp_path / "history.json",
+        event_callback=lambda topic, payload: events.append((topic, payload)),
+    )
+
+    public = public_web_profile(owner_id="web:session-1", approved_roots=())
+    external_disabled = _profile(
+        tmp_path,
+        owner_id="gui:reload",
+        host_surface="desktop_gui",
+        allow_external_plugins=False,
+    )
+    invalid_identity = _invalid_profile(tmp_path, field="owner_id")
+
+    try:
+        assert service.reload(force=True, execution_profile=public) == {
+            "status": "forbidden",
+            "code": "tool_run_disabled",
+            "message": "tool execution is disabled for this host",
+        }
+        assert service.reload(force=True, execution_profile=external_disabled) == {
+            "status": "forbidden",
+            "code": "external_plugins_disabled",
+            "message": "external tools are disabled for this host",
+        }
+        assert service.reload(force=True, execution_profile=invalid_identity) == {
+            "status": "forbidden",
+            "code": "tool_profile_identity_required",
+            "message": "tool execution profile identity is required",
+        }
+
+        assert reload_calls == []
+        assert events == []
+    finally:
+        assert service.shutdown(wait=True, timeout=1.0) is True
+
+
+def test_runner_reload_forwards_original_profile_authority_only_after_admission(
+    tmp_path: Path,
+) -> None:
+    registry = _registry()
+    reload_calls: list[bool] = []
+
+    def reload_external(*, force: bool = False) -> ToolReloadResult:
+        reload_calls.append(force)
+        return ToolReloadResult(updated=("tool_a",))
+
+    registry.reload_external = reload_external  # type: ignore[method-assign]
+    service = ToolRunnerService(
+        registry=registry,
+        history_path=tmp_path / "history.json",
+    )
+    profile = _profile(
+        tmp_path,
+        owner_id="test:reload",
+        allow_external_plugins=True,
+    )
+
+    try:
+        assert service.reload(force=True, execution_profile=profile) == {
+            "added": [],
+            "updated": ["tool_a"],
+            "removed": [],
+            "errors": [],
+        }
+        assert reload_calls == [True]
+    finally:
         assert service.shutdown(wait=True, timeout=1.0) is True
 
 
@@ -1001,6 +1157,26 @@ def test_runner_load_merges_duplicate_unsorted_and_tied_rows_and_drops_blank_ide
     ]
     assert rows[0]["message"] == "new"
     service.shutdown(wait=True)
+
+
+def test_record_from_dict_rejects_noncanonical_identity_fields() -> None:
+    class IdentityString(str):
+        pass
+
+    invalid_identities = (
+        ("host_surface", 1),
+        ("host_surface", " desktop_gui "),
+        ("host_surface", "unknown_surface"),
+        ("host_surface", IdentityString("desktop_gui")),
+        ("owner_id", 1),
+        ("owner_id", " gui:history "),
+        ("owner_id", IdentityString("gui:history")),
+    )
+
+    for field, value in invalid_identities:
+        row = _terminal_row(f"invalid-{field}-{value!s}", 1.0)
+        row[field] = value
+        assert tool_runner_module._record_from_dict(row) is None, (field, value)
 
 
 def test_runner_load_sorts_all_valid_rows_before_applying_history_limit(

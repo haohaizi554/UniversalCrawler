@@ -2,19 +2,139 @@
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.tools.contracts import ToolContext
 from app.debug_logger import debug_logger
 from app.services.frontend_action_result import FrontendActionResult
+from shared.execution_profile import (
+    DEFAULT_GUI_TOOL_OWNER_ID,
+    DEFAULT_LOCAL_TOOL_PERMISSIONS,
+    ExecutionProfile,
+    local_execution_profile,
+)
 
 
 class FrontendToolboxStateMixin:
     """Keep toolbox behavior independent from the broader frontend state service."""
+
+    _TOOL_ACTIONS = frozenset(
+        {
+            "tool_validate",
+            "tool_start",
+            "tool_cancel",
+            "tool_open_result",
+            "tool_clear_history",
+            "tool_reload",
+            "run_tool",
+        }
+    )
+    _TOOL_RUN_DISABLED_RESULT = {
+        "status": "forbidden",
+        "code": "tool_run_disabled",
+        "message": "tool execution is disabled for this host",
+    }
+
+    def _initialize_tool_execution_profile(
+        self,
+        execution_profile: ExecutionProfile | None,
+        execution_profile_provider: Callable[[], ExecutionProfile] | None,
+    ) -> None:
+        if execution_profile is not None and execution_profile_provider is not None:
+            raise ValueError(
+                "execution_profile and execution_profile_provider are mutually exclusive"
+            )
+        self._tool_execution_profile_lock = threading.RLock()
+        self._tool_execution_profile_provider_is_default = (
+            execution_profile is None and execution_profile_provider is None
+        )
+        if execution_profile_provider is not None:
+            self._tool_execution_profile_provider = execution_profile_provider
+            self._tool_execution_profile_identity: tuple[str, str] | None = None
+        elif execution_profile is not None:
+            self._tool_execution_profile_provider = lambda: execution_profile
+            self._tool_execution_profile_identity = (
+                execution_profile.host_surface,
+                execution_profile.owner_id,
+            )
+        else:
+            self._tool_execution_profile_provider = self._default_tool_execution_profile
+            self._tool_execution_profile_identity = None
+
+    def _default_tool_execution_profile(self) -> ExecutionProfile:
+        roots: tuple[Path, ...] = ()
+        try:
+            configured_root = str(self._current_save_dir() or "").strip()
+        except (AttributeError, TypeError, ValueError):
+            configured_root = ""
+        if configured_root:
+            try:
+                roots = (Path(configured_root).expanduser().resolve(),)
+            except (OSError, RuntimeError, ValueError):
+                roots = ()
+        return local_execution_profile(
+            host_surface="desktop_gui",
+            owner_id=DEFAULT_GUI_TOOL_OWNER_ID,
+            approved_roots=roots,
+            tool_permissions=DEFAULT_LOCAL_TOOL_PERMISSIONS,
+            allow_external_plugins=False,
+        )
+
+    @property
+    def tool_execution_profile(self) -> ExecutionProfile:
+        return self._capture_tool_execution_profile()
+
+    def _capture_tool_execution_profile(self) -> ExecutionProfile:
+        with self._tool_execution_profile_lock:
+            provider = self._tool_execution_profile_provider
+        profile = provider()
+        if not isinstance(profile, ExecutionProfile):
+            raise TypeError("execution profile provider must return ExecutionProfile")
+        identity = (profile.host_surface, profile.owner_id)
+        with self._tool_execution_profile_lock:
+            expected = self._tool_execution_profile_identity
+            if expected is None:
+                self._tool_execution_profile_identity = identity
+            elif identity != expected:
+                raise ValueError("tool execution profile identity cannot change")
+        return profile
+
+    def set_tool_execution_profile(self, profile: ExecutionProfile) -> None:
+        """Bind host-owned tool authority without permitting identity swaps."""
+
+        if not isinstance(profile, ExecutionProfile):
+            raise TypeError("profile must be an ExecutionProfile")
+        self.set_tool_execution_profile_provider(lambda: profile)
+
+    def set_tool_execution_profile_provider(
+        self,
+        provider: Callable[[], ExecutionProfile],
+    ) -> None:
+        """Bind a host-owned provider while preserving one stable host identity."""
+
+        if not callable(provider):
+            raise TypeError("execution profile provider must be callable")
+        candidate = provider()
+        if not isinstance(candidate, ExecutionProfile):
+            raise TypeError("execution profile provider must return ExecutionProfile")
+        candidate_identity = (candidate.host_surface, candidate.owner_id)
+        with self._tool_execution_profile_lock:
+            current_identity = self._tool_execution_profile_identity
+            if (
+                not self._tool_execution_profile_provider_is_default
+                and current_identity is not None
+                and candidate_identity != current_identity
+            ):
+                raise ValueError("tool execution profile identity cannot change")
+            self._tool_execution_profile_provider = provider
+            self._tool_execution_profile_identity = candidate_identity
+            self._tool_execution_profile_provider_is_default = False
+        self._static_snapshot_cache = None
 
     def _tool_settings_snapshot(self) -> dict[str, Any]:
         try:
@@ -55,77 +175,6 @@ class FrontendToolboxStateMixin:
         return fields
 
     @staticmethod
-    def _tool_path_selectors(schema: Any) -> tuple[tuple[str, ...], ...]:
-        """Return nested parameter selectors whose schema represents a local path."""
-
-        selectors: list[tuple[str, ...]] = []
-        path_markers = {"file", "directory", "dir", "folder", "path"}
-        schema_keywords = {
-            "$defs",
-            "$ref",
-            "allOf",
-            "anyOf",
-            "default",
-            "description",
-            "enum",
-            "format",
-            "items",
-            "oneOf",
-            "properties",
-            "required",
-            "title",
-            "type",
-        }
-
-        def walk(node: Any, selector: tuple[str, ...], *, implicit_map: bool = False) -> None:
-            if not isinstance(node, Mapping):
-                return
-            field_type = str(node.get("type") or "").strip().lower()
-            field_format = str(node.get("format") or "").strip().lower()
-            if field_type in path_markers or field_format in path_markers:
-                selectors.append(selector)
-
-            properties = node.get("properties")
-            if isinstance(properties, Mapping):
-                for name, child in properties.items():
-                    walk(child, (*selector, str(name)))
-            elif implicit_map or not any(str(key) in schema_keywords for key in node):
-                for name, child in node.items():
-                    if isinstance(child, Mapping):
-                        walk(child, (*selector, str(name)))
-
-            items = node.get("items")
-            if isinstance(items, Mapping):
-                walk(items, (*selector, "*"))
-            for keyword in ("allOf", "anyOf", "oneOf"):
-                variants = node.get(keyword)
-                if isinstance(variants, Sequence) and not isinstance(variants, (str, bytes)):
-                    for variant in variants:
-                        walk(variant, selector)
-
-        walk(schema, (), implicit_map=True)
-        return tuple(dict.fromkeys(selectors))
-
-    @staticmethod
-    def _tool_path_values(
-        parameters: Mapping[str, Any],
-        selector: Sequence[str],
-    ) -> tuple[object, ...]:
-        values: list[object] = [parameters]
-        for part in selector:
-            next_values: list[object] = []
-            for value in values:
-                if part == "*":
-                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                        next_values.extend(value)
-                elif isinstance(value, Mapping) and part in value:
-                    next_values.append(value[part])
-            values = next_values
-            if not values:
-                break
-        return tuple(values)
-
-    @staticmethod
     def _tool_status_projection(status: object) -> tuple[str, str]:
         normalized = str(status or "idle").strip().lower()
         return {
@@ -150,7 +199,12 @@ class FrontendToolboxStateMixin:
             return ""
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
-    def toolbox_items(self) -> list[dict[str, Any]]:
+    def toolbox_items(
+        self,
+        *,
+        execution_profile: ExecutionProfile | None = None,
+    ) -> list[dict[str, Any]]:
+        profile = execution_profile or self.tool_execution_profile
         try:
             manifests = self.tool_runner_service.list()
         except (OSError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
@@ -166,10 +220,12 @@ class FrontendToolboxStateMixin:
             item["parameters"] = list(item["parameter_fields"])
             item["available"] = True
             item["contract_version"] = 1
+            execution_enabled = bool(profile.allow_tool_execution)
             item["actions"] = {
-                "tool_validate": True,
-                "tool_start": True,
-                "tool_cancel": bool(item.get("cancellable", item.get("supports_cancel", True))),
+                "tool_validate": execution_enabled,
+                "tool_start": execution_enabled,
+                "tool_cancel": execution_enabled
+                and bool(item.get("cancellable", item.get("supports_cancel", True))),
                 "tool_open_result": False,
                 "tool_clear_history": False,
             }
@@ -179,11 +235,14 @@ class FrontendToolboxStateMixin:
     def _tool_history_records(
         self,
         *,
+        execution_profile: ExecutionProfile | None = None,
         tool_id: str = "",
         limit: int = 20,
     ) -> list[dict[str, Any]]:
+        profile = execution_profile or self.tool_execution_profile
         try:
             records = self.tool_runner_service.history(
+                execution_profile=profile,
                 tool_id=tool_id or None,
                 limit=limit,
             )
@@ -195,11 +254,21 @@ class FrontendToolboxStateMixin:
     def toolbox_recent_items(
         self,
         *,
+        execution_profile: ExecutionProfile | None = None,
         items: Sequence[Mapping[str, Any]] | None = None,
         records: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        item_snapshot = list(items) if items is not None else self.toolbox_items()
-        record_snapshot = list(records) if records is not None else self._tool_history_records()
+        profile = execution_profile or self.tool_execution_profile
+        item_snapshot = (
+            list(items)
+            if items is not None
+            else self.toolbox_items(execution_profile=profile)
+        )
+        record_snapshot = (
+            list(records)
+            if records is not None
+            else self._tool_history_records(execution_profile=profile)
+        )
         titles = {
             str(item.get("id") or ""): str(item.get("title") or "")
             for item in item_snapshot
@@ -238,23 +307,38 @@ class FrontendToolboxStateMixin:
         if not isinstance(result, Mapping):
             return None
         run_id = str(record.get("run_id") or "")
-        data = result.get("data") if isinstance(result.get("data"), Mapping) else {}
-        output_paths = [str(path) for path in result.get("output_paths", ()) if str(path).strip()]
-        rows = [
-            {"label": str(key), "value": value if isinstance(value, (str, int, float, bool)) else str(value)}
-            for key, value in data.items()
-        ]
-        rows.extend({"label": "输出路径", "value": path} for path in output_paths)
         return {
             "id": run_id,
             "result_id": run_id,
             "display_text": str(result.get("message") or record.get("message") or ""),
-            "rows": rows,
-            "data": dict(data),
-            "output_paths": output_paths,
-            "result_path": output_paths[0] if output_paths else "",
+            "rows": [],
             "warnings": list(result.get("warnings") or ()),
         }
+
+    def _tool_result_has_private_output(
+        self,
+        record: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> bool:
+        if not execution_profile.allow_tool_execution:
+            return False
+        run_id = str(record.get("run_id") or "").strip()
+        if not run_id or not isinstance(record.get("result"), Mapping):
+            return False
+        try:
+            private_result = self.tool_runner_service.lookup_private_result(
+                run_id,
+                execution_profile=execution_profile,
+            )
+            return bool(
+                private_result is not None
+                and private_result.tool_id == str(record.get("tool_id") or "")
+                and private_result.output_paths
+            )
+        except Exception as exc:
+            self._log_tool_result_exception("project_tool_result_capability", exc)
+            return False
 
     def _toolbox_projection(
         self,
@@ -262,22 +346,32 @@ class FrontendToolboxStateMixin:
         *,
         record: Mapping[str, Any] | None = None,
         validation: Mapping[str, Any] | None = None,
+        execution_profile: ExecutionProfile | None = None,
         items: Sequence[Mapping[str, Any]] | None = None,
         history: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        item_snapshot = list(items) if items is not None else self.toolbox_items()
+        profile = execution_profile or self.tool_execution_profile
+        item_snapshot = (
+            list(items)
+            if items is not None
+            else self.toolbox_items(execution_profile=profile)
+        )
         item_by_id = {str(item.get("id") or ""): item for item in item_snapshot}
         normalized_tool_id = str(tool_id or (record or {}).get("tool_id") or "")
         if not normalized_tool_id and item_snapshot:
             normalized_tool_id = str(item_snapshot[0].get("id") or "")
         if record is None and normalized_tool_id:
-            latest_records = self._tool_history_records(tool_id=normalized_tool_id, limit=1)
+            latest_records = self._tool_history_records(
+                execution_profile=profile,
+                tool_id=normalized_tool_id,
+                limit=1,
+            )
             record = latest_records[0] if latest_records else None
         record = dict(record or {})
         state, status_text = self._tool_status_projection(record.get("status"))
         item = item_by_id.get(normalized_tool_id, {})
         fields = list(item.get("parameter_fields") or ())
-        parameters = dict(record.get("parameters") or {})
+        parameters: dict[str, Any] = {}
         validation_payload = dict(validation or {})
         if validation is not None:
             valid = bool(validation_payload.get("valid")) and validation_payload.get("status") != "error"
@@ -289,13 +383,21 @@ class FrontendToolboxStateMixin:
             }
             state, status_text = ("ready", "准备就绪") if valid else ("error", "参数无效")
         result = self._tool_result_projection(record)
+        has_private_output = bool(result) and self._tool_result_has_private_output(
+            record,
+            execution_profile=profile,
+        )
         run_id = str(record.get("run_id") or "")
         cancellable = bool(item.get("cancellable", item.get("supports_cancel", True)))
         history_snapshot = (
             list(history)
             if history is not None
-            else self.toolbox_recent_items(items=item_snapshot)
+            else self.toolbox_recent_items(
+                execution_profile=profile,
+                items=item_snapshot,
+            )
         )
+        execution_enabled = bool(profile.allow_tool_execution)
         return {
             "tool_id": normalized_tool_id,
             "selected_tool_id": normalized_tool_id,
@@ -313,11 +415,16 @@ class FrontendToolboxStateMixin:
             "result": result,
             "history": history_snapshot,
             "actions": {
-                "tool_validate": state not in {"starting", "running", "cancelling"},
-                "tool_start": state not in {"starting", "running", "cancelling"},
-                "tool_cancel": cancellable and state in {"starting", "running"},
-                "tool_open_result": bool(result and result.get("output_paths")),
-                "tool_clear_history": bool(history_snapshot),
+                "tool_validate": execution_enabled
+                and state not in {"starting", "running", "cancelling"},
+                "tool_start": execution_enabled
+                and state not in {"starting", "running", "cancelling"},
+                "tool_cancel": execution_enabled
+                and cancellable
+                and state in {"starting", "running"},
+                "tool_open_result": execution_enabled
+                and has_private_output,
+                "tool_clear_history": execution_enabled and bool(history_snapshot),
             },
             "action_payloads": {
                 "tool_cancel": {"tool_id": normalized_tool_id, "run_id": run_id},
@@ -327,9 +434,14 @@ class FrontendToolboxStateMixin:
         }
 
     def _toolbox_snapshot_parts(self) -> dict[str, Any]:
-        items = self.toolbox_items()
-        records = self._tool_history_records()
-        recent = self.toolbox_recent_items(items=items, records=records)
+        profile = self.tool_execution_profile
+        items = self.toolbox_items(execution_profile=profile)
+        records = self._tool_history_records(execution_profile=profile)
+        recent = self.toolbox_recent_items(
+            execution_profile=profile,
+            items=items,
+            records=records,
+        )
         selected_tool_id = str(recent[0].get("tool_id") or "") if recent else ""
         if not selected_tool_id and items:
             selected_tool_id = str(items[0].get("id") or "")
@@ -339,6 +451,7 @@ class FrontendToolboxStateMixin:
             "toolbox_display_projection": self._toolbox_projection(
                 selected_tool_id,
                 record=records[0] if records else None,
+                execution_profile=profile,
                 items=items,
                 history=recent,
             ),
@@ -353,94 +466,36 @@ class FrontendToolboxStateMixin:
             raise ValueError("parameters must be an object")
         return dict(parameters)
 
-    def _tool_action_roots(
+    def _action_tool_validate(
         self,
         payload: Mapping[str, Any],
-        tool_id: str,
-        parameters: Mapping[str, Any],
-    ) -> tuple[str, ...]:
-        web_boundary = "_approved_roots" in payload
-        roots_value = payload.get("_approved_roots") if web_boundary else ()
-        if isinstance(roots_value, Sequence) and not isinstance(roots_value, (str, bytes)):
-            roots = [str(root) for root in roots_value if str(root).strip()]
-        else:
-            roots = []
-
-        manifest = self.tool_runner_service.describe(tool_id)
-        input_schema = manifest.get("input_schema")
-        path_selectors = self._tool_path_selectors(input_schema)
-        permissions = {
-            str(permission).strip().lower()
-            for permission in manifest.get("permissions", ())
-            if str(permission).strip()
-        }
-        requires_path_authorization = bool(
-            path_selectors
-            or any(
-                marker in permission
-                for permission in permissions
-                for marker in ("file", "directory", "folder", "path", "filesystem")
-            )
-        )
-        if web_boundary and requires_path_authorization and not roots:
-            raise PermissionError("tool path access requires an approved session root")
-
-        if not web_boundary:
-            try:
-                configured_root = str(self.config.get("common", "save_directory", "") or "")
-            except (AttributeError, TypeError, ValueError):
-                configured_root = ""
-            if configured_root:
-                roots.append(configured_root)
-            for selector in path_selectors:
-                for candidate in self._tool_path_values(parameters, selector):
-                    if candidate is None or not str(candidate).strip():
-                        continue
-                    roots.append(str(Path(str(candidate)).expanduser()))
-
-        unique: list[str] = []
-        seen: set[str] = set()
-        for root in roots:
-            try:
-                normalized = str(Path(root).expanduser().resolve())
-            except (OSError, RuntimeError, ValueError):
-                continue
-            key = os.path.normcase(normalized)
-            if key not in seen:
-                seen.add(key)
-                unique.append(normalized)
-        return tuple(unique)
-
-    @staticmethod
-    def _path_within_roots(path: Path, roots: Sequence[str]) -> bool:
-        try:
-            resolved = path.expanduser().resolve()
-        except (OSError, RuntimeError, ValueError):
-            return False
-        for root in roots:
-            try:
-                resolved.relative_to(Path(root).expanduser().resolve())
-                return True
-            except (OSError, RuntimeError, ValueError):
-                continue
-        return False
-
-    def _action_tool_validate(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         tool_id = str(payload.get("tool_id") or payload.get("id") or "").strip()
         if not tool_id:
             return FrontendActionResult("error", "tool id is required")
         try:
             parameters = self._tool_action_parameters(payload)
-            approved_roots = self._tool_action_roots(payload, tool_id, parameters)
             validation = self.tool_runner_service.validate(
                 tool_id,
                 parameters,
-                approved_roots=approved_roots,
+                execution_profile=execution_profile,
             )
         except (OSError, RuntimeError, TypeError, ValueError, PermissionError) as exc:
             validation = {"status": "error", "valid": False, "errors": [str(exc)], "tool_id": tool_id}
-        projection = self._toolbox_projection(tool_id, validation=validation)
-        status = "ok" if validation.get("status") == "ok" and validation.get("valid") else "error"
+        public_validation = self._tool_validation_projection(validation)
+        projection = self._toolbox_projection(
+            tool_id,
+            validation=public_validation,
+            execution_profile=execution_profile,
+        )
+        status = (
+            "ok"
+            if public_validation.get("status") == "ok"
+            and public_validation.get("valid")
+            else "error"
+        )
         message = str(projection.get("validation", {}).get("message") or "")
         self.record_event("tools.validated", {"tool_id": tool_id, "valid": status == "ok"})
         return FrontendActionResult(
@@ -448,99 +503,291 @@ class FrontendToolboxStateMixin:
             message,
             {
                 "tool_id": tool_id,
-                "validation": validation,
+                "validation": public_validation,
                 "toolbox_display_projection": projection,
             },
         )
 
-    def _action_tool_start(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+    def _action_tool_start(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         tool_id = str(payload.get("tool_id") or payload.get("id") or "").strip()
         if not tool_id:
             return FrontendActionResult("error", "tool id is required")
         try:
             parameters = self._tool_action_parameters(payload)
-            approved_roots = self._tool_action_roots(payload, tool_id, parameters)
             run = self.tool_runner_service.run(
                 tool_id,
                 parameters,
-                approved_roots=approved_roots,
+                execution_profile=execution_profile,
             )
         except (OSError, RuntimeError, TypeError, ValueError, PermissionError) as exc:
             return FrontendActionResult("error", str(exc), {"tool_id": tool_id})
-        if run.get("status") == "error":
+        if self._tool_runner_response_failed(run):
             return FrontendActionResult("error", str(run.get("message") or "tool start failed"), dict(run))
-        projection = self._toolbox_projection(tool_id, record=run)
+        projection = self._toolbox_projection(
+            tool_id,
+            record=run,
+            execution_profile=execution_profile,
+        )
         return FrontendActionResult(
             "ok",
             str(run.get("message") or "tool queued"),
             {**dict(run), "toolbox_display_projection": projection},
         )
 
-    def _action_tool_cancel(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+    def _action_tool_cancel(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         tool_id = str(payload.get("tool_id") or "").strip()
         run_id = str(payload.get("run_id") or "").strip()
         if not run_id:
             return FrontendActionResult("error", "run id is required", {"tool_id": tool_id})
-        run = self.tool_runner_service.cancel(run_id)
-        if run.get("status") == "error":
+        run = self.tool_runner_service.cancel(
+            run_id,
+            execution_profile=execution_profile,
+        )
+        if self._tool_runner_response_failed(run):
             return FrontendActionResult("error", str(run.get("message") or "tool cancellation failed"), dict(run))
         tool_id = str(run.get("tool_id") or tool_id)
-        projection = self._toolbox_projection(tool_id, record=run)
+        projection = self._toolbox_projection(
+            tool_id,
+            record=run,
+            execution_profile=execution_profile,
+        )
         return FrontendActionResult(
             "ok",
             str(run.get("message") or "cancellation requested"),
             {**dict(run), "toolbox_display_projection": projection},
         )
 
-    def _action_tool_open_result(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+    def _action_tool_open_result(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         tool_id = str(payload.get("tool_id") or "").strip()
         run_id = str(payload.get("result_id") or payload.get("history_id") or "").strip()
         if not run_id:
             return FrontendActionResult("error", "result id is required", {"tool_id": tool_id})
-        record = self.tool_runner_service.get_run(run_id)
-        if not isinstance(record, Mapping):
-            return FrontendActionResult("error", "tool result is unavailable", {"tool_id": tool_id, "run_id": run_id})
-        if tool_id and str(record.get("tool_id") or "") != tool_id:
-            return FrontendActionResult("error", "tool result does not belong to the selected tool")
-        parameters = record.get("parameters") if isinstance(record.get("parameters"), Mapping) else {}
         try:
-            approved_roots = self._tool_action_roots(payload, str(record.get("tool_id") or tool_id), parameters)
-        except (OSError, RuntimeError, TypeError, ValueError, PermissionError) as exc:
-            return FrontendActionResult("error", str(exc), {"tool_id": tool_id, "run_id": run_id})
-        result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
-        paths = [Path(str(path)) for path in result.get("output_paths", ()) if str(path).strip()]
-        path = next((candidate for candidate in paths if candidate.exists()), None)
-        if path is None:
+            private_result = self.tool_runner_service.lookup_private_result(
+                run_id,
+                execution_profile=execution_profile,
+            )
+        except Exception as exc:
+            return self._tool_result_failure(
+                "lookup_private_tool_result",
+                exc,
+                message="tool result is unavailable",
+                run_id=run_id,
+            )
+        if private_result is None:
+            return FrontendActionResult("error", "tool result is unavailable")
+        try:
+            if tool_id and private_result.tool_id != tool_id:
+                return FrontendActionResult("error", "tool result is unavailable")
+            paths = tuple(Path(path) for path in private_result.output_paths)
+        except Exception as exc:
+            return self._tool_result_failure(
+                "read_private_tool_result",
+                exc,
+                message="tool result is unavailable",
+                run_id=run_id,
+            )
+        if not paths:
             return FrontendActionResult("error", "tool result has no available output file", {"run_id": run_id})
-        if not approved_roots or not self._path_within_roots(path, approved_roots):
-            return FrontendActionResult("error", "tool result path is outside approved roots", {"run_id": run_id})
+
+        context = ToolContext(
+            parameters={},
+            execution_profile=execution_profile,
+            provenance="builtin",
+        )
+        try:
+            authorized_paths = tuple(context.authorize_path(path) for path in paths)
+        except Exception as exc:
+            return self._tool_result_failure(
+                "authorize_tool_result_paths",
+                exc,
+                message="tool result path could not be authorized",
+                run_id=run_id,
+            )
+
+        path = authorized_paths[0]
+        requested_path = payload.get("result_path")
+        if requested_path is not None:
+            if not isinstance(requested_path, str) or not requested_path.strip():
+                return FrontendActionResult(
+                    "error",
+                    "tool result selection is invalid",
+                    {"run_id": run_id},
+                )
+            try:
+                requested = Path(requested_path).expanduser().resolve()
+                stored_paths = {candidate.resolve(): candidate for candidate in authorized_paths}
+            except Exception as exc:
+                return self._tool_result_failure(
+                    "resolve_tool_result_selection",
+                    exc,
+                    message="tool result path could not be authorized",
+                    run_id=run_id,
+                )
+            path = stored_paths.get(requested)
+            if path is None:
+                return FrontendActionResult(
+                    "error",
+                    "tool result selection is unavailable",
+                    {"run_id": run_id},
+                )
+        elif "result_index" in payload:
+            index = payload.get("result_index")
+            if type(index) is not int or not 0 <= index < len(authorized_paths):
+                return FrontendActionResult(
+                    "error",
+                    "tool result selection is invalid",
+                    {"run_id": run_id},
+                )
+            path = authorized_paths[index]
+        try:
+            path_is_file = path.exists() and path.is_file()
+        except Exception as exc:
+            return self._tool_result_failure(
+                "inspect_tool_result_path",
+                exc,
+                message="tool result is unavailable",
+                run_id=run_id,
+            )
+        if not path_is_file:
+            return FrontendActionResult("error", "tool result has no available output file", {"run_id": run_id})
         try:
             self._open_file_path(path)
-        except (OSError, RuntimeError, ValueError) as exc:
-            return FrontendActionResult("error", str(exc), {"run_id": run_id, "path": str(path)})
+        except Exception as exc:
+            return self._tool_result_failure(
+                "open_tool_result",
+                exc,
+                message="tool result could not be opened",
+                run_id=run_id,
+            )
         self.record_event("tools.result_opened", {"tool_id": tool_id, "run_id": run_id})
-        return FrontendActionResult("ok", "tool result opened", {"run_id": run_id, "path": str(path)})
+        return FrontendActionResult("ok", "tool result opened", {"run_id": run_id})
 
-    def _action_tool_clear_history(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+    @staticmethod
+    def _log_tool_result_exception(action: str, exc: Exception) -> None:
+        try:
+            debug_logger.log_exception("FrontendStateService", action, exc)
+        except BaseException:
+            # Diagnostics are best-effort and must never replace the stable UI response.
+            return
+
+    def _tool_result_failure(
+        self,
+        action: str,
+        exc: Exception,
+        *,
+        message: str,
+        run_id: str,
+    ) -> FrontendActionResult:
+        self._log_tool_result_exception(action, exc)
+        return FrontendActionResult("error", message, {"run_id": run_id})
+
+    @staticmethod
+    def _tool_runner_response_failed(response: Mapping[str, Any]) -> bool:
+        return str(response.get("status") or "").strip().lower() in {
+            "error",
+            "forbidden",
+            "busy",
+            "timeout",
+        }
+
+    @staticmethod
+    def _tool_validation_projection(
+        validation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        projected: dict[str, Any] = {}
+        for key in ("status", "valid", "tool_id", "code", "message"):
+            value = validation.get(key)
+            if key in validation and (
+                value is None or type(value) in {str, int, float, bool}
+            ):
+                projected[key] = value
+        for key in ("errors", "warnings"):
+            values = validation.get(key)
+            if isinstance(values, (list, tuple)):
+                projected[key] = [
+                    value
+                    for value in values
+                    if value is None or type(value) in {str, int, float, bool}
+                ]
+        return projected
+
+    def _action_tool_clear_history(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         tool_id = str(payload.get("tool_id") or "").strip()
-        result = self.tool_runner_service.clear_history()
-        projection = self._toolbox_projection(tool_id)
+        result = self.tool_runner_service.clear_history(
+            execution_profile=execution_profile,
+        )
+        if self._tool_runner_response_failed(result):
+            return FrontendActionResult(
+                "error",
+                str(result.get("message") or "tool history clear failed"),
+                dict(result),
+            )
+        projection = self._toolbox_projection(
+            tool_id,
+            execution_profile=execution_profile,
+        )
         return FrontendActionResult(
             "ok",
             "tool history cleared",
             {**dict(result), "tool_id": tool_id, "toolbox_display_projection": projection},
         )
 
-    def _action_tool_reload(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+    def _action_tool_reload(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
         force = bool(payload.get("force", False))
-        result = self.tool_runner_service.reload(force=force)
+        result = self.tool_runner_service.reload(
+            force=force,
+            execution_profile=execution_profile,
+        )
+        if self._tool_runner_response_failed(result):
+            return FrontendActionResult(
+                "error",
+                str(result.get("message") or "tool registry reload failed"),
+                dict(result),
+            )
         self._static_snapshot_cache = None
-        projection = self._toolbox_projection(str(payload.get("tool_id") or ""))
+        projection = self._toolbox_projection(
+            str(payload.get("tool_id") or ""),
+            execution_profile=execution_profile,
+        )
         return FrontendActionResult(
             "ok",
             "tool registry reloaded",
             {**dict(result), "toolbox_display_projection": projection},
         )
 
-    def _action_run_tool(self, payload: Mapping[str, Any]) -> FrontendActionResult:
-        return self._action_tool_start(payload)
+    def _action_run_tool(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> FrontendActionResult:
+        return self._action_tool_start(
+            payload,
+            execution_profile=execution_profile,
+        )

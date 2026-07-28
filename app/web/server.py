@@ -12,9 +12,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.utils.runtime_paths import resolve_resource_file
 from app.web.rest_router import build_rest_router
-from app.web.session_runtime import configured_allowed_origins
+from app.web.session_runtime import (
+    build_public_web_session_profile,
+    configured_allowed_origins,
+)
 from app.web.ws_router import build_ws_router
-from shared.execution_profile import public_web_profile
 from shared.runtime_adapters import run_cli_search
 from shared.release_identity import load_runtime_release_identity
 from shared.version import __version__
@@ -125,8 +127,8 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
                 )
             if context is None:
                 raise RuntimeError("web session context is no longer active")
-            return public_web_profile(
-                owner_id=context.session_id,
+            return build_public_web_session_profile(
+                context.session_id,
                 approved_roots=context.approved_roots_snapshot(),
             )
 

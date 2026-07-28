@@ -17,10 +17,13 @@ class CliExitCode(IntEnum):
 
 _STATUS_CODES = {
     "ok": CliExitCode.OK,
+    "succeeded": CliExitCode.OK,
     "error": CliExitCode.ERROR,
+    "failed": CliExitCode.ERROR,
     "usage": CliExitCode.USAGE,
     "timeout": CliExitCode.TIMEOUT,
     "cancelled": CliExitCode.CANCELLED,
+    "canceled": CliExitCode.CANCELLED,
 }
 
 

@@ -303,6 +303,12 @@ class WebSocketMessageDispatcher:
     async def _handle_frontend_action(self, data: dict[str, Any], context: WebSessionContext) -> None:
         """执行前端动作后尽量返回 delta，旧客户端仍可回退到完整 frontend_state。"""
         action = data.get("action", "")
+        if self._config_service.is_tool_action(action):
+            await context.send(
+                "frontend_action_result",
+                self._config_service.tool_run_disabled_result(),
+            )
+            return
         payload = data.get("payload", {}) or {}
         request_id = ""
         if "request_id" in data:

@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import unittest
 import asyncio
+from pathlib import Path
 import threading
 import time
 
 from app.web.session_runtime import WebSessionRegistry
+
+class _FakeFrontendStateService:
+    def __init__(self):
+        self.profile_providers = []
+
+    def set_tool_execution_profile_provider(self, provider):
+        self.profile_providers.append(provider)
+
 
 class _FakeController:
     def __init__(self):
         self.current_save_dir = "downloads"
         self.shutdown_calls = 0
         self.shutdown_event = threading.Event()
+        self.frontend_state_service = _FakeFrontendStateService()
 
     def shutdown(self):
         self.shutdown_calls += 1
@@ -168,6 +178,26 @@ class WebSessionRegistryTests(unittest.TestCase):
             self.assertNotIn(task, context.background_tasks)
 
         asyncio.run(run_case())
+
+    def test_context_binds_one_dynamic_public_tool_profile_provider(self):
+        context = self.registry.get_or_create("tool-session")
+        service = context.controller.frontend_state_service
+
+        self.assertEqual(len(service.profile_providers), 1)
+        provider = service.profile_providers[0]
+        initial = provider()
+        self.assertEqual(initial.host_surface, "public_web")
+        self.assertEqual(initial.owner_id, "web:tool-session")
+        self.assertFalse(initial.allow_tool_execution)
+        self.assertEqual(initial.tool_permissions, frozenset())
+        self.assertEqual(initial.approved_roots, frozenset())
+
+        context.approve_directory("more-downloads")
+        refreshed = provider()
+
+        self.assertEqual(refreshed.owner_id, initial.owner_id)
+        self.assertEqual(refreshed.approved_roots, frozenset())
+        self.assertEqual(len(service.profile_providers), 1)
 
     def test_shutdown_all_disposes_every_context_including_pinned_sessions(self):
         default_context = self.registry.get_or_create("__default__")

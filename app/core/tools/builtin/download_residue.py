@@ -6,6 +6,7 @@ import os
 import inspect
 import shutil
 import sqlite3
+import stat
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import closing
@@ -189,6 +190,14 @@ class _LedgerSnapshot:
         }
 
 
+@dataclass(frozen=True)
+class _PurgeOutcome:
+    purged: tuple[tuple[Path, Path], ...]
+    quarantined: tuple[tuple[Path, Path], ...]
+    deferred: tuple[tuple[Path, Path], ...]
+    errors: tuple[str, ...]
+
+
 class _Cancelled(RuntimeError):
     pass
 
@@ -234,6 +243,16 @@ def _absolute_without_resolving(value: str | os.PathLike[str], *, base: Path) ->
 def _raw_roots(context: ToolContext) -> Sequence[object]:
     raw = _parameters(context).get("roots")
     if raw is None:
+        profile = getattr(context, "execution_profile", None)
+        profile_roots = getattr(profile, "approved_roots", ()) or ()
+        if isinstance(profile_roots, (str, os.PathLike)):
+            return (profile_roots,)
+        try:
+            normalized_profile_roots = tuple(profile_roots)
+        except TypeError:
+            normalized_profile_roots = ()
+        if normalized_profile_roots:
+            return normalized_profile_roots
         for name in ("approved_roots", "allowed_paths", "authorized_roots"):
             approved = getattr(context, name, ())
             if isinstance(approved, (str, os.PathLike)):
@@ -322,6 +341,18 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return True
+    flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(attributes & flag)
+
+
 def _allowed_roots(context: ToolContext) -> tuple[Path, ...]:
     raw_allowed: object = ()
     found_authorization_field = False
@@ -347,22 +378,23 @@ def _allowed_roots(context: ToolContext) -> tuple[Path, ...]:
 
 
 def _is_authorized(context: ToolContext, path: Path) -> bool:
+    shared_authorizer = getattr(context, "authorize_path", None)
+    if callable(shared_authorizer):
+        try:
+            authorized = Path(shared_authorizer(path)).expanduser().resolve(
+                strict=False
+            )
+            resolved = path.resolve(strict=False)
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
+            return False
+        return authorized == resolved
+
     authorizer = getattr(context, "is_path_allowed", None)
     if callable(authorizer):
         try:
             return bool(authorizer(path))
         except TypeError:
             return bool(authorizer(str(path)))
-    if getattr(context, "path_authorizer", None) is not None:
-        shared_authorizer = getattr(context, "authorize_path", None)
-        if callable(shared_authorizer):
-            try:
-                authorized = Path(shared_authorizer(path)).expanduser().resolve(
-                    strict=False
-                )
-            except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
-                return False
-            return authorized == path.resolve(strict=False)
     return any(_within(path, allowed) for allowed in _allowed_roots(context))
 
 
@@ -400,42 +432,47 @@ def validate(context: ToolContext) -> list[str]:
     if raw_ledger is not None and not isinstance(raw_ledger, (str, os.PathLike)):
         errors.append("ledger_path must be a path")
 
-    if raw_cleanup is True:
-        for raw_root in _raw_roots(context):
-            if not isinstance(raw_root, (str, os.PathLike)):
-                continue
-            try:
-                lexical_root = _absolute_without_resolving(
-                    raw_root,
-                    base=_workspace_root(context),
-                )
-                if lexical_root.is_symlink():
-                    errors.append(f"cleanup root must not be a symlink: {lexical_root}")
-            except (OSError, RuntimeError, TypeError, ValueError):
-                continue
-        for root in _roots(context):
-            if root == Path(root.anchor):
-                errors.append(f"cleanup root is too broad: {root}")
-            if not _is_authorized(context, root):
-                errors.append(f"cleanup root is not authorized: {root}")
-            try:
-                if root.is_symlink():
-                    errors.append(f"cleanup root must not be a symlink: {root}")
-            except OSError:
-                errors.append(f"cleanup root could not be inspected: {root}")
-        if raw_ledger is not None:
-            try:
-                ledger = _ledger_path(context)
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                errors.append(f"ledger_path is invalid: {exc}")
-            else:
-                if not _is_authorized(context, ledger):
-                    errors.append(f"ledger_path is not authorized: {ledger}")
+    if raw_ledger is not None and isinstance(raw_ledger, (str, os.PathLike)):
+        try:
+            ledger = _ledger_path(context)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            errors.append(f"ledger_path is invalid: {exc}")
+        else:
+            if not _is_authorized(context, ledger):
+                errors.append(f"ledger_path is not authorized: {ledger}")
 
+    root_label = "cleanup root" if raw_cleanup is True else "scan root"
+    for raw_root in _raw_roots(context):
+        if not isinstance(raw_root, (str, os.PathLike)):
+            continue
+        try:
+            lexical_root = _absolute_without_resolving(
+                raw_root,
+                base=_workspace_root(context),
+            )
+            if lexical_root.is_symlink() or _is_reparse_point(lexical_root):
+                errors.append(
+                    f"{root_label} must not be a symlink or reparse point: "
+                    f"{lexical_root}"
+                )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+    for root in _roots(context):
+        if raw_cleanup is True and root == Path(root.anchor):
+            errors.append(f"cleanup root is too broad: {root}")
+        if not _is_authorized(context, root):
+            errors.append(f"{root_label} is not authorized: {root}")
+        try:
+            if root.is_symlink() or _is_reparse_point(root):
+                errors.append(
+                    f"{root_label} must not be a symlink or reparse point: {root}"
+                )
+        except OSError:
+            errors.append(f"{root_label} could not be inspected: {root}")
     return list(dict.fromkeys(errors))
 
 
-def _artifact_kind(name: str) -> str | None:
+def _base_artifact_kind(name: str) -> str | None:
     lowered = name.lower()
     if lowered == ".ucp-nm3u8-tmp":
         return "nm3u8_temp_root"
@@ -444,6 +481,27 @@ def _artifact_kind(name: str) -> str | None:
     if lowered.endswith("_playwright_hls"):
         return "playwright_hls"
     return None
+
+
+def _artifact_kind(name: str) -> str | None:
+    kind = _base_artifact_kind(name)
+    if kind is not None:
+        return kind
+    candidate = name
+    while True:
+        prefix, marker, token = candidate.rpartition(_CLEANUP_MARKER)
+        if (
+            not marker
+            or not prefix.startswith(".")
+            or len(token) != 32
+            or not all(
+                character in "0123456789abcdefABCDEF" for character in token
+            )
+        ):
+            return None
+        candidate = prefix[1:]
+        if _base_artifact_kind(candidate) is not None:
+            return "cleanup_quarantine"
 
 
 def _scan_root(
@@ -469,12 +527,19 @@ def _scan_root(
             with os.scandir(directory) as entries:
                 for entry in entries:
                     _raise_if_cancelled(context)
+                    entry_path = Path(entry.path)
                     try:
-                        if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        if (
+                            entry.is_symlink()
+                            or _is_reparse_point(entry_path)
+                            or not entry.is_dir(follow_symlinks=False)
+                        ):
                             continue
-                    except OSError:
+                        candidate = entry_path.resolve(strict=False)
+                    except (OSError, RuntimeError, TypeError, ValueError):
                         continue
-                    candidate = Path(entry.path).resolve(strict=False)
+                    if not _within(candidate, root):
+                        continue
                     kind = _artifact_kind(entry.name)
                     if kind is not None:
                         artifacts.append(
@@ -586,6 +651,7 @@ def _diagnostic_data(
     *,
     roots: tuple[Path, ...],
     artifacts: tuple[_Artifact, ...],
+    protected: tuple[_Artifact, ...],
     ledger: _LedgerSnapshot,
     scan_errors: list[str],
     cleanup_requested: bool,
@@ -594,9 +660,13 @@ def _diagnostic_data(
         "mode": "cleanup" if cleanup_requested else "diagnose",
         "roots": [str(root) for root in roots],
         "artifacts": [artifact.to_dict() for artifact in artifacts],
+        "protected": [str(artifact.path) for artifact in protected],
         "ledger": ledger.to_dict(),
         "scan_errors": list(scan_errors),
         "removed": [],
+        "purged": [],
+        "quarantined": [],
+        "deferred": [],
     }
 
 
@@ -622,7 +692,29 @@ def _build_result(
     else:
         factory = getattr(ToolRunResult, "failure", None)
         if callable(factory):
-            return factory(message, data=payload)
+            failed_result = factory(message, data=payload)
+            if not changed_paths:
+                return failed_result
+            return _construct_contract(
+                type(failed_result),
+                {
+                    "status": getattr(failed_result, "status", status),
+                    "message": message,
+                    "data": payload,
+                    "output": payload,
+                    "details": payload,
+                    "result": payload,
+                    "payload": payload,
+                    "changed_paths": changed_paths,
+                    "modified_paths": changed_paths,
+                    "output_paths": changed_paths,
+                    "error_code": error_code,
+                    "code": error_code,
+                    "error": message,
+                    "errors": (message,),
+                    "warnings": getattr(failed_result, "warnings", ()),
+                },
+            )
     failed = status != "success"
     return _construct_contract(
         ToolRunResult,
@@ -648,8 +740,19 @@ def _build_result(
     )
 
 
-def _error_result(message: str, data: Mapping[str, Any] | None = None) -> ToolRunResult:
-    return _build_result("error", message, data=data, error_code="operation_failed")
+def _error_result(
+    message: str,
+    data: Mapping[str, Any] | None = None,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> ToolRunResult:
+    return _build_result(
+        "error",
+        message,
+        data=data,
+        changed_paths=changed_paths,
+        error_code="operation_failed",
+    )
 
 
 def _cancelled_result(data: Mapping[str, Any] | None = None) -> ToolRunResult:
@@ -669,16 +772,21 @@ def _artifact_is_still_safe(
 ) -> bool:
     path = artifact.path
     try:
-        if path.is_symlink() or not path.is_dir():
+        if path.is_symlink() or _is_reparse_point(path) or not path.is_dir():
             return False
         if _artifact_kind(path.name) != artifact.kind:
             return False
-        relative = path.relative_to(artifact.root)
+        resolved = path.resolve(strict=False)
+        if os.path.normcase(str(resolved)) != os.path.normcase(str(path)):
+            return False
+        if not _within(resolved, artifact.root):
+            return False
+        relative = resolved.relative_to(artifact.root)
     except (OSError, RuntimeError, ValueError):
         return False
     return (
         1 <= len(relative.parts) <= max_depth + 1
-        and _is_authorized(context, path)
+        and _is_authorized(context, resolved)
     )
 
 
@@ -688,9 +796,54 @@ def _rollback_staged(staged: list[tuple[Path, Path]]) -> list[str]:
         try:
             if quarantine.exists() and not original.exists():
                 quarantine.replace(original)
-        except OSError as exc:
-            errors.append(f"{original}: {exc}")
+        except BaseException as exc:
+            errors.append(f"{original}: {_exception_message(exc)}")
     return errors
+
+
+def _annotate_secondary_failure(error: BaseException, message: str) -> None:
+    try:
+        add_note = object.__getattribute__(error, "add_note")
+    except BaseException:
+        add_note = None
+    if callable(add_note):
+        try:
+            add_note(message)
+            return
+        except BaseException:
+            pass
+    try:
+        notes = object.__getattribute__(error, "__notes__")
+    except BaseException:
+        notes = []
+        try:
+            object.__setattr__(error, "__notes__", notes)
+        except BaseException:
+            return
+    if type(notes) is not list:
+        return
+    try:
+        notes.append(message)
+    except BaseException:
+        return
+
+
+def _exception_message(error: BaseException) -> str:
+    try:
+        message = str(error)
+    except BaseException:
+        message = "download residue operation failed"
+    if type(message) is not str or not message:
+        message = "download residue operation failed"
+    try:
+        notes = object.__getattribute__(error, "__notes__")
+    except BaseException:
+        notes = ()
+    if type(notes) is list or type(notes) is tuple:
+        for note in notes:
+            if type(note) is str and note:
+                message = f"{message}; {note}"
+    return message
 
 
 def _stage_artifacts(
@@ -711,10 +864,13 @@ def _stage_artifacts(
             artifact.path.replace(quarantine)
             staged.append((artifact.path, quarantine))
         _raise_if_cancelled(context)
-    except BaseException:
+    except BaseException as exc:
         rollback_errors = _rollback_staged(staged)
         if rollback_errors:
-            raise OSError("; ".join(rollback_errors))
+            _annotate_secondary_failure(
+                exc,
+                f"rollback failed: {'; '.join(rollback_errors)}",
+            )
         raise
     return staged
 
@@ -727,17 +883,67 @@ def _record_matches_roots(save_directory: str, roots: tuple[Path, ...]) -> bool:
     return any(_within(path, root) for root in roots)
 
 
+def _active_save_roots(ledger: _LedgerSnapshot) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for record in ledger.records:
+        if record.state != "active":
+            continue
+        try:
+            active_root = Path(record.save_directory).expanduser()
+            if not active_root.is_absolute():
+                raise ValueError("active recovery path is not absolute")
+            roots.append(active_root.resolve(strict=False))
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise OSError("active recovery path could not be resolved") from exc
+    return tuple(roots)
+
+
+def _is_protected_artifact(path: Path, active_roots: tuple[Path, ...]) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return any(
+        _within(resolved, active_root) or _within(active_root, resolved)
+        for active_root in active_roots
+    )
+
+
+def _live_active_ledger(
+    ledger: _LedgerSnapshot,
+    conn: sqlite3.Connection,
+) -> _LedgerSnapshot:
+    if not _table_exists(conn, "download_task_paths"):
+        raise sqlite3.DatabaseError("recovery ledger active-task table is unavailable")
+    records = tuple(
+        _LedgerRecord(
+            state="active",
+            save_directory=str(save_directory),
+            key=str(video_id),
+            generation=str(generation),
+        )
+        for video_id, save_directory, generation in conn.execute(
+            """
+            SELECT video_id, save_directory, generation
+            FROM download_task_paths
+            ORDER BY video_id
+            """
+        )
+    )
+    return _LedgerSnapshot(ledger.path, True, records)
+
+
 def _consume_matching_ledger_records(
     context: ToolContext,
+    conn: sqlite3.Connection,
     ledger: _LedgerSnapshot,
     roots: tuple[Path, ...],
 ) -> int:
-    if not ledger.present or not _is_authorized(context, ledger.path):
-        return 0
     matching_records = tuple(
         record
         for record in ledger.records
-        if _record_matches_roots(record.save_directory, roots)
+        if record.state == "pending_cleanup"
+        and _record_matches_roots(record.save_directory, roots)
     )
     matching_frontier = tuple(
         record
@@ -748,71 +954,241 @@ def _consume_matching_ledger_records(
         return 0
 
     changed = 0
+    for record in matching_records:
+        _raise_if_cancelled(context)
+        cursor = conn.execute(
+            """
+            DELETE FROM pending_cleanup_directories
+            WHERE save_directory = ? AND generation = ?
+            """,
+            (record.key, record.generation),
+        )
+        affected = max(0, int(cursor.rowcount or 0))
+        if affected != 1:
+            raise sqlite3.IntegrityError("recovery ledger changed during cleanup")
+        changed += affected
+    for record in matching_frontier:
+        _raise_if_cancelled(context)
+        cursor = conn.execute(
+            """
+            DELETE FROM legacy_sweep_frontier
+            WHERE root = ? AND path = ? AND depth = ?
+            """,
+            (record.root, record.path, record.depth),
+        )
+        affected = max(0, int(cursor.rowcount or 0))
+        if affected != 1:
+            raise sqlite3.IntegrityError(
+                "recovery ledger frontier changed during cleanup"
+            )
+        changed += affected
+    return changed
+
+
+def _ledger_is_authorized_for_cleanup(
+    context: ToolContext,
+    ledger: _LedgerSnapshot,
+) -> bool:
+    if _parameters(context).get("ledger_path") is None:
+        return True
+    return _is_authorized(context, ledger.path)
+
+
+def _partition_protected_artifacts(
+    artifacts: tuple[_Artifact, ...],
+    active_roots: tuple[Path, ...],
+) -> tuple[tuple[_Artifact, ...], tuple[_Artifact, ...]]:
+    protected = tuple(
+        artifact
+        for artifact in artifacts
+        if _is_protected_artifact(artifact.path, active_roots)
+    )
+    cleanup_artifacts = tuple(
+        artifact for artifact in artifacts if artifact not in protected
+    )
+    return protected, cleanup_artifacts
+
+
+def _cleanup_artifacts_and_ledger(
+    context: ToolContext,
+    artifacts: tuple[_Artifact, ...],
+    ledger: _LedgerSnapshot,
+    roots: tuple[Path, ...],
+    *,
+    max_depth: int,
+) -> tuple[list[tuple[Path, Path]], tuple[_Artifact, ...], int]:
+    if not ledger.present:
+        raise OSError("recovery ledger is unavailable for cleanup")
+    if not _ledger_is_authorized_for_cleanup(context, ledger):
+        raise OSError("recovery ledger is not authorized for cleanup")
+
     conn = sqlite3.connect(
         f"{ledger.path.as_uri()}?mode=rw",
         uri=True,
         timeout=5.0,
     )
+    staged: list[tuple[Path, Path]] = []
+    primary_error: BaseException | None = None
     try:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("BEGIN IMMEDIATE")
-        for record in matching_records:
-            _raise_if_cancelled(context)
-            if record.state == "active":
-                cursor = conn.execute(
-                    """
-                    DELETE FROM download_task_paths
-                    WHERE video_id = ? AND generation = ?
-                    """,
-                    (record.key, record.generation),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM pending_cleanup_directories
-                    WHERE save_directory = ? AND generation = ?
-                    """,
-                    (record.key, record.generation),
-                )
-            affected = max(0, int(cursor.rowcount or 0))
-            if affected != 1:
-                raise sqlite3.IntegrityError(
-                    "recovery ledger changed during cleanup"
-                )
-            changed += affected
-        for record in matching_frontier:
-            _raise_if_cancelled(context)
-            cursor = conn.execute(
-                """
-                DELETE FROM legacy_sweep_frontier
-                WHERE root = ? AND path = ? AND depth = ?
-                """,
-                (record.root, record.path, record.depth),
-            )
-            affected = max(0, int(cursor.rowcount or 0))
-            if affected != 1:
-                raise sqlite3.IntegrityError(
-                    "recovery ledger frontier changed during cleanup"
-                )
-            changed += affected
+        live_ledger = _live_active_ledger(ledger, conn)
+        active_roots = _active_save_roots(live_ledger)
+        protected, cleanup_artifacts = _partition_protected_artifacts(
+            artifacts,
+            active_roots,
+        )
+        staged = _stage_artifacts(context, cleanup_artifacts, max_depth=max_depth)
+        ledger_changes = _consume_matching_ledger_records(
+            context,
+            conn,
+            ledger,
+            roots,
+        )
         _raise_if_cancelled(context)
         conn.commit()
-    except BaseException:
-        conn.rollback()
+        return staged, protected, ledger_changes
+    except BaseException as exc:
+        primary_error = exc
+        rollback_errors = _rollback_staged(staged)
+        if rollback_errors:
+            _annotate_secondary_failure(
+                exc,
+                f"rollback failed: {'; '.join(rollback_errors)}",
+            )
+        try:
+            conn.rollback()
+        except BaseException as rollback_exc:
+            _annotate_secondary_failure(
+                exc,
+                f"ledger rollback failed: {_exception_message(rollback_exc)}",
+            )
         raise
     finally:
-        conn.close()
-    return changed
-
-
-def _purge_staged(staged: list[tuple[Path, Path]]) -> None:
-    for original, quarantine in staged:
         try:
-            shutil.rmtree(quarantine)
-        except OSError:
-            if quarantine.exists() and not original.exists():
-                quarantine.replace(original)
+            conn.close()
+        except BaseException as close_exc:
+            if primary_error is not None:
+                _annotate_secondary_failure(
+                    primary_error,
+                    f"ledger close failed: {_exception_message(close_exc)}",
+                )
+            elif isinstance(close_exc, (KeyboardInterrupt, SystemExit)):
+                raise
+
+
+def _purge_staged(
+    staged: list[tuple[Path, Path]],
+    ledger: _LedgerSnapshot,
+) -> _PurgeOutcome:
+    if not staged:
+        return _PurgeOutcome((), (), (), ())
+
+    purged: list[tuple[Path, Path]] = []
+    quarantined: list[tuple[Path, Path]] = []
+    deferred: list[tuple[Path, Path]] = []
+    errors: list[str] = []
+    conn: sqlite3.Connection | None = None
+    primary_error: BaseException | None = None
+    transaction_error: Exception | None = None
+    try:
+        conn = sqlite3.connect(
+            f"{ledger.path.as_uri()}?mode=rw",
+            uri=True,
+            timeout=5.0,
+        )
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("BEGIN IMMEDIATE")
+        live_ledger = _live_active_ledger(ledger, conn)
+        active_roots = _active_save_roots(live_ledger)
+        for original, quarantine in staged:
+            if _is_protected_artifact(quarantine, active_roots):
+                deferred.append((original, quarantine))
+                continue
+            try:
+                shutil.rmtree(quarantine)
+            except OSError as exc:
+                try:
+                    still_exists = quarantine.exists()
+                except OSError:
+                    still_exists = True
+                if still_exists:
+                    quarantined.append((original, quarantine))
+                else:
+                    purged.append((original, quarantine))
+                errors.append(_exception_message(exc))
+            else:
+                purged.append((original, quarantine))
+        conn.commit()
+    except BaseException as exc:
+        primary_error = exc
+        if conn is not None:
+            try:
+                conn.rollback()
+            except BaseException as rollback_exc:
+                _annotate_secondary_failure(
+                    exc,
+                    f"ledger rollback failed: {_exception_message(rollback_exc)}",
+                )
+        if not isinstance(exc, Exception):
             raise
+        transaction_error = exc
+        decided = {
+            os.path.normcase(str(quarantine))
+            for _original, quarantine in (*purged, *quarantined, *deferred)
+        }
+        deferred.extend(
+            (original, quarantine)
+            for original, quarantine in staged
+            if os.path.normcase(str(quarantine)) not in decided
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except BaseException as close_exc:
+                if primary_error is not None:
+                    _annotate_secondary_failure(
+                        primary_error,
+                        f"ledger close failed: {_exception_message(close_exc)}",
+                    )
+                elif isinstance(close_exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+    if transaction_error is not None:
+        errors.append(_exception_message(transaction_error))
+    return _PurgeOutcome(
+        tuple(purged),
+        tuple(quarantined),
+        tuple(deferred),
+        tuple(errors),
+    )
+
+
+def _deferred_rows(items: tuple[tuple[Path, Path], ...]) -> list[dict[str, str]]:
+    return [
+        {
+            "original_path": str(original),
+            "quarantine_path": str(quarantine),
+            "reason": "active_recovery_path",
+        }
+        for original, quarantine in items
+    ]
+
+
+def _append_protected_paths(data: dict[str, Any], paths: Sequence[Path]) -> None:
+    protected = [str(path) for path in data.get("protected", ())]
+    protected.extend(str(path) for path in paths)
+    data["protected"] = list(dict.fromkeys(protected))
+
+
+def _purge_rows(items: tuple[tuple[Path, Path], ...]) -> list[dict[str, str]]:
+    return [
+        {
+            "original_path": str(original),
+            "quarantine_path": str(quarantine),
+        }
+        for original, quarantine in items
+    ]
 
 
 def run(context: ToolContext) -> ToolRunResult:
@@ -830,9 +1206,21 @@ def run(context: ToolContext) -> ToolRunResult:
     except _Cancelled:
         return _cancelled_result()
 
+    try:
+        active_roots = _active_save_roots(ledger)
+    except OSError as exc:
+        active_roots = ()
+        scan_errors.append(_exception_message(exc))
+        protected = artifacts
+    else:
+        protected, _cleanup_artifacts = _partition_protected_artifacts(
+            artifacts,
+            active_roots,
+        )
     data = _diagnostic_data(
         roots=roots,
         artifacts=artifacts,
+        protected=protected,
         ledger=ledger,
         scan_errors=scan_errors,
         cleanup_requested=cleanup_requested,
@@ -847,37 +1235,47 @@ def run(context: ToolContext) -> ToolRunResult:
         return _error_result(f"recovery ledger could not be read: {ledger.error}", data)
 
     staged: list[tuple[Path, Path]] = []
-    ledger_changes = 0
     try:
-        staged = _stage_artifacts(context, artifacts, max_depth=max_depth)
-        ledger_changes = _consume_matching_ledger_records(context, ledger, roots)
+        staged, protected, _ledger_changes = _cleanup_artifacts_and_ledger(
+            context,
+            artifacts,
+            ledger,
+            roots,
+            max_depth=max_depth,
+        )
+        data["protected"] = [str(artifact.path) for artifact in protected]
     except _Cancelled:
-        rollback_errors = _rollback_staged(staged)
-        if rollback_errors:
-            return _error_result("; ".join(rollback_errors), data)
         return _cancelled_result(data)
     except (OSError, sqlite3.Error) as exc:
-        rollback_errors = _rollback_staged(staged)
-        message = str(exc)
-        if rollback_errors:
-            message = f"{message}; rollback failed: {'; '.join(rollback_errors)}"
-        return _error_result(message, data)
+        return _error_result(_exception_message(exc), data)
 
-    try:
-        _purge_staged(staged)
-    except OSError as exc:
-        return _error_result(f"cleanup purge failed: {exc}", data)
+    purge = _purge_staged(staged, ledger)
+    data["purged"] = _purge_rows(purge.purged)
+    data["quarantined"] = _purge_rows(purge.quarantined)
+    data["deferred"] = _deferred_rows(purge.deferred)
+    _append_protected_paths(
+        data,
+        tuple(quarantine for _original, quarantine in purge.deferred),
+    )
+    data["removed"] = [str(original) for original, _quarantine in purge.purged]
+    if purge.errors:
+        quarantine_paths = tuple(
+            str(quarantine) for _original, quarantine in purge.quarantined
+        )
+        return _error_result(
+            f"cleanup purge failed: {'; '.join(purge.errors)}",
+            data,
+            changed_paths=quarantine_paths,
+        )
 
-    removed_paths = [str(original) for original, _quarantine in staged]
-    data["removed"] = removed_paths
-    changed_paths = list(removed_paths)
-    if ledger_changes:
-        changed_paths.append(str(ledger.path))
+    removed_paths = [str(original) for original, _quarantine in purge.purged]
+    message = f"Removed {len(removed_paths)} download residue artifact(s)"
+    if purge.deferred:
+        message = f"{message}; deferred {len(purge.deferred)} active artifact(s)"
     return _build_result(
         "success",
-        f"Removed {len(removed_paths)} download residue artifact(s)",
+        message,
         data=data,
-        changed_paths=tuple(changed_paths),
     )
 
 

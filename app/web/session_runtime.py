@@ -10,13 +10,30 @@ import threading
 import time
 import asyncio
 import logging
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
+
+from shared.execution_profile import ExecutionProfile, public_web_profile
 
 SendFactory = Callable[[str], Callable[[str, Any], Any]]
 TEST_TRANSPORT_HOSTS = {"testserver", "testclient"}
 DEFAULT_DISPOSAL_WORKERS = 2
 DEFAULT_DISPOSAL_QUEUE_CAPACITY = 8
+
+
+def build_public_web_session_profile(
+    session_id: str,
+    *,
+    approved_roots: Iterable[str | Path] = (),
+) -> ExecutionProfile:
+    """Build one canonical identity for every capability owned by a Web session."""
+
+    return public_web_profile(
+        owner_id=f"web:{session_id}",
+        approved_roots=(Path(root) for root in approved_roots),
+    )
 
 def normalize_directory(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
@@ -119,6 +136,7 @@ class WebSessionContext:
         self._active_websockets = 0
         self.last_access_at = self._monotonic()
         self.approve_directory(self.controller.current_save_dir)
+        self._bind_tool_execution_profile_provider()
 
     def touch(self) -> None:
         with self._access_lock:
@@ -160,6 +178,25 @@ class WebSessionContext:
         with self._approved_roots_lock:
             self.approved_roots.add(normalized)
         return normalized
+
+    def _bind_tool_execution_profile_provider(self) -> None:
+        frontend_state_service = getattr(
+            self.controller,
+            "frontend_state_service",
+            None,
+        )
+        bind_provider = getattr(
+            frontend_state_service,
+            "set_tool_execution_profile_provider",
+            None,
+        )
+        if not callable(bind_provider):
+            return
+
+        def profile_provider():
+            return build_public_web_session_profile(self.session_id)
+
+        bind_provider(profile_provider)
 
     def is_directory_allowed(self, directory: str) -> bool:
         normalized = normalize_directory(directory)

@@ -30,7 +30,10 @@ from app.core.tools.registry import ToolRegistry
 from app.debug_logger import debug_logger
 from app.services.tool_history_projection import project_history_record
 from app.utils.runtime_paths import user_cache_root, user_data_root
-from shared.execution_profile import ExecutionProfile
+from shared.execution_profile import (
+    ExecutionProfile,
+    execution_profile_identity_error,
+)
 
 ToolEventCallback = Callable[[str, dict[str, Any]], None]
 
@@ -365,7 +368,27 @@ class ToolRunnerService:
 
     # Additional application-runtime operations.
 
-    def reload(self, *, force: bool = False) -> dict[str, list[str]]:
+    def reload(
+        self,
+        *,
+        force: bool = False,
+        execution_profile: ExecutionProfile,
+    ) -> dict[str, Any]:
+        identity_error = _profile_identity_error(execution_profile)
+        if identity_error is not None:
+            return identity_error
+        if not execution_profile.allow_tool_execution:
+            return {
+                "status": "forbidden",
+                "code": "tool_run_disabled",
+                "message": "tool execution is disabled for this host",
+            }
+        if not execution_profile.allow_external_plugins:
+            return {
+                "status": "forbidden",
+                "code": "external_plugins_disabled",
+                "message": "external tools are disabled for this host",
+            }
         result = self.registry.reload_external(force=force).to_dict()
         self._emit("tools.reloaded", result)
         return result
@@ -1058,9 +1081,17 @@ def _record_from_dict(value: Any) -> _RunRecord | None:
     try:
         run_id = str(value["run_id"]).strip()
         tool_id = str(value["tool_id"]).strip()
-        host_surface = str(value.get("host_surface") or "").strip()
-        owner_id = str(value.get("owner_id") or "").strip()
-        if not run_id or not tool_id or not host_surface or not owner_id:
+        host_surface = value.get("host_surface")
+        owner_id = value.get("owner_id")
+        if (
+            not run_id
+            or not tool_id
+            or execution_profile_identity_error(
+                host_surface=host_surface,
+                owner_id=owner_id,
+            )
+            is not None
+        ):
             return None
         status = _coerce_run_status(value.get("status"))
         if status in {ToolRunStatus.QUEUED, ToolRunStatus.RUNNING, ToolRunStatus.CANCELLING}:
@@ -1108,12 +1139,15 @@ def _forbidden_payload(tool_id: str, grant: ToolGrant) -> dict[str, Any]:
 
 
 def _profile_identity_error(
-    execution_profile: ExecutionProfile,
+    execution_profile: object,
 ) -> dict[str, Any] | None:
-    host_surface = str(getattr(execution_profile, "host_surface", "") or "").strip()
-    owner_id = str(getattr(execution_profile, "owner_id", "") or "").strip()
-    if host_surface and owner_id:
-        return None
+    if type(execution_profile) is ExecutionProfile:
+        identity_error = execution_profile_identity_error(
+            host_surface=execution_profile.host_surface,
+            owner_id=execution_profile.owner_id,
+        )
+        if identity_error is None:
+            return None
     return {
         "status": "forbidden",
         "code": "tool_profile_identity_required",

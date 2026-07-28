@@ -8,6 +8,17 @@ from typing import Any, Iterable, Literal
 
 HostSurface = Literal["desktop_gui", "public_web", "cli", "sdk", "test"]
 LocalHostSurface = Literal["desktop_gui", "cli", "sdk", "test"]
+VALID_HOST_SURFACES = frozenset(
+    {"desktop_gui", "public_web", "cli", "sdk", "test"}
+)
+VALID_LOCAL_HOST_SURFACES = frozenset(
+    {"desktop_gui", "cli", "sdk", "test"}
+)
+
+DEFAULT_LOCAL_TOOL_PERMISSIONS = frozenset(
+    {"read_file", "write_file", "destructive", "process", "network"}
+)
+DEFAULT_GUI_TOOL_OWNER_ID = "gui:local"
 
 
 class ExecutionProfileEscalation(ValueError):
@@ -30,6 +41,21 @@ PROFILE_AUTHORITY_KEYS = frozenset(
 )
 
 _PAYLOAD_CREDENTIAL_AND_PROXY_KEYS = frozenset({"cookie", "cookies", "proxy"})
+
+
+def execution_profile_identity_error(
+    *, host_surface: object, owner_id: object
+) -> str | None:
+    """Return a stable error for malformed execution ownership identities."""
+    if type(host_surface) is not str or host_surface not in VALID_HOST_SURFACES:
+        return "execution profile host_surface is invalid"
+    if (
+        type(owner_id) is not str
+        or not owner_id
+        or owner_id != owner_id.strip()
+    ):
+        return "execution profile owner_id is invalid"
+    return None
 
 
 def reject_execution_profile_overrides(payload: Mapping[str, Any]) -> None:
@@ -89,8 +115,12 @@ class ExecutionProfile:
     allow_external_plugins: bool
 
     def __post_init__(self) -> None:
-        if not self.owner_id.strip():
-            raise ValueError("owner_id must not be empty")
+        identity_error = execution_profile_identity_error(
+            host_surface=self.host_surface,
+            owner_id=self.owner_id,
+        )
+        if identity_error is not None:
+            raise ValueError(identity_error)
 
         object.__setattr__(self, "tool_permissions", frozenset(self.tool_permissions))
         object.__setattr__(
@@ -146,6 +176,11 @@ def local_execution_profile(
     tool_permissions: Iterable[str],
     allow_external_plugins: bool,
 ) -> ExecutionProfile:
+    if (
+        type(host_surface) is not str
+        or host_surface not in VALID_LOCAL_HOST_SURFACES
+    ):
+        raise ValueError("execution profile host_surface is invalid")
     return ExecutionProfile(
         host_surface=host_surface,
         owner_id=owner_id,
