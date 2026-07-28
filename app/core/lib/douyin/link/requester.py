@@ -1,7 +1,17 @@
 """展开抖音和 TikTok 文本中的短链，并按需读取响应内容。"""
 
+from asyncio import to_thread
+from json import loads
 from re import compile
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, urlsplit
+
+from shared.network.pinned_transport import (
+    PinnedTransport,
+    canonicalize_host,
+    canonicalize_request_target,
+)
+from shared.runtime_options import DomainPolicyViolation
 
 try:
     from ..tools import (
@@ -37,7 +47,95 @@ if TYPE_CHECKING:
     from httpx import AsyncClient, get, head
     from ..tools.parameter import Parameter
 
-__all__ = ["Requester"]
+__all__ = [
+    "Requester",
+    "is_douyin_public_host",
+    "is_douyin_live_reflow_url",
+    "is_douyin_public_url",
+]
+
+_DOUYIN_PUBLIC_SUFFIXES = (
+    "douyin.com",
+    "iesdouyin.com",
+    "tiktok.com",
+    "tiktokv.com",
+)
+_DOUYIN_LIVE_REFLOW_HOST = "webcast.amemv.com"
+_DOUYIN_LIVE_REFLOW_PATH = "/douyin/webcast/reflow/"
+_MAX_LIVE_PATH_DECODE_ROUNDS = 4
+_SENSITIVE_LIVE_HEADERS = frozenset(
+    {"authorization", "cookie", "host", "proxy-authorization"}
+)
+
+
+def is_douyin_public_host(host: str) -> bool:
+    """Return whether *host* is one complete canonical platform label suffix."""
+
+    try:
+        canonical = canonicalize_host(host)
+    except (DomainPolicyViolation, UnicodeError, ValueError):
+        return False
+    return any(
+        canonical == suffix or canonical.endswith(f".{suffix}")
+        for suffix in _DOUYIN_PUBLIC_SUFFIXES
+    )
+
+
+def is_douyin_public_url(url: str) -> bool:
+    """Validate one HTTP(S) URL before the public pinned transport sees it."""
+
+    try:
+        target = canonicalize_request_target(url)
+    except (DomainPolicyViolation, UnicodeError, ValueError):
+        return False
+    return is_douyin_public_host(target.host)
+
+
+def is_douyin_live_reflow_url(url: str) -> bool:
+    """Recognize the one legacy live-share endpoint without widening host policy."""
+
+    try:
+        target = canonicalize_request_target(url)
+    except (DomainPolicyViolation, UnicodeError, ValueError):
+        return False
+    path = urlsplit(target.url).path
+    return (
+        target.scheme == "https"
+        and target.host == _DOUYIN_LIVE_REFLOW_HOST
+        and target.port == 443
+        and path.startswith(_DOUYIN_LIVE_REFLOW_PATH)
+        and path != _DOUYIN_LIVE_REFLOW_PATH
+        and not _has_unsafe_live_path_segments(path)
+    )
+
+
+def _has_unsafe_live_path_segments(path: str) -> bool:
+    """Reject traversal at every bounded percent-decoding layer."""
+
+    current = path
+    for round_index in range(_MAX_LIVE_PATH_DECODE_ROUNDS + 1):
+        normalized = current.replace("\\", "/")
+        if any(segment in {".", ".."} for segment in normalized.split("/")):
+            return True
+        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in current):
+            return True
+        decoded = unquote(current)
+        if decoded == current:
+            return False
+        if round_index == _MAX_LIVE_PATH_DECODE_ROUNDS:
+            return True
+        current = decoded
+    return True
+
+
+def _is_retryable_transport_error(error: BaseException) -> bool:
+    if isinstance(error, (OSError, TimeoutError)):
+        return True
+    try:
+        from curl_cffi import CurlError
+    except ImportError:
+        return False
+    return isinstance(error, CurlError)
 
 class Requester:
     """识别文本 URL，并通过异步客户端跟随目标平台的重定向。"""
@@ -49,6 +147,8 @@ class Requester:
             params: "Parameter",
             client: "AsyncClient",
             headers: dict[str, str],
+            *,
+            transport: PinnedTransport | None = None,
     ):
         """复用调用方提供的客户端、日志器和重试配置。"""
         self.client = client
@@ -56,6 +156,7 @@ class Requester:
         self.log = params.logger
         self.max_retry = params.max_retry
         self.timeout = params.timeout
+        self.transport = transport or PinnedTransport(timeout=float(self.timeout))
 
     async def aclose(self) -> None:
         close = getattr(self.client, "aclose", None)
@@ -91,26 +192,46 @@ class Requester:
             content="url",
             proxy: str = None,
     ):
-        self.log.info(f"URL: {url}", False)
-        # 非目标域名原样返回，避免链接解析器向任意站点发起请求。
-        if "douyin.com" not in url and "tiktok.com" not in url:
+        del proxy
+        is_live_reflow = content == "text" and is_douyin_live_reflow_url(url)
+        if not is_douyin_public_url(url) and not is_live_reflow:
             return url
 
-        match (content in {"url", "headers"}, bool(proxy)):
-            case _:
-                response = await self.client.get(url, follow_redirects=True)
+        request_headers = self.headers
+        if is_live_reflow:
+            request_headers = {
+                key: value
+                for key, value in self.headers.items()
+                if key.lower() not in _SENSITIVE_LIVE_HEADERS
+            }
 
-        self.log.info(f"Response URL: {response.url}", False)
+        self.log.info("Resolving a public Douyin/TikTok URL", False)
+        try:
+            response = await to_thread(
+                self.transport.request,
+                "GET",
+                url,
+                headers=request_headers,
+                max_redirects=5,
+            )
+        except DomainPolicyViolation:
+            self.log.warning("Blocked an unsafe Douyin/TikTok redirect", False)
+            return url
+        except Exception as error:
+            if not _is_retryable_transport_error(error):
+                raise
+            self.log.warning("Transport request failed; retrying", False)
+            return None
+
         self.log.info(f"Response Code: {response.status_code}", False)
-        self.log.info(f"Response Headers: {dict(response.headers)}", False)
 
         match content:
             case "text":
                 return response.text
             case "content":
-                return response.content
+                return response.body
             case "json":
-                return response.json()
+                return loads(response.body)
             case "headers":
                 return response.headers
             case "url":
