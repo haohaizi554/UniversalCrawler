@@ -6,9 +6,9 @@
 
 ---
 
-## WebUI JavaScript 模块职责图（2026-07-10）
+## WebUI JavaScript 模块职责图（2026-07-10，2026-07-29 补充工具箱拆分）
 
-WebUI 保持无 Node、无构建器的经典脚本加载方式。`index.html` 先按固定顺序加载七个职责模块，最后加载 `app.js`：
+WebUI 保持无 Node、无构建器的经典脚本加载方式。`index.html` 先按固定顺序加载十个职责模块，最后加载 `app.js`：
 
 ```text
 index.html
@@ -19,10 +19,13 @@ index.html
   -> UcpSettingsController  设置分组、热更新、代理输入与认证状态
   -> UcpDialogController    目录、文件关联、任务选择弹窗及键盘/焦点清理
   -> UcpPlaybackController  图片/视频预览、媒体事件、进度、全屏与自动切换
+  -> UcpToolboxContract     工具目录、参数、投影和动作契约的纯数据归一
+  -> UcpToolboxView         工具箱 DOM、可见文案和用户输入读取
+  -> UcpToolboxController   工具选择、动作编排和页面生命周期
   -> app.js                 frontendState 所有者、AppContext、configure() 注入、启动、导航和兼容包装
 ```
 
-七个模块分别暴露冻结的 `window.Ucp*` namespace。每个 namespace 都有显式 `configure(options)` 和幂等 `dispose()`；worker、WebSocket 和 timer 由创建它的模块释放，runtime 在页面退出时只协调一次模块清理。
+十个模块分别暴露冻结的 `window.Ucp*` namespace。每个 namespace 都有显式 `configure(options)` 和幂等 `dispose()`；worker、WebSocket 和 timer 由创建它的模块释放，runtime 在页面退出时只协调一次模块清理。
 
 ### State access rule
 
