@@ -30,6 +30,77 @@ class FFmpegDownloader(BaseDownloader):
     DURATION_THRESHOLD_SEC = 600
     PROGRESS_TIMEOUT_SEC = 30
     STDERR_POLL_INTERVAL_SEC = 0.2
+    STDERR_QUEUE_MAX_LINES = 512
+    PROCESS_WAIT_TIMEOUT_SEC = 2
+    STDERR_JOIN_TIMEOUT_SEC = 1
+    RETRY_DELAY_SEC = 3
+    RETRY_STOP_POLL_INTERVAL_SEC = 0.1
+
+    @staticmethod
+    def _offer_latest_stderr(
+        target_queue: queue.Queue[bytes | None],
+        line: bytes | None,
+    ) -> None:
+        """Keep stderr bounded while preserving the newest progress evidence."""
+        while True:
+            try:
+                target_queue.put_nowait(line)
+                return
+            except queue.Full:
+                try:
+                    target_queue.get_nowait()
+                except queue.Empty:
+                    continue
+
+    @staticmethod
+    def _log_exception_best_effort(
+        action: str,
+        exc: BaseException,
+        **kwargs: object,
+    ) -> None:
+        """Record lifecycle diagnostics without replacing the primary result."""
+        try:
+            debug_logger.log_exception(
+                "FFmpegDownloader",
+                action,
+                exc,
+                **kwargs,
+            )
+        except BaseException:
+            # Cleanup and diagnostic paths must never replace cancellation or
+            # the original download failure, including logger shutdown races.
+            pass
+
+    @classmethod
+    def _close_stderr_best_effort(cls, stderr: object | None) -> bool:
+        """Close the raw stderr pipe so a blocked reader can leave promptly."""
+        if stderr is None:
+            return True
+        try:
+            close_stderr = getattr(stderr, "close", None)
+            if callable(close_stderr):
+                close_stderr()
+                return True
+            return False
+        except BaseException as exc:
+            cls._log_exception_best_effort("close_stderr", exc)
+            return False
+
+    @staticmethod
+    def _raise_if_stopped(check_stop_func: StopCheck) -> None:
+        if check_stop_func():
+            raise DownloaderStoppedError("用户停止下载")
+
+    @classmethod
+    def _wait_for_retry(cls, check_stop_func: StopCheck) -> None:
+        """以短间隔等待重试，取消到达后不再启动下一轮副作用。"""
+        deadline = time.monotonic() + cls.RETRY_DELAY_SEC
+        while True:
+            cls._raise_if_stopped(check_stop_func)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(cls.RETRY_STOP_POLL_INTERVAL_SEC, remaining))
 
     @staticmethod
     def _parse_clock_to_seconds(raw: str) -> float | None:
@@ -182,6 +253,7 @@ class FFmpegDownloader(BaseDownloader):
         proxy = video_item.meta.get("proxy")
         proxies = requests_proxy_mapping(proxy)
         request_timeout = cfg.get("download", "request_timeout", 60)
+        self._raise_if_stopped(check_stop_func)
         domain_policy = self._domain_policy_for_item(video_item)
         if domain_policy is not None:
             domain_policy.require_public_url(original_url)
@@ -211,20 +283,25 @@ class FFmpegDownloader(BaseDownloader):
                         resolved_size = int(content_length)
                     except ValueError:
                         resolved_size = None
-                debug_logger.log_api(
-                    component="FFmpegDownloader",
-                    api_name="head_redirect",
-                    request={"url": source_url},
-                    response_summary={"real_url": real_url, "content_length": resp.headers.get("content-length")},
-                    message="ffmpeg 下载前检查真实地址",
-                    status_code=resp.status_code,
-                    trace_id=trace_id,
-                )
+                try:
+                    debug_logger.log_api(
+                        component="FFmpegDownloader",
+                        api_name="head_redirect",
+                        request={"url": source_url},
+                        response_summary={
+                            "real_url": real_url,
+                            "content_length": resp.headers.get("content-length"),
+                        },
+                        message="ffmpeg 下载前检查真实地址",
+                        status_code=resp.status_code,
+                        trace_id=trace_id,
+                    )
+                except BaseException as exc:
+                    self._log_exception_best_effort("head_redirect_log_api", exc)
                 if real_url != source_url:
                     resolved_url = real_url
             except requests.RequestException as exc:
-                debug_logger.log_exception(
-                    "FFmpegDownloader",
+                self._log_exception_best_effort(
                     "head_redirect",
                     exc,
                     context={"url": source_url},
@@ -244,49 +321,68 @@ class FFmpegDownloader(BaseDownloader):
             video_item.meta["download_temp_files"] = temp_files
         for attempt in range(max_retries + 1):
             attempt_completed = False
+            retry_requested = False
+            retry_error: BaseException | None = None
             local_proxy = None
             stderr_tail: deque[str] = deque(maxlen=12)
-            if domain_policy is None:
-                current_url, current_expected_size = _resolve_stream_url(original_url)
-            else:
-            # 额外的 HEAD 预检会在受控代理之外重新打开 DNS 与重定向链路，
-            # 既破坏已完成的地址校验，也不会增加安全性，因此直接省略。
-                current_url, current_expected_size = original_url, None
-            url = current_url
-            if current_expected_size:
-                expected_size_bytes = current_expected_size
-            command_headers = headers
-            command_proxy = proxy
-            if domain_policy is not None:
-                local_proxy = self._start_validated_media_proxy(video_item, headers, proxy)
-                url = local_proxy.url
-                command_headers = {"User-Agent": user_agent}
-                command_proxy = None
-            cmd = FFmpegExternalTool.build_download_command(
-                ffmpeg,
-                url,
-                temp_path,
-                command_headers,
-                proxy=command_proxy,
-                timeout_seconds=request_timeout,
-            )
-            debug_logger.log_command(
-                component="FFmpegDownloader",
-                tool_name="ffmpeg",
-                command_args=cmd,
-                message="准备调用 ffmpeg 执行下载",
-                context={
-                    "save_path": save_path,
-                    "temp_path": temp_path,
-                    "source_url": url,
-                    "title": video_item.title,
-                    "attempt": attempt + 1,
-                },
-                trace_id=trace_id,
-            )
             process = None
             stderr_thread = None
+            stderr_thread_started = False
+            stderr_pipe = None
+            stderr_pipe_closed = threading.Event()
             try:
+                # 每轮在任何 DNS、代理或子进程副作用之前重新线性化取消。
+                self._raise_if_stopped(check_stop_func)
+                if domain_policy is None:
+                    current_url, current_expected_size = _resolve_stream_url(
+                        original_url
+                    )
+                else:
+                    # 额外的 HEAD 预检会在受控代理之外重新打开 DNS 与重定向链路，
+                    # 既破坏已完成的地址校验，也不会增加安全性，因此直接省略。
+                    current_url, current_expected_size = original_url, None
+                url = current_url
+                if current_expected_size:
+                    expected_size_bytes = current_expected_size
+                command_headers = headers
+                command_proxy = proxy
+                self._raise_if_stopped(check_stop_func)
+                if domain_policy is not None:
+                    local_proxy = self._start_validated_media_proxy(
+                        video_item,
+                        headers,
+                        proxy,
+                    )
+                    self._raise_if_stopped(check_stop_func)
+                    url = local_proxy.url
+                    command_headers = {"User-Agent": user_agent}
+                    command_proxy = None
+                cmd = FFmpegExternalTool.build_download_command(
+                    ffmpeg,
+                    url,
+                    temp_path,
+                    command_headers,
+                    proxy=command_proxy,
+                    timeout_seconds=request_timeout,
+                )
+                try:
+                    debug_logger.log_command(
+                        component="FFmpegDownloader",
+                        tool_name="ffmpeg",
+                        command_args=cmd,
+                        message="准备调用 ffmpeg 执行下载",
+                        context={
+                            "save_path": save_path,
+                            "temp_path": temp_path,
+                            "source_url": url,
+                            "title": video_item.title,
+                            "attempt": attempt + 1,
+                        },
+                        trace_id=trace_id,
+                    )
+                except BaseException as exc:
+                    self._log_exception_best_effort("log_command", exc)
+                self._raise_if_stopped(check_stop_func)
                 process = subprocess.Popen(
                     cmd,
                     startupinfo=startupinfo,
@@ -294,10 +390,15 @@ class FFmpegDownloader(BaseDownloader):
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
                     env=isolated_media_subprocess_env(),
+                    # A raw FileIO pipe can be closed from the lifecycle owner
+                    # to release a blocked reader without BufferedReader locks.
+                    bufsize=0,
                 )
                 last_progress_time = time.time()
                 last_progress = 0
-                stderr_queue: queue.Queue[bytes | None] = queue.Queue()
+                stderr_queue: queue.Queue[bytes | None] = queue.Queue(
+                    maxsize=self.STDERR_QUEUE_MAX_LINES
+                )
                 stderr_closed = False
                 stderr_pipe = process.stderr
 
@@ -307,22 +408,24 @@ class FFmpegDownloader(BaseDownloader):
                 ) -> None:
                     """持续读取 stderr，避免操作系统管道阻塞子进程。
 
-                    ``stderr_queue`` 没有容量上限；主线程消费滞后时，已读取的数据仍
-                    可能在内存中积压。
+                    队列只保留最新一段输出；主线程消费滞后时丢弃最旧行，避免
+                    长任务或异常日志洪峰无界占用内存。
                     """
                     if stderr is None:
-                        target_queue.put(None)
+                        self._offer_latest_stderr(target_queue, None)
                         return
                     try:
                         while True:
                             line = stderr.readline()
                             if not line:
                                 break
-                            target_queue.put(line)
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        debug_logger.log_exception("FFmpegDownloader", "stderr_pump", exc)
+                            self._offer_latest_stderr(target_queue, line)
+                    except BaseException as exc:
+                        self._log_exception_best_effort("stderr_pump", exc)
                     finally:
-                        target_queue.put(None)
+                        if self._close_stderr_best_effort(stderr):
+                            stderr_pipe_closed.set()
+                        self._offer_latest_stderr(target_queue, None)
 
                 stderr_thread = threading.Thread(
                     target=_pump_stderr,
@@ -330,11 +433,10 @@ class FFmpegDownloader(BaseDownloader):
                     daemon=True,
                 )
                 stderr_thread.start()
+                stderr_thread_started = True
 
                 while True:
-                    if check_stop_func():
-                        process.kill()
-                        raise DownloaderStoppedError("用户停止下载")
+                    self._raise_if_stopped(check_stop_func)
 
                     try:
                         line = stderr_queue.get(timeout=self.STDERR_POLL_INTERVAL_SEC)
@@ -363,79 +465,206 @@ class FFmpegDownloader(BaseDownloader):
                     )
                     if parsed_progress is not None and parsed_progress > last_progress:
                         last_progress = parsed_progress
-                        self._emit_progress(progress_callback, parsed_progress)
+                        try:
+                            self._emit_progress(progress_callback, parsed_progress)
+                        except BaseException as exc:
+                            self._log_exception_best_effort("progress", exc)
 
-                process.wait()
+                process.wait(timeout=self.PROCESS_WAIT_TIMEOUT_SEC)
+                self._raise_if_stopped(check_stop_func)
                 if process.returncode == 0 and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                    # Cancellation can race with the filesystem checks above;
+                    # check again at the atomic publication boundary.
+                    self._raise_if_stopped(check_stop_func)
                     self._finalize_download(temp_path, save_path)
                     attempt_completed = True
-                    self._emit_progress(progress_callback, 100)
-                    debug_logger.log(
-                        component="FFmpegDownloader",
-                        action="download_finished",
-                        message="ffmpeg 下载完成",
-                        status_code="FFMPEG_OK",
-                        details={"save_path": save_path, "source_url": url, "title": video_item.title},
-                        trace_id=trace_id,
-                    )
+                    try:
+                        self._emit_progress(progress_callback, 100)
+                    except BaseException as exc:
+                        self._log_exception_best_effort("final_progress", exc)
+                    try:
+                        debug_logger.log(
+                            component="FFmpegDownloader",
+                            action="download_finished",
+                            message="ffmpeg 下载完成",
+                            status_code="FFMPEG_OK",
+                            details={
+                                "save_path": save_path,
+                                "source_url": url,
+                                "title": video_item.title,
+                            },
+                            trace_id=trace_id,
+                        )
+                    except BaseException as exc:
+                        self._log_exception_best_effort("download_finished", exc)
                     return
                 if attempt < max_retries:
-                    time.sleep(3)
+                    retry_requested = True
+                    retry_error = ExternalToolError(
+                        f"ffmpeg 下载失败 (Code: {process.returncode})"
+                    )
                 else:
                     raise ExternalToolError(f"ffmpeg 下载失败 (Code: {process.returncode})")
             except DownloaderStoppedError:
                 raise
             except DomainPolicyViolation as exc:
+                if check_stop_func():
+                    raise DownloaderStoppedError("用户停止下载") from exc
                 raise ExternalToolError(f"ffmpeg 下载地址违反公网访问策略: {exc}") from exc
-            except (OSError, RuntimeError, ValueError, ExternalToolError) as exc:
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                subprocess.SubprocessError,
+                ExternalToolError,
+            ) as exc:
+                if check_stop_func():
+                    raise DownloaderStoppedError("用户停止下载") from exc
                 if attempt < max_retries:
-                    time.sleep(3)
+                    retry_requested = True
+                    retry_error = exc
                 else:
-                    debug_logger.log_exception(
-                        "FFmpegDownloader",
+                    self._log_exception_best_effort(
                         "download_error",
                         exc,
                         context={"save_path": save_path, "source_url": url, "title": video_item.title, "stderr_tail": list(stderr_tail)},
                         trace_id=trace_id,
                     )
                     raise ExternalToolError(f"ffmpeg 下载失败: {exc}") from exc
+            except BaseException as exc:
+                if check_stop_func():
+                    raise DownloaderStoppedError("用户停止下载") from exc
+                raise
             finally:
+                process_reaped = process is None
+                stderr_thread_stopped = not stderr_thread_started
+                proxy_stopped = local_proxy is None
+                temp_removed = attempt_completed
                 if process is not None:
                     # 外部工具失败时必须先收掉进程和管道，再清理临时文件，Windows 上尤其容易被句柄占用。
-                    returncode = getattr(process, "returncode", None)
+                    try:
+                        returncode = getattr(process, "returncode", None)
+                    except BaseException as exc:
+                        self._log_exception_best_effort("read_process_returncode", exc)
+                        returncode = None
                     if returncode is None:
                         try:
                             returncode = process.poll()
-                        except Exception:
+                        except BaseException as exc:
+                            self._log_exception_best_effort("poll_process", exc)
                             returncode = None
+                    if returncode is not None:
+                        process_reaped = True
                     if returncode is None:
                         try:
                             process.kill()
-                        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                            debug_logger.log_exception("FFmpegDownloader", "kill_process", exc)
-                    stderr = getattr(process, "stderr", None)
-                    close_stderr = getattr(stderr, "close", None)
-                    if callable(close_stderr):
-                        try:
-                            close_stderr()
-                        except (OSError, RuntimeError, ValueError) as exc:
-                            debug_logger.log_exception("FFmpegDownloader", "close_stderr", exc)
+                        except BaseException as exc:
+                            self._log_exception_best_effort("kill_process", exc)
                     if returncode is None:
                         try:
-                            process.wait(timeout=2)
-                        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                            debug_logger.log_exception("FFmpegDownloader", "wait_process_after_kill", exc)
-                if stderr_thread is not None:
+                            process.wait(timeout=self.PROCESS_WAIT_TIMEOUT_SEC)
+                            process_reaped = True
+                        except BaseException as exc:
+                            self._log_exception_best_effort("wait_process_after_kill", exc)
+                if not process_reaped:
+                    # If the process cannot be reaped, EOF is not guaranteed.
+                    # Closing the unbuffered pipe is the only bounded way to
+                    # release a reader blocked in readline().
+                    if self._close_stderr_best_effort(stderr_pipe):
+                        stderr_pipe_closed.set()
+                if (
+                    not stderr_thread_started
+                    and stderr_pipe is not None
+                    and not stderr_pipe_closed.is_set()
+                ):
+                    if self._close_stderr_best_effort(stderr_pipe):
+                        stderr_pipe_closed.set()
+                if stderr_thread is not None and stderr_thread_started:
                     try:
-                        stderr_thread.join(timeout=1)
-                    except RuntimeError as exc:
-                        debug_logger.log_exception("FFmpegDownloader", "join_stderr_thread", exc)
+                        stderr_thread.join(timeout=self.STDERR_JOIN_TIMEOUT_SEC)
+                    except BaseException as exc:
+                        self._log_exception_best_effort("join_stderr_thread", exc)
+                    try:
+                        stderr_thread_alive = stderr_thread.is_alive()
+                    except BaseException as exc:
+                        self._log_exception_best_effort("inspect_stderr_thread", exc)
+                        stderr_thread_alive = True
+                    if stderr_thread_alive:
+                        if self._close_stderr_best_effort(stderr_pipe):
+                            stderr_pipe_closed.set()
+                        try:
+                            stderr_thread.join(timeout=self.STDERR_JOIN_TIMEOUT_SEC)
+                        except BaseException as exc:
+                            self._log_exception_best_effort(
+                                "join_stderr_thread_after_close",
+                                exc,
+                            )
+                        try:
+                            stderr_thread_alive = stderr_thread.is_alive()
+                        except BaseException as exc:
+                            self._log_exception_best_effort(
+                                "inspect_stderr_thread_after_close",
+                                exc,
+                            )
+                            stderr_thread_alive = True
+                    stderr_thread_stopped = not stderr_thread_alive
+                stderr_pipe_released = (
+                    stderr_pipe is None or stderr_pipe_closed.is_set()
+                )
                 if local_proxy is not None:
-                    local_proxy.stop()
+                    try:
+                        local_proxy.stop()
+                        proxy_stopped = True
+                    except BaseException as exc:
+                        self._log_exception_best_effort(
+                            "stop_local_proxy",
+                            exc,
+                        )
                 if not attempt_completed:
                     try:
-                        for cleanup_path in (temp_path, save_path):
-                            if os.path.exists(cleanup_path):
-                                os.remove(cleanup_path)
-                    except OSError:
-                        pass
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                        temp_removed = not os.path.exists(temp_path)
+                    except BaseException as exc:
+                        temp_removed = False
+                        self._log_exception_best_effort(
+                            "cleanup_partial_download",
+                            exc,
+                        )
+            if retry_requested:
+                cleanup_status = {
+                    "process_reaped": process_reaped,
+                    "stderr_thread_stopped": stderr_thread_stopped,
+                    "stderr_pipe_released": stderr_pipe_released,
+                    "proxy_stopped": proxy_stopped,
+                    "temp_removed": temp_removed,
+                }
+                if not all(cleanup_status.values()):
+                    cleanup_error = RuntimeError(
+                        "ffmpeg retry blocked by incomplete cleanup: "
+                        + ", ".join(
+                            name
+                            for name, completed in cleanup_status.items()
+                            if not completed
+                        )
+                    )
+                    self._log_exception_best_effort(
+                        "retry_cleanup_incomplete",
+                        cleanup_error,
+                        context={
+                            "save_path": save_path,
+                            "source_url": url,
+                            **cleanup_status,
+                        },
+                        trace_id=trace_id,
+                    )
+                    if isinstance(retry_error, ExternalToolError):
+                        raise retry_error
+                    if retry_error is not None:
+                        raise ExternalToolError(
+                            f"ffmpeg 下载失败: {retry_error}"
+                        ) from retry_error
+                    raise ExternalToolError(
+                        "ffmpeg 下载失败且重试前资源清理未完成"
+                    ) from cleanup_error
+                self._wait_for_retry(check_stop_func)
