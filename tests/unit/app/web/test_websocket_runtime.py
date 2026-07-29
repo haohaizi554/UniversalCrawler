@@ -79,22 +79,19 @@ class _RecordingMutationWorkflow:
         return {"status": "ok"}
 
 class WebSocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_active_connection_refreshes_and_releases_session_lease(self):
+    async def test_active_connection_refreshes_context_and_disconnects_transport(self):
         manager = _FakeConnectionManager()
         runtime = WebSocketRuntime(connection_manager=manager, dispatcher=_FakeDispatcher())
         ws = _OneMessageWebSocket()
         context = SimpleNamespace(
             session_id="session-a",
-            mark_websocket_connected=Mock(),
-            mark_websocket_disconnected=Mock(),
             touch=Mock(),
         )
 
         await runtime.run(ws, context)
 
-        context.mark_websocket_connected.assert_called_once()
         context.touch.assert_called_once()
-        context.mark_websocket_disconnected.assert_called_once()
+        self.assertEqual(manager.disconnected, [ws, ws])
 
     async def test_oversized_message_closes_and_disconnects_connection(self):
         manager = _FakeConnectionManager()

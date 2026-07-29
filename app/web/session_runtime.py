@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_for_futures
+from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
 import os
 import ipaddress
 import secrets
@@ -21,6 +22,10 @@ SendFactory = Callable[[str], Callable[[str, Any], Any]]
 TEST_TRANSPORT_HOSTS = {"testserver", "testclient"}
 DEFAULT_DISPOSAL_WORKERS = 2
 DEFAULT_DISPOSAL_QUEUE_CAPACITY = 8
+
+
+class WebSessionCapacityError(RuntimeError):
+    """Raised when a new Web session cannot be admitted without exceeding bounds."""
 
 
 def build_public_web_session_profile(
@@ -274,26 +279,94 @@ class WebSessionRegistry:
         disposal_capacity = max(1, int(disposal_workers)) + max(0, int(disposal_queue_capacity))
         self._disposal_slots = threading.BoundedSemaphore(disposal_capacity)
         self._disposal_futures: set[Future[Any]] = set()
+        self._terminal_disposal_backlog: deque[WebSessionContext] = deque()
+        self._disposal_idle = threading.Condition(self._lock)
         self._disposal_executor_closed = False
 
     def get_or_create(self, session_id: str) -> WebSessionContext:
         self.prune()
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Web session registry is shutting down")
-            context = self._contexts.get(session_id)
-            if context is None:
-                context = WebSessionContext(
-                    session_id,
-                    send_factory=self._send_factory,
-                    controller_factory=self._controller_factory,
-                    workflow_factory=self._workflow_factory,
-                )
+        detached: tuple[str, WebSessionContext] | None = None
+        with self._disposal_submit_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("Web session registry is shutting down")
+                context = self._contexts.get(session_id)
+                if context is not None:
+                    context.touch()
+                    return context
+
+                if len(self._contexts) >= self._max_contexts:
+                    candidate = self._oldest_evictable_context_locked()
+                    if candidate is None or not self._disposal_slots.acquire(blocking=False):
+                        raise WebSessionCapacityError(
+                            "Web session capacity is exhausted; retry later"
+                        )
+                    detached = candidate
+
+                try:
+                    context = WebSessionContext(
+                        session_id,
+                        send_factory=self._send_factory,
+                        controller_factory=self._controller_factory,
+                        workflow_factory=self._workflow_factory,
+                    )
+                except BaseException:
+                    if detached is not None:
+                        self._disposal_slots.release()
+                    raise
                 context._monotonic = self._monotonic
+                if detached is not None:
+                    self._contexts.pop(detached[0], None)
                 self._contexts[session_id] = context
-            context.touch()
-        self._evict_overflow()
-        return context
+                context.touch()
+
+            if detached is not None:
+                try:
+                    self._submit_reserved_disposal(detached[1])
+                except RuntimeError:
+                    with self._lock:
+                        if self._contexts.get(session_id) is context:
+                            self._contexts.pop(session_id, None)
+                        self._contexts.setdefault(detached[0], detached[1])
+                    self._disposal_slots.release()
+                    shutdown = getattr(context.controller, "shutdown", None)
+                    if callable(shutdown):
+                        self._safe_shutdown_controller(shutdown)
+                    raise
+            return context
+
+    def acquire_websocket_context(
+        self,
+        session_id: str,
+        session_token: str,
+    ) -> WebSessionContext | None:
+        """Authenticate and reserve an existing context in one registry critical section."""
+        with self._disposal_submit_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("Web session registry is shutting down")
+                context = self._contexts.get(session_id)
+                if context is None or not secrets.compare_digest(
+                    str(session_token or ""),
+                    context.session_token,
+                ):
+                    return None
+                context.touch()
+                context.mark_websocket_connected()
+                return context
+
+    def _oldest_evictable_context_locked(self) -> tuple[str, WebSessionContext] | None:
+        candidates = (
+            (getattr(context, "last_access_at", 0.0), session_id, context)
+            for session_id, context in self._contexts.items()
+            if session_id not in self._pinned_session_ids
+            and not context.has_active_websocket()
+        )
+        try:
+            _, session_id, context = min(candidates, key=lambda item: item[0])
+        except ValueError:
+            return None
+        return session_id, context
 
     def prune(self) -> None:
         if self._idle_ttl_seconds <= 0:
@@ -307,72 +380,130 @@ class WebSessionRegistry:
                 and not context.has_active_websocket()
                 and now - getattr(context, "last_access_at", now) > self._idle_ttl_seconds
             ]
+        idle_cutoff = now - self._idle_ttl_seconds
         for session_id in expired_session_ids:
-            self._dispose_context(session_id)
+            self._dispose_context(session_id, idle_cutoff=idle_cutoff)
 
-    def _evict_overflow(self) -> None:
-        with self._lock:
-            overflow = len(self._contexts) - self._max_contexts
-            if overflow <= 0:
-                return
-            eviction_candidates = sorted(
-                (
-                    (getattr(context, "last_access_at", 0.0), session_id)
-                    for session_id, context in self._contexts.items()
-                    if session_id not in self._pinned_session_ids
-                    and not context.has_active_websocket()
-                ),
-                key=lambda item: item[0],
-            )
-        if overflow <= 0:
-            return
-        for _, session_id in eviction_candidates[:overflow]:
-            self._dispose_context(session_id)
-
-    def _dispose_context(self, session_id: str) -> Future[Any] | None:
+    def _dispose_context(
+        self,
+        session_id: str,
+        *,
+        idle_cutoff: float | None = None,
+    ) -> Future[Any] | None:
         with self._disposal_submit_lock:
             with self._lock:
-                context = self._contexts.pop(session_id, None)
-            if context is None:
-                return None
-            return self._dispose_detached_context(context)
-
-    def _dispose_detached_context(self, context: WebSessionContext) -> Future[Any] | None:
-        """取消会话所属任务，再将其控制器排队关闭。"""
-        with self._disposal_submit_lock:
-            workflow = getattr(context, "workflow", None)
-            cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
-            if callable(cancel_broadcasts):
-                cancel_broadcasts()
-            tasks: list = []
-            with context._background_tasks_lock:
-                tasks = list(context.background_tasks)
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            controller = getattr(context, "controller", None)
-            shutdown = getattr(controller, "shutdown", None)
-            if not callable(shutdown):
-                return None
-
-            self._disposal_slots.acquire()
+                context = self._contexts.get(session_id)
+                if context is None:
+                    return None
+                with context._access_lock:
+                    if idle_cutoff is not None and (
+                        context._active_websockets > 0
+                        or context.last_access_at > idle_cutoff
+                    ):
+                        return None
+                    if not self._disposal_slots.acquire(blocking=False):
+                        return None
+                    if self._contexts.get(session_id) is not context:
+                        self._disposal_slots.release()
+                        return None
+                    self._contexts.pop(session_id)
             try:
-                future = self._disposal_executor.submit(
-                    self._safe_shutdown_controller,
-                    shutdown,
-                )
+                return self._submit_reserved_disposal(context)
             except RuntimeError:
+                with self._lock:
+                    self._contexts.setdefault(session_id, context)
                 self._disposal_slots.release()
                 raise
+
+    def _submit_reserved_disposal(self, context: WebSessionContext) -> Future[Any] | None:
+        controller = getattr(context, "controller", None)
+        shutdown = getattr(controller, "shutdown", None)
+        if not callable(shutdown):
+            self._cancel_context_activity(context)
+            self._disposal_slots.release()
+            return None
+
+        start_gate = threading.Event()
+        future = self._disposal_executor.submit(
+            self._shutdown_controller_after_gate,
+            start_gate,
+            shutdown,
+        )
+        try:
             with self._lock:
                 self._disposal_futures.add(future)
             future.add_done_callback(self._disposal_finished)
-            return future
+            self._cancel_context_activity(context)
+        finally:
+            start_gate.set()
+        return future
+
+    @staticmethod
+    def _cancel_context_activity(context: WebSessionContext) -> None:
+        workflow = getattr(context, "workflow", None)
+        cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
+        if callable(cancel_broadcasts):
+            try:
+                cancel_broadcasts()
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Web session broadcast cancellation failed",
+                    exc_info=True,
+                )
+        with context._background_tasks_lock:
+            tasks = tuple(context.background_tasks)
+        for task in tasks:
+            if task.done():
+                continue
+            try:
+                task.cancel()
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Web session background task cancellation failed",
+                    exc_info=True,
+                )
+
+    @classmethod
+    def _shutdown_controller_after_gate(
+        cls,
+        start_gate: threading.Event,
+        shutdown: Callable[[], Any],
+    ) -> None:
+        start_gate.wait()
+        cls._safe_shutdown_controller(shutdown)
 
     def _disposal_finished(self, future: Future[Any]) -> None:
-        self._disposal_slots.release()
+        with self._disposal_submit_lock:
+            self._disposal_slots.release()
+            with self._disposal_idle:
+                self._disposal_futures.discard(future)
+            self._schedule_terminal_backlog_locked()
+            self._close_disposal_executor_if_idle_locked()
+            with self._disposal_idle:
+                self._disposal_idle.notify_all()
+
+    def _schedule_terminal_backlog_locked(self) -> None:
+        while self._terminal_disposal_backlog:
+            if not self._disposal_slots.acquire(blocking=False):
+                return
+            with self._lock:
+                context = self._terminal_disposal_backlog.popleft()
+            try:
+                self._submit_reserved_disposal(context)
+            except RuntimeError:
+                self._disposal_slots.release()
+                self._cancel_context_activity(context)
+                shutdown = getattr(context.controller, "shutdown", None)
+                if callable(shutdown):
+                    self._safe_shutdown_controller(shutdown)
+
+    def _close_disposal_executor_if_idle_locked(self) -> None:
         with self._lock:
-            self._disposal_futures.discard(future)
+            idle = not self._disposal_futures and not self._terminal_disposal_backlog
+        if not self._closed or not idle or self._disposal_executor_closed:
+            return
+        self._disposal_executor_closed = True
+        self._disposal_executor.shutdown(wait=False, cancel_futures=False)
 
     def shutdown_all(self, *, wait: bool = False, timeout: float | None = 5.0) -> None:
         """封闭会话注册表，并释放包括固定会话在内的所有上下文。
@@ -387,21 +518,28 @@ class WebSessionRegistry:
                 self._contexts.clear()
 
             for context in contexts:
-                self._dispose_detached_context(context)
-            with self._lock:
-                disposal_futures = tuple(self._disposal_futures)
-            if not self._disposal_executor_closed:
-                self._disposal_executor_closed = True
-                self._disposal_executor.shutdown(wait=False, cancel_futures=False)
+                self._cancel_context_activity(context)
+            with self._disposal_idle:
+                self._terminal_disposal_backlog.extend(contexts)
+            self._schedule_terminal_backlog_locked()
+            self._close_disposal_executor_if_idle_locked()
         if not wait:
             return
 
         wait_timeout = None if timeout is None else max(0.0, float(timeout))
-        wait_for_futures(disposal_futures, timeout=wait_timeout)
+        deadline = None if wait_timeout is None else time.monotonic() + wait_timeout
+        with self._disposal_idle:
+            while self._disposal_futures or self._terminal_disposal_backlog:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    break
+                self._disposal_idle.wait(timeout=remaining)
+        with self._disposal_submit_lock:
+            self._close_disposal_executor_if_idle_locked()
 
     @staticmethod
     def _safe_shutdown_controller(shutdown: Callable[[], Any]) -> None:
         try:
             shutdown()
-        except (RuntimeError, OSError, AttributeError):
+        except Exception:
             logging.getLogger(__name__).warning("Controller shutdown callback failed", exc_info=True)

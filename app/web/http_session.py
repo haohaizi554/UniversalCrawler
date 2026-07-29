@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.web.session_runtime import (
+    WebSessionCapacityError,
     WebSessionContext,
     WebSessionRegistry,
     is_allowed_origin,
@@ -54,7 +55,14 @@ class HttpSessionCoordinator:
             return await call_next(request)
 
         session_id = request.cookies.get(self._session_cookie_name) or uuid4().hex
-        context = self._session_registry.get_or_create(session_id)
+        try:
+            context = self._session_registry.get_or_create(session_id)
+        except WebSessionCapacityError:
+            return JSONResponse(
+                {"status": "error", "error": "Web session capacity exhausted; retry later"},
+                status_code=503,
+                headers={"Cache-Control": "no-store", "Retry-After": "1"},
+            )
         request.state.session_id = session_id
         request.state.session_context = context
 

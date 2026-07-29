@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from fastapi.responses import JSONResponse
 
 from app.web.http_session import HttpSessionCoordinator
-from app.web.session_runtime import WebSessionRegistry
+from app.web.session_runtime import WebSessionCapacityError, WebSessionRegistry
 
 
 class HttpSessionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
@@ -66,6 +66,32 @@ class HttpSessionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+
+    async def test_capacity_exhaustion_returns_retryable_response_without_cookies(self) -> None:
+        request = self._request(client_host="127.0.0.1")
+        call_next_called = False
+
+        async def call_next(_request):
+            nonlocal call_next_called
+            call_next_called = True
+            return JSONResponse({"status": "ok"})
+
+        original_get_or_create = self.registry.get_or_create
+
+        def reject_session(_session_id):
+            raise WebSessionCapacityError("session capacity exhausted")
+
+        self.registry.get_or_create = reject_session
+        try:
+            response = await self.coordinator.handle(request, call_next)
+        finally:
+            self.registry.get_or_create = original_get_or_create
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["retry-after"], "1")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn("set-cookie", response.headers)
+        self.assertFalse(call_next_called)
 
     def test_csrf_cookie_is_accepted_as_double_submit_session_token(self) -> None:
         context = self.registry.get_or_create("session-a")

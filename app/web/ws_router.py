@@ -22,8 +22,11 @@ def build_ws_router(
         binding = await session_binder.bind(ws)
         if binding is None:
             return
-        await connection_manager.connect(ws, binding.session_id)
-        await bootstrapper.initialize(ws, binding.context, create_task_fn=create_task_provider())
-        await ws_runtime.run(ws, binding.context)
+        try:
+            await connection_manager.connect(ws, binding.session_id)
+            await bootstrapper.initialize(ws, binding.context, create_task_fn=create_task_provider())
+            await ws_runtime.run(ws, binding.context)
+        finally:
+            binding.release()
 
     return router
