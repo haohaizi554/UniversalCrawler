@@ -38,6 +38,7 @@ _DEFAULT_TIMEOUT_SECONDS = 2.0
 _MIN_TIMEOUT_SECONDS = 0.1
 _MAX_TIMEOUT_SECONDS = 5.0
 _POLL_INTERVAL_SECONDS = 0.02
+_MAX_CONCURRENT_PROBES = 6
 
 _INPUT_SCHEMA = {
     "type": "object",
@@ -546,31 +547,112 @@ def _timed_out_probe(name: str, timeout: float) -> dict[str, Any]:
     )
 
 
+def _capacity_exhausted_probe(name: str) -> dict[str, Any]:
+    return _check(
+        "unavailable",
+        f"{_PROBE_LABELS[name]} 探测已跳过：诊断执行资源正忙",
+        reason="probe_capacity_exhausted",
+        retryable=True,
+    )
+
+
+_ProbeResultQueue = queue.Queue[tuple[str, dict[str, Any]]]
+_ProbeTask = tuple[
+    str,
+    Callable[[], dict[str, Any]],
+    _ProbeResultQueue,
+]
+
+
+class _BoundedProbeExecutor:
+    """Run probes on fixed daemon workers without waiting or queued overflow.
+
+    Python cannot interrupt a permanently blocked DNS or Playwright call. Such a
+    worker deliberately keeps its slot, so later probes fail fast at the fixed
+    capacity; daemon ownership still lets interpreter shutdown complete.
+    """
+
+    def __init__(self, worker_count: int) -> None:
+        if worker_count < 1:
+            raise ValueError("worker_count must be positive")
+        self._worker_count = worker_count
+        self._slots = threading.BoundedSemaphore(worker_count)
+        self._tasks: queue.Queue[_ProbeTask] = queue.Queue(maxsize=worker_count)
+        self._workers: list[threading.Thread] = []
+        self._worker_lock = threading.Lock()
+
+    def try_submit(
+        self,
+        name: str,
+        operation: Callable[[], dict[str, Any]],
+        result_queue: _ProbeResultQueue,
+    ) -> bool:
+        if not self._slots.acquire(blocking=False):
+            return False
+        try:
+            self._ensure_workers()
+            self._tasks.put_nowait((name, operation, result_queue))
+        except BaseException:
+            self._slots.release()
+            raise
+        return True
+
+    def _ensure_workers(self) -> None:
+        with self._worker_lock:
+            while len(self._workers) < self._worker_count:
+                worker = threading.Thread(
+                    target=self._worker_main,
+                    name=f"environment-diagnostics-worker-{len(self._workers) + 1}",
+                    daemon=True,
+                )
+                worker.start()
+                self._workers.append(worker)
+
+    def _worker_main(self) -> None:
+        while True:
+            name, operation, result_queue = self._tasks.get()
+            try:
+                try:
+                    result = operation()
+                except BaseException as exc:
+                    # Probe failures are findings; a failed probe must not kill a
+                    # worker and silently reduce the bounded pool's capacity.
+                    try:
+                        result = _failed_probe(name, exc)
+                    except BaseException:
+                        result = _check(
+                            "error",
+                            f"{_PROBE_LABELS[name]} 探测失败",
+                            error_type=type(exc).__name__,
+                        )
+                try:
+                    result_queue.put_nowait((name, result))
+                except queue.Full:
+                    # A cancelled/timed-out caller may have abandoned its bounded
+                    # result queue; never retire a shared worker for that race.
+                    pass
+            finally:
+                self._tasks.task_done()
+                self._slots.release()
+
+
+_PROBE_EXECUTOR = _BoundedProbeExecutor(_MAX_CONCURRENT_PROBES)
+
+
 def _run_parallel_probes(
     context: ToolContext,
     operations: Mapping[str, Callable[[], dict[str, Any]]],
     timeout: float,
 ) -> tuple[bool, dict[str, dict[str, Any]]]:
-    result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
-
-    def execute(name: str, operation: Callable[[], dict[str, Any]]) -> None:
-        try:
-            result = operation()
-        except Exception as exc:
-            # Probe failures become sanitized findings instead of escaping the run.
-            result = _failed_probe(name, exc)
-        result_queue.put((name, result))
-
-    for name, operation in operations.items():
-        threading.Thread(
-            target=execute,
-            args=(name, operation),
-            name=f"environment-diagnostics-{name}",
-            daemon=True,
-        ).start()
-
-    pending = set(operations)
+    result_queue: _ProbeResultQueue = queue.Queue(maxsize=max(1, len(operations)))
+    pending: set[str] = set()
     results: dict[str, dict[str, Any]] = {}
+    for name, operation in operations.items():
+        if _PROBE_EXECUTOR.try_submit(name, operation, result_queue):
+            pending.add(name)
+        else:
+            results[name] = _capacity_exhausted_probe(name)
+
     deadline = time.monotonic() + timeout
     while pending:
         if _is_cancelled(context):

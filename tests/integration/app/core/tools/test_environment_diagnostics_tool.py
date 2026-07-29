@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import threading
 import time
@@ -367,3 +369,92 @@ def test_run_applies_one_short_deadline_to_parallel_probes(monkeypatch) -> None:
     assert _status(result) == "success"
     assert _data(result)["status"] == "degraded"
     assert _data(result)["checks"]["dns"]["status"] == "timeout"
+
+
+def test_repeated_timeouts_keep_probe_threads_and_pending_work_bounded() -> None:
+    script = r'''
+import json
+import threading
+import time
+from types import SimpleNamespace
+
+from app.core.tools.builtin import environment_diagnostics as diagnostics
+
+blocked = threading.Event()
+started = []
+started_lock = threading.Lock()
+
+
+def block_forever(*_args, **_kwargs):
+    with started_lock:
+        started.append(threading.get_ident())
+    blocked.wait()
+    raise AssertionError("the permanent probe must never resume")
+
+
+diagnostics._dns_check = block_forever
+diagnostics._http_check = block_forever
+diagnostics._external_tool_check = block_forever
+diagnostics._playwright_check = block_forever
+
+context = SimpleNamespace(
+    inputs={
+        "host": "example.com",
+        "url": "https://example.com/",
+        "proxy": "direct",
+        "timeout_seconds": 0.1,
+    },
+    cancel_event=threading.Event(),
+)
+
+caller_errors = []
+
+
+def invoke_diagnostics():
+    try:
+        diagnostics.run(context)
+    except BaseException as exc:
+        caller_errors.append(type(exc).__name__)
+
+
+callers = [threading.Thread(target=invoke_diagnostics) for _ in range(8)]
+for caller in callers:
+    caller.start()
+for caller in callers:
+    caller.join(timeout=2)
+
+started_at = time.monotonic()
+result = diagnostics.run(context)
+elapsed = time.monotonic() - started_at
+
+checks = result.data["checks"]
+probe_names = ("dns", "http", "ffmpeg", "ffprobe", "n_m3u8dl_re", "playwright")
+print(json.dumps({
+    "elapsed": elapsed,
+    "caller_errors": caller_errors,
+    "callers_alive": sum(caller.is_alive() for caller in callers),
+    "started": len(started),
+    "threads": len([
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("environment-diagnostics-")
+    ]),
+    "reasons": [checks[name]["details"].get("reason") for name in probe_names],
+}))
+'''
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=10,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert payload["caller_errors"] == []
+    assert payload["callers_alive"] == 0
+    assert payload["started"] == 6
+    assert payload["threads"] == 6
+    assert payload["elapsed"] < 0.4
+    assert payload["reasons"] == ["probe_capacity_exhausted"] * 6
