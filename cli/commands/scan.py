@@ -9,6 +9,7 @@ from app.config import cfg
 from cli.exit_codes import exit_code_for_status
 from shared import scan_command_runtime as runtime
 from shared.scan_command_runtime import add_scan_arguments
+from shared.sdk_cleanup import call_best_effort, write_text_best_effort
 from shared.sdk_runtime import UcrawlSDK
 
 __all__ = ["add_scan_arguments", "handle_scan_command"]
@@ -31,9 +32,10 @@ def handle_scan_command(args: argparse.Namespace) -> int:
         env=_runtime_env(),
     )
     if error:
-        sys.stderr.write(f"{error}\n")
+        write_text_best_effort(sys.stderr, f"{error}\n")
     if result is not None:
-        runtime.emit_result(
+        call_best_effort(
+            runtime.emit_result,
             result,
             pretty=getattr(args, "pretty", False),
         )

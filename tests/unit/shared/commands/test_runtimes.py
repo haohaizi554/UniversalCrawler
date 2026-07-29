@@ -230,8 +230,10 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
     def _make_env(self):
         from shared.download_command_runtime import DownloadCommandEnv
 
+        sdk_cls = Mock()
+        sdk_cls.return_value.close.return_value = True
         return DownloadCommandEnv(
-            UcrawlSDK_cls=Mock(),
+            UcrawlSDK_cls=sdk_cls,
             get_default_save_dir=Mock(return_value="downloads"),
             build_missav_proxy_url=Mock(side_effect=lambda value: f"normalized:{value}"),
             validate_config_types=Mock(return_value=None),
@@ -381,6 +383,105 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         self.assertIn("bad timeout", error)
         sdk.close.assert_called_once()
 
+    def test_download_preserves_unexpected_operation_error_over_cleanup(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        sdk = env.UcrawlSDK_cls.return_value
+        operation_error = GeneratorExit("download operation stopped")
+        sdk.download_video.side_effect = operation_error
+        sdk.close.side_effect = RuntimeError("cleanup unavailable")
+
+        with self.assertRaises(GeneratorExit) as raised:
+            run_download_command(self._make_download_args(), env=env)
+
+        self.assertIs(raised.exception, operation_error)
+        self.assertTrue(
+            any(
+                "cleanup unavailable" in note
+                for note in getattr(operation_error, "__notes__", ())
+            )
+        )
+        sdk.close.assert_called_once_with()
+
+    def test_download_usage_outcome_keeps_cleanup_diagnostic(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        sdk = env.UcrawlSDK_cls.return_value
+        sdk.download_video.side_effect = TypeError("bad timeout")
+        sdk.close.return_value = False
+
+        outcome, result, error = run_download_command(
+            self._make_download_args(),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "usage")
+        self.assertIsNone(result)
+        self.assertIn("bad timeout", error)
+        self.assertIn("cleanup", error.lower())
+        sdk.close.assert_called_once_with()
+
+    def test_download_success_becomes_error_when_cleanup_is_incomplete(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        sdk = env.UcrawlSDK_cls.return_value
+        sdk.download_video.return_value = {"status": "ok"}
+        sdk.close.return_value = False
+
+        outcome, result, error = run_download_command(
+            self._make_download_args(),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "error")
+        self.assertIsNone(result)
+        self.assertIn("cleanup", error.lower())
+        sdk.close.assert_called_once_with()
+
+    def test_download_cancelled_outcome_remains_primary_over_cleanup_control(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        sdk = env.UcrawlSDK_cls.return_value
+        sdk.download_video.return_value = {
+            "status": "cancelled",
+            "error": "user cancelled",
+        }
+        sdk.close.side_effect = SystemExit(9)
+
+        outcome, result, error = run_download_command(
+            self._make_download_args(),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "cancelled")
+        self.assertEqual(result["error"], "user cancelled")
+        self.assertIn("cleanup", error.lower())
+        sdk.close.assert_called_once_with()
+
+    def test_download_cleanup_control_propagates_after_success(self):
+        from shared.download_command_runtime import run_download_command
+
+        for cleanup_error in (
+            KeyboardInterrupt("cleanup interrupted"),
+            SystemExit(9),
+            GeneratorExit("cleanup stopped"),
+        ):
+            with self.subTest(cleanup_type=type(cleanup_error).__name__):
+                env = self._make_env()
+                sdk = env.UcrawlSDK_cls.return_value
+                sdk.download_video.return_value = {"status": "ok"}
+                sdk.close.side_effect = cleanup_error
+
+                with self.assertRaises(type(cleanup_error)) as raised:
+                    run_download_command(self._make_download_args(), env=env)
+
+                self.assertIs(raised.exception, cleanup_error)
+                sdk.close.assert_called_once_with()
+
 
 class ScanCommandRuntimeTests(unittest.TestCase):
     def test_scan_runtime_uses_default_limit_and_closes_sdk(self):
@@ -399,6 +500,7 @@ class ScanCommandRuntimeTests(unittest.TestCase):
             "video_count": 0,
             "image_count": 0,
         }
+        sdk.close.return_value = True
         env = ScanCommandEnv(
             UcrawlSDK_cls=sdk_cls,
             get_default_scan_limit=Mock(return_value=321),
@@ -423,6 +525,123 @@ class ScanCommandRuntimeTests(unittest.TestCase):
             scan_limit=321,
         )
         sdk.close.assert_called_once_with()
+
+    def test_scan_preserves_keyboard_interrupt_over_hostile_cleanup(self):
+        from shared.scan_command_runtime import ScanCommandEnv, run_scan_command
+
+        operation_error = KeyboardInterrupt("scan interrupted")
+        sdk = Mock()
+        sdk.scan_directory.side_effect = operation_error
+
+        class HostileCleanup(RuntimeError):
+            def __str__(self) -> str:
+                raise SystemExit("hostile cleanup text")
+
+        sdk.close.side_effect = HostileCleanup()
+        env = ScanCommandEnv(
+            UcrawlSDK_cls=Mock(return_value=sdk),
+            get_default_scan_limit=Mock(return_value=10),
+        )
+
+        with self.assertRaises(KeyboardInterrupt) as raised:
+            run_scan_command(
+                argparse.Namespace(
+                    directory="downloads",
+                    limit=None,
+                    quiet=True,
+                    pretty=False,
+                ),
+                env=env,
+            )
+
+        self.assertIs(raised.exception, operation_error)
+        sdk.close.assert_called_once_with()
+
+    def test_scan_success_surfaces_ordinary_cleanup_failure(self):
+        from shared.scan_command_runtime import ScanCommandEnv, run_scan_command
+
+        sdk = Mock()
+        sdk.scan_directory.return_value = {"status": "ok", "items": []}
+        sdk.close.side_effect = ValueError("cleanup unavailable")
+        env = ScanCommandEnv(
+            UcrawlSDK_cls=Mock(return_value=sdk),
+            get_default_scan_limit=Mock(return_value=10),
+        )
+
+        outcome, result, error = run_scan_command(
+            argparse.Namespace(
+                directory="downloads",
+                limit=None,
+                quiet=True,
+                pretty=False,
+            ),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "error")
+        self.assertIsNone(result)
+        self.assertIn("cleanup unavailable", error)
+        sdk.close.assert_called_once_with()
+
+    def test_scan_error_result_remains_primary_over_cleanup_failure(self):
+        from shared.scan_command_runtime import ScanCommandEnv, run_scan_command
+
+        sdk = Mock()
+        sdk.scan_directory.return_value = {
+            "status": "error",
+            "error": "scan failed",
+        }
+        sdk.close.return_value = False
+        env = ScanCommandEnv(
+            UcrawlSDK_cls=Mock(return_value=sdk),
+            get_default_scan_limit=Mock(return_value=10),
+        )
+
+        outcome, result, error = run_scan_command(
+            argparse.Namespace(
+                directory="downloads",
+                limit=None,
+                quiet=True,
+                pretty=False,
+            ),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "error")
+        self.assertEqual(result["error"], "scan failed")
+        self.assertIn("cleanup", error.lower())
+        sdk.close.assert_called_once_with()
+
+    def test_scan_cleanup_control_propagates_after_success(self):
+        from shared.scan_command_runtime import ScanCommandEnv, run_scan_command
+
+        for cleanup_error in (
+            KeyboardInterrupt("cleanup interrupted"),
+            SystemExit(9),
+            GeneratorExit("cleanup stopped"),
+        ):
+            with self.subTest(cleanup_type=type(cleanup_error).__name__):
+                sdk = Mock()
+                sdk.scan_directory.return_value = {"status": "ok", "items": []}
+                sdk.close.side_effect = cleanup_error
+                env = ScanCommandEnv(
+                    UcrawlSDK_cls=Mock(return_value=sdk),
+                    get_default_scan_limit=Mock(return_value=10),
+                )
+
+                with self.assertRaises(type(cleanup_error)) as raised:
+                    run_scan_command(
+                        argparse.Namespace(
+                            directory="downloads",
+                            limit=None,
+                            quiet=True,
+                            pretty=False,
+                        ),
+                        env=env,
+                    )
+
+                self.assertIs(raised.exception, cleanup_error)
+                sdk.close.assert_called_once_with()
 
 
 class SDKRuntimeTests(unittest.TestCase):

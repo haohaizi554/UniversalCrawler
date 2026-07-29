@@ -17,6 +17,15 @@ from shared.execution_profile import local_execution_profile
 from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeSelection
 from shared.runtime_options import get_default_save_dir, get_platform_defaults
+from shared.sdk_cleanup import (
+    attach_sdk_cleanup_failure,
+    call_best_effort,
+    close_sdk_once,
+    is_sdk_cleanup_control_flow,
+    safe_exception_text,
+    write_sdk_cleanup_diagnostic,
+    write_text_best_effort,
+)
 from shared.sdk_runtime import UcrawlSDK
 from shared.search_command_runtime import resolve_command_timeout
 from shared.selection_runtime import RuleSelection, parse_preloaded_choices
@@ -56,7 +65,7 @@ def _resolve_runtime_options(
     try:
         command_timeout, legacy_used = resolve_command_timeout(args)
     except ValueError as exc:
-        return None, str(exc)
+        return None, safe_exception_text(exc)
     if command_timeout is not None and command_timeout <= 0:
         return None, "--timeout 必须大于 0"
 
@@ -64,7 +73,10 @@ def _resolve_runtime_options(
     if http_timeout is not None and http_timeout <= 0:
         return None, "--http-timeout 必须大于 0"
     if legacy_used:
-        sys.stderr.write("⚠️ --run-timeout 已弃用，请使用 --timeout\n")
+        write_text_best_effort(
+            sys.stderr,
+            "⚠️ --run-timeout 已弃用，请使用 --timeout\n",
+        )
     return command_timeout, None
 
 
@@ -263,10 +275,13 @@ def _run_interactive_loop(
     try:
         platforms = sdk.list_platforms()
     except Exception as exc:
-        sys.stderr.write(f"❌ 获取平台列表失败: {exc}\n")
+        write_text_best_effort(
+            sys.stderr,
+            f"❌ 获取平台列表失败: {safe_exception_text(exc)}\n",
+        )
         return int(CliExitCode.ERROR)
     if not platforms:
-        sys.stderr.write("❌ 没有可用平台\n")
+        write_text_best_effort(sys.stderr, "❌ 没有可用平台\n")
         return int(CliExitCode.ERROR)
 
     print(
@@ -305,7 +320,7 @@ def _run_interactive_loop(
         prompts.print_examples(guide)
         keyword = input(f"{prompts.CYAN}搜索: {prompts.RESET}").strip()
         if not keyword:
-            sys.stderr.write("❌ 搜索内容不能为空\n")
+            write_text_best_effort(sys.stderr, "❌ 搜索内容不能为空\n")
             return int(CliExitCode.USAGE)
         print(f"  {prompts.GREEN}✓ {keyword}{prompts.RESET}\n")
 
@@ -336,7 +351,10 @@ def _run_interactive_loop(
                 config,
             )
         except (TypeError, ValueError) as exc:
-            sys.stderr.write(f"❌ {exc}\n")
+            write_text_best_effort(
+                sys.stderr,
+                f"❌ {safe_exception_text(exc)}\n",
+            )
             return int(CliExitCode.USAGE)
         http_timeout = getattr(args, "http_timeout", None)
         if http_timeout is not None:
@@ -376,7 +394,10 @@ def _run_interactive_loop(
         try:
             selection = _build_interactive_selection(args)
         except (TypeError, ValueError) as exc:
-            sys.stderr.write(f"❌ {exc}\n")
+            write_text_best_effort(
+                sys.stderr,
+                f"❌ {safe_exception_text(exc)}\n",
+            )
             return int(CliExitCode.USAGE)
 
         download = not getattr(args, "no_download", False)
@@ -408,19 +429,33 @@ def _run_interactive_loop(
             )
             result = runner.run()
         except Exception as exc:
-            sys.stderr.write(f"❌ 搜索失败: {exc}\n")
+            write_text_best_effort(
+                sys.stderr,
+                f"❌ 搜索失败: {safe_exception_text(exc)}\n",
+            )
             return int(CliExitCode.ERROR)
 
         if not isinstance(result, dict):
-            sys.stderr.write("❌ 运行器返回了无效结果\n")
+            write_text_best_effort(
+                sys.stderr,
+                "❌ 运行器返回了无效结果\n",
+            )
             return int(CliExitCode.ERROR)
         status = str(result.get("status", "error") or "error").lower()
         if status != "ok":
             error = result.get("error", "未知错误")
-            sys.stderr.write(f"❌ {status}: {error}\n")
+            try:
+                error_text = str(error)
+            except BaseException:
+                error_text = "未知错误"
+            write_text_best_effort(
+                sys.stderr,
+                f"❌ {status}: {error_text}\n",
+            )
             return int(exit_code_for_status(status))
 
-        _show_result_items(
+        call_best_effort(
+            _show_result_items,
             result,
             guide=guide,
             save_dir=save_dir,
@@ -449,20 +484,34 @@ def run_interactive(
 
     command_timeout, error = _resolve_runtime_options(args)
     if error:
-        sys.stderr.write(f"❌ {error}\n")
+        write_text_best_effort(sys.stderr, f"❌ {error}\n")
         return int(CliExitCode.USAGE)
 
     sdk = sdk_cls(verbose=not getattr(args, "quiet", False))
     try:
         try:
-            return _run_interactive_loop(
+            exit_code = _run_interactive_loop(
                 args,
                 sdk=sdk,
                 runner_cls=runner_cls,
                 command_timeout=command_timeout,
             )
         except (EOFError, KeyboardInterrupt):
-            print("\n已取消")
-            return int(CliExitCode.CANCELLED)
-    finally:
-        sdk.close()
+            write_text_best_effort(sys.stdout, "\n已取消\n")
+            exit_code = int(CliExitCode.CANCELLED)
+    except BaseException as primary_error:
+        cleanup_error = close_sdk_once(sdk)
+        if cleanup_error is not None:
+            attach_sdk_cleanup_failure(primary_error, cleanup_error)
+        raise
+
+    cleanup_error = close_sdk_once(sdk)
+    if cleanup_error is None:
+        return int(exit_code)
+    if int(exit_code) != int(CliExitCode.OK):
+        write_sdk_cleanup_diagnostic(cleanup_error)
+        return int(exit_code)
+    if is_sdk_cleanup_control_flow(cleanup_error):
+        raise cleanup_error
+    write_sdk_cleanup_diagnostic(cleanup_error)
+    return int(CliExitCode.ERROR)

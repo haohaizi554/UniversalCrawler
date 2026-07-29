@@ -233,6 +233,20 @@ class SearchEntryConsistencyTests(unittest.TestCase):
         self.assertEqual(_normalize_selection(sdk_kwargs["selection_strategy"]), expected_selection)
         self.assertEqual(_normalize_selection(api_kwargs["selection_strategy"]), expected_selection)
 
+class InteractiveEntryConsistencyTests(unittest.TestCase):
+    def test_keyboard_interrupt_maps_to_cancelled_for_both_console_entries(self):
+        from entry.cli_entry import main as cli_entry_main
+        from entry.interactive_entry import main as interactive_entry_main
+
+        operation_error = KeyboardInterrupt("interactive cleanup interrupted")
+        with patch(
+            "cli.commands.interactive.handle_interactive_command",
+            side_effect=operation_error,
+        ), patch("sys.stderr.write"):
+            self.assertEqual(cli_entry_main(["interactive"]), 130)
+            self.assertEqual(interactive_entry_main([]), 130)
+
+
 class DownloadEntryConsistencyTests(unittest.TestCase):
     def _cli_download_config(self):
         from cli.commands.download import add_download_arguments, handle_download_command
@@ -259,6 +273,7 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
 
         sdk = Mock()
         sdk.download_video.return_value = {"status": "ok"}
+        sdk.close.return_value = True
         with patch("cli.commands.download.UcrawlSDK", return_value=sdk), patch(
             "cli.commands.download.build_missav_proxy_url",
             return_value="http://127.0.0.1:7890",
@@ -563,6 +578,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
 
         sdk = Mock()
         sdk.download_video.return_value = expected
+        sdk.close.return_value = True
         cli_env = DownloadCommandEnv(
             UcrawlSDK_cls=lambda save_dir, execution_profile: sdk,
             get_default_save_dir=lambda: "downloads",

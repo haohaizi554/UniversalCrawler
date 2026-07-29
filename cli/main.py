@@ -9,6 +9,11 @@ from collections.abc import Sequence
 
 from cli.exit_codes import CliExitCode
 from cli.platform_catalog import CliPlatform
+from shared.sdk_cleanup import (
+    call_best_effort,
+    safe_exception_text,
+    write_text_best_effort,
+)
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -128,25 +133,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         parser = build_parser()
     except ValueError as exc:
-        sys.stderr.write(f"CLI 初始化失败: {exc}\n")
+        write_text_best_effort(
+            sys.stderr,
+            f"CLI 初始化失败: {safe_exception_text(exc)}\n",
+        )
         return int(CliExitCode.ERROR)
 
     args = parser.parse_args(argv)
     if args.version:
         from shared.version import __version__
 
-        sys.stdout.write(f"ucrawl {__version__}\n")
+        write_text_best_effort(sys.stdout, f"ucrawl {__version__}\n")
         return int(CliExitCode.OK)
 
     handler = getattr(args, "_handler", None)
     if handler is None:
-        parser.print_help()
+        call_best_effort(lambda: parser.print_help())
         return int(CliExitCode.OK)
 
     try:
         return int(handler(args))
     except KeyboardInterrupt:
-        sys.stderr.write("已取消\n")
+        write_text_best_effort(sys.stderr, "已取消\n")
         return int(CliExitCode.CANCELLED)
 
 

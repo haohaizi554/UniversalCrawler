@@ -8,6 +8,14 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from shared.sdk_cleanup import (
+    append_sdk_cleanup_diagnostic,
+    attach_sdk_cleanup_failure,
+    close_sdk_once,
+    is_sdk_cleanup_control_flow,
+    safe_exception_text,
+)
+
 
 @dataclass(slots=True)
 class ScanCommandEnv:
@@ -77,23 +85,49 @@ def run_scan_command(
     sdk = env.UcrawlSDK_cls(
         verbose=not getattr(args, "quiet", False),
     )
+    operation_error: TypeError | ValueError | None = None
+    result: dict | None = None
+    outcome = "error"
+    error_message: str | None = None
     try:
-        result = sdk.scan_directory(
-            getattr(args, "directory", None),
-            scan_limit=scan_limit,
+        try:
+            raw_result = sdk.scan_directory(
+                getattr(args, "directory", None),
+                scan_limit=scan_limit,
+            )
+        except (TypeError, ValueError) as exc:
+            operation_error = exc
+            error_message = f"❌ {safe_exception_text(exc)}"
+            outcome = "usage"
+        else:
+            if not isinstance(raw_result, dict):
+                error_message = "❌ SDK 返回了无效的扫描结果"
+            else:
+                result = raw_result
+                outcome = str(
+                    result.get("status", "error") or "error"
+                ).lower()
+                if outcome not in {"ok", "error", "timeout", "cancelled"}:
+                    outcome = "error"
+    except BaseException as primary_error:
+        cleanup_error = close_sdk_once(sdk)
+        if cleanup_error is not None:
+            attach_sdk_cleanup_failure(primary_error, cleanup_error)
+        raise
+
+    cleanup_error = close_sdk_once(sdk)
+    if cleanup_error is None:
+        return outcome, result, error_message
+
+    if operation_error is not None or outcome != "ok":
+        return (
+            outcome,
+            result,
+            append_sdk_cleanup_diagnostic(error_message, cleanup_error),
         )
-    except (TypeError, ValueError) as exc:
-        return "usage", None, f"❌ {exc}"
-    finally:
-        sdk.close()
-
-    if not isinstance(result, dict):
-        return "error", None, "❌ SDK 返回了无效的扫描结果"
-
-    status = str(result.get("status", "error") or "error").lower()
-    if status not in {"ok", "error", "timeout", "cancelled"}:
-        status = "error"
-    return status, result, None
+    if is_sdk_cleanup_control_flow(cleanup_error):
+        raise cleanup_error
+    return "error", None, append_sdk_cleanup_diagnostic(None, cleanup_error)
 
 
 def print_pretty(result: dict) -> None:

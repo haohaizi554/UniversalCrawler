@@ -43,6 +43,25 @@ class CliNoArgsTests(unittest.TestCase):
             result = main([])
         self.assertEqual(result, 0)
 
+    def test_no_args_exit_survives_hostile_help_method_lookup(self):
+        """Help rendering is output-only and cannot replace the zero exit code."""
+
+        from cli.main import main
+
+        class HostileParser:
+            def parse_args(self, _argv):
+                return argparse.Namespace(version=False)
+
+            def __getattribute__(self, name: str):
+                if name == "print_help":
+                    raise SystemExit(77)
+                return object.__getattribute__(self, name)
+
+        with patch("cli.main.build_parser", return_value=HostileParser()):
+            result = main([])
+
+        self.assertEqual(result, 0)
+
 
 class CliHelpGuideTests(unittest.TestCase):
     """顶层帮助应让源码用户与免安装包用户都能直接开始操作。"""
@@ -436,6 +455,7 @@ class CliPlatformsSubcommandTests(unittest.TestCase):
 
         sdk = Mock()
         sdk.list_platforms.return_value = [{"id": "douyin", "name": "Douyin"}]
+        sdk.close.return_value = True
         with patch("cli.commands.platforms.UcrawlSDK", return_value=sdk), patch(
             "sys.stderr.write"
         ):
@@ -443,6 +463,200 @@ class CliPlatformsSubcommandTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         sdk.close.assert_called_once()
+
+    def test_platforms_preserves_operation_control_flow_over_cleanup(self):
+        from cli.commands.platforms import handle_platforms_command
+
+        operation_error = GeneratorExit("platform enumeration stopped")
+        sdk = Mock()
+        sdk.list_platforms.side_effect = operation_error
+        sdk.close.side_effect = RuntimeError("cleanup unavailable")
+        args = argparse.Namespace(quiet=True, describe=None, pretty=False)
+
+        with patch(
+            "cli.commands.platforms.UcrawlSDK",
+            return_value=sdk,
+        ), self.assertRaises(GeneratorExit) as raised:
+            handle_platforms_command(args)
+
+        self.assertIs(raised.exception, operation_error)
+        self.assertTrue(
+            any(
+                "cleanup unavailable" in note
+                for note in getattr(operation_error, "__notes__", ())
+            )
+        )
+        sdk.close.assert_called_once_with()
+
+    def test_platforms_success_reports_incomplete_cleanup_as_error(self):
+        from cli.commands.platforms import handle_platforms_command
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = []
+        sdk.close.return_value = False
+        stderr = Mock()
+        args = argparse.Namespace(quiet=True, describe=None, pretty=False)
+
+        with patch(
+            "cli.commands.platforms.UcrawlSDK",
+            return_value=sdk,
+        ), patch("cli.commands.platforms.sys.stderr", stderr):
+            result = handle_platforms_command(args)
+
+        self.assertEqual(result, 1)
+        self.assertIn("cleanup", stderr.write.call_args.args[0].lower())
+        sdk.close.assert_called_once_with()
+
+    def test_platforms_success_exit_survives_hostile_stdout(self):
+        from cli.commands.platforms import handle_platforms_command
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = []
+        sdk.close.return_value = True
+        args = argparse.Namespace(quiet=True, describe=None, pretty=False)
+
+        with patch(
+            "cli.commands.platforms.UcrawlSDK",
+            return_value=sdk,
+        ), patch(
+            "cli.commands.platforms.sys.stdout.write",
+            side_effect=GeneratorExit("hostile stdout"),
+        ):
+            result = handle_platforms_command(args)
+
+        self.assertEqual(result, 0)
+        sdk.close.assert_called_once_with()
+
+    def test_unknown_platform_remains_usage_when_cleanup_and_stderr_fail(self):
+        from cli.commands.platforms import handle_platforms_command
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = [{"id": "douyin", "name": "Douyin"}]
+        sdk.close.side_effect = SystemExit(5)
+        stderr = Mock()
+        stderr.write.side_effect = KeyboardInterrupt("hostile stderr")
+        args = argparse.Namespace(quiet=True, describe="missing", pretty=False)
+
+        with patch(
+            "cli.commands.platforms.UcrawlSDK",
+            return_value=sdk,
+        ), patch("cli.commands.platforms.sys.stderr", stderr):
+            result = handle_platforms_command(args)
+
+        self.assertEqual(result, 2)
+        sdk.close.assert_called_once_with()
+
+    def test_platforms_cleanup_control_propagates_after_success(self):
+        from cli.commands.platforms import handle_platforms_command
+
+        for cleanup_error in (
+            KeyboardInterrupt("cleanup interrupted"),
+            SystemExit(5),
+            GeneratorExit("cleanup stopped"),
+        ):
+            with self.subTest(cleanup_type=type(cleanup_error).__name__):
+                sdk = Mock()
+                sdk.list_platforms.return_value = []
+                sdk.close.side_effect = cleanup_error
+                args = argparse.Namespace(
+                    quiet=True,
+                    describe=None,
+                    pretty=False,
+                )
+
+                with patch(
+                    "cli.commands.platforms.UcrawlSDK",
+                    return_value=sdk,
+                ), self.assertRaises(type(cleanup_error)) as raised:
+                    handle_platforms_command(args)
+
+                self.assertIs(raised.exception, cleanup_error)
+                sdk.close.assert_called_once_with()
+
+    def test_download_handler_keeps_usage_when_stderr_is_hostile(self):
+        from cli.commands.download import handle_download_command
+
+        with patch(
+            "cli.commands.download.runtime.run_download_command",
+            return_value=("usage", None, "bad arguments"),
+        ), patch(
+            "cli.commands.download.sys.stderr.write",
+            side_effect=KeyboardInterrupt("hostile stderr"),
+        ):
+            result = handle_download_command(argparse.Namespace(pretty=False))
+
+        self.assertEqual(result, 2)
+
+    def test_download_handler_keeps_cancelled_when_stdout_is_hostile(self):
+        from cli.commands.download import handle_download_command
+
+        with patch(
+            "cli.commands.download.runtime.run_download_command",
+            return_value=("cancelled", {"status": "cancelled"}, None),
+        ), patch(
+            "cli.commands.download.runtime.emit_result",
+            side_effect=SystemExit("hostile stdout"),
+        ):
+            result = handle_download_command(argparse.Namespace(pretty=False))
+
+        self.assertEqual(result, 130)
+
+    def test_scan_handler_keeps_error_when_stderr_is_hostile(self):
+        from cli.commands.scan import handle_scan_command
+
+        with patch(
+            "cli.commands.scan.runtime.run_scan_command",
+            return_value=("error", None, "cleanup failed"),
+        ), patch(
+            "cli.commands.scan.sys.stderr.write",
+            side_effect=GeneratorExit("hostile stderr"),
+        ):
+            result = handle_scan_command(argparse.Namespace(pretty=False))
+
+        self.assertEqual(result, 1)
+
+    def test_scan_handler_keeps_timeout_when_stdout_is_hostile(self):
+        from cli.commands.scan import handle_scan_command
+
+        with patch(
+            "cli.commands.scan.runtime.run_scan_command",
+            return_value=("timeout", {"status": "timeout"}, None),
+        ), patch(
+            "cli.commands.scan.runtime.emit_result",
+            side_effect=KeyboardInterrupt("hostile stdout"),
+        ):
+            result = handle_scan_command(argparse.Namespace(pretty=False))
+
+        self.assertEqual(result, 124)
+
+    def test_main_cancellation_exit_survives_hostile_stderr(self):
+        from cli.main import main
+
+        parser = Mock()
+        parser.parse_args.return_value = argparse.Namespace(
+            version=False,
+            _handler=Mock(side_effect=KeyboardInterrupt("cancelled")),
+        )
+        with patch("cli.main.build_parser", return_value=parser), patch(
+            "cli.main.sys.stderr.write",
+            side_effect=SystemExit("hostile stderr"),
+        ):
+            result = main([])
+
+        self.assertEqual(result, 130)
+
+    def test_main_version_exit_survives_hostile_stdout(self):
+        from cli.main import main
+
+        parser = Mock()
+        parser.parse_args.return_value = argparse.Namespace(version=True)
+        with patch("cli.main.build_parser", return_value=parser), patch(
+            "cli.main.sys.stdout.write",
+            side_effect=GeneratorExit("hostile stdout"),
+        ):
+            result = main([])
+
+        self.assertEqual(result, 0)
 
 class CliScanSubcommandTests(unittest.TestCase):
     """scan 子命令测试。"""

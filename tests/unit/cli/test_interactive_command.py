@@ -60,6 +60,7 @@ class InteractiveCommandTests(unittest.TestCase):
     ):
         from cli.interactive.workflow import run_interactive
 
+        sdk.close.return_value = True
         sdk.list_platforms.return_value = [
             (
                 platform
@@ -702,6 +703,219 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertEqual(result, 130)
         runner_cls.assert_not_called()
         sdk.close.assert_called_once()
+
+    def test_interactive_preserves_unexpected_primary_over_cleanup(self):
+        from cli.interactive.workflow import run_interactive
+
+        args = self._make_args()
+        sdk = Mock()
+        operation_error = GeneratorExit("interactive operation stopped")
+        sdk.close.side_effect = RuntimeError("cleanup unavailable")
+
+        with patch(
+            "cli.interactive.workflow._run_interactive_loop",
+            side_effect=operation_error,
+        ), self.assertRaises(GeneratorExit) as raised:
+            run_interactive(
+                args,
+                sdk_cls=Mock(return_value=sdk),
+                runner_cls=Mock(),
+            )
+
+        self.assertIs(raised.exception, operation_error)
+        self.assertTrue(
+            any(
+                "cleanup unavailable" in note
+                for note in getattr(operation_error, "__notes__", ())
+            )
+        )
+        sdk.close.assert_called_once_with()
+
+    def test_interactive_cancel_remains_primary_when_cleanup_is_incomplete(self):
+        from cli.interactive.workflow import run_interactive
+
+        args = self._make_args()
+        sdk = Mock()
+        sdk.close.return_value = False
+        stderr = Mock()
+
+        with patch(
+            "cli.interactive.workflow._run_interactive_loop",
+            side_effect=EOFError,
+        ), patch("cli.interactive.workflow.sys.stderr", stderr):
+            result = run_interactive(
+                args,
+                sdk_cls=Mock(return_value=sdk),
+                runner_cls=Mock(),
+            )
+
+        self.assertEqual(result, 130)
+        self.assertIn("cleanup", stderr.write.call_args.args[0].lower())
+        sdk.close.assert_called_once_with()
+
+    def test_interactive_success_reports_cleanup_failure(self):
+        from cli.interactive.workflow import run_interactive
+
+        args = self._make_args()
+        sdk = Mock()
+        sdk.close.side_effect = ValueError("cleanup unavailable")
+        stderr = Mock()
+
+        with patch(
+            "cli.interactive.workflow._run_interactive_loop",
+            return_value=0,
+        ), patch("cli.interactive.workflow.sys.stderr", stderr):
+            result = run_interactive(
+                args,
+                sdk_cls=Mock(return_value=sdk),
+                runner_cls=Mock(),
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("cleanup unavailable", stderr.write.call_args.args[0])
+        sdk.close.assert_called_once_with()
+
+    def test_interactive_cleanup_control_propagates_after_success(self):
+        from cli.interactive.workflow import run_interactive
+
+        for cleanup_error in (
+            KeyboardInterrupt("cleanup interrupted"),
+            SystemExit(11),
+            GeneratorExit("cleanup stopped"),
+        ):
+            with self.subTest(cleanup_type=type(cleanup_error).__name__):
+                args = self._make_args()
+                sdk = Mock()
+                sdk.close.side_effect = cleanup_error
+
+                with patch(
+                    "cli.interactive.workflow._run_interactive_loop",
+                    return_value=0,
+                ), self.assertRaises(type(cleanup_error)) as raised:
+                    run_interactive(
+                        args,
+                        sdk_cls=Mock(return_value=sdk),
+                        runner_cls=Mock(),
+                    )
+
+                self.assertIs(raised.exception, cleanup_error)
+                sdk.close.assert_called_once_with()
+
+    def test_interactive_usage_exit_survives_hostile_stderr(self):
+        from cli.interactive.workflow import run_interactive
+
+        args = self._make_args()
+        args.http_timeout = -1
+        with patch(
+            "cli.interactive.workflow.sys.stderr.write",
+            side_effect=KeyboardInterrupt("hostile stderr"),
+        ):
+            result = run_interactive(args, sdk_cls=Mock(), runner_cls=Mock())
+
+        self.assertEqual(result, 2)
+
+    def test_interactive_cancel_exit_survives_hostile_stdout(self):
+        from cli.interactive.workflow import run_interactive
+
+        args = self._make_args()
+        sdk = Mock()
+        sdk.close.return_value = True
+        hostile_stdout = Mock()
+        hostile_stdout.write.side_effect = SystemExit("hostile stdout")
+        with patch(
+            "cli.interactive.workflow._run_interactive_loop",
+            side_effect=EOFError,
+        ), patch("cli.interactive.workflow.sys.stdout", hostile_stdout):
+            result = run_interactive(
+                args,
+                sdk_cls=Mock(return_value=sdk),
+                runner_cls=Mock(),
+            )
+
+        self.assertEqual(result, 130)
+        sdk.close.assert_called_once_with()
+
+    def test_interactive_success_exit_survives_hostile_result_output(self):
+        class FlipStream:
+            hostile = False
+
+            def write(self, _value: str) -> int:
+                if self.hostile:
+                    raise GeneratorExit("hostile result output")
+                return len(_value)
+
+            def flush(self) -> None:
+                if self.hostile:
+                    raise GeneratorExit("hostile result flush")
+
+        stream = FlipStream()
+        sdk = Mock()
+        sdk.list_platforms.return_value = [
+            {
+                "id": "douyin",
+                "name": "Douyin",
+                "search_placeholder": "query",
+            },
+        ]
+        runner = Mock()
+
+        def finish_successfully() -> dict:
+            stream.hostile = True
+            return {"status": "ok", "elapsed": 0.1, "items": []}
+
+        runner.run.side_effect = finish_successfully
+        with patch("cli.interactive.workflow.sys.stdout", stream), patch(
+            "cli.interactive.workflow.prompts.prompt_post_run_action",
+            return_value="exit",
+        ):
+            result, _sdk_cls, _runner_cls, _cfg_set = self._run(
+                self._make_args(),
+                sdk=sdk,
+                runner=runner,
+                inputs=["1", "cats", "1", "", "y"],
+                cookie_path="dy_auth.json",
+            )
+
+        self.assertEqual(result, 0)
+        sdk.close.assert_called_once_with()
+
+    def test_interactive_error_survives_hostile_exception_text_and_stderr(self):
+        from cli.interactive.workflow import run_interactive
+
+        class HostileOperationError(RuntimeError):
+            def __str__(self) -> str:
+                raise SystemExit("hostile operation text")
+
+        args = self._make_args()
+        sdk = Mock()
+        sdk.list_platforms.side_effect = HostileOperationError()
+        sdk.close.return_value = True
+        stderr = Mock()
+        stderr.write.side_effect = GeneratorExit("hostile stderr")
+
+        with patch("cli.interactive.workflow.sys.stderr", stderr):
+            result = run_interactive(
+                args,
+                sdk_cls=Mock(return_value=sdk),
+                runner_cls=Mock(),
+            )
+
+        self.assertEqual(result, 1)
+        sdk.close.assert_called_once_with()
+
+    def test_legacy_timeout_warning_survives_hostile_stderr(self):
+        from cli.interactive.workflow import _resolve_runtime_options
+
+        args = self._make_args()
+        args.legacy_run_timeout = 5
+        with patch(
+            "cli.interactive.workflow.sys.stderr.write",
+            side_effect=KeyboardInterrupt("hostile stderr"),
+        ):
+            timeout, error = _resolve_runtime_options(args)
+
+        self.assertEqual(timeout, 5)
+        self.assertIsNone(error)
 
     def test_interactive_maps_structured_runner_statuses(self):
         for status, expected in (

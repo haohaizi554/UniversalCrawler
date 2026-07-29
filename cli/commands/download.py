@@ -17,6 +17,7 @@ from shared.runtime_options import (
     get_default_save_dir,
     validate_config_types,
 )
+from shared.sdk_cleanup import call_best_effort, write_text_best_effort
 from shared.sdk_runtime import UcrawlSDK
 
 __all__ = ["_print_pretty", "add_download_arguments", "handle_download_command"]
@@ -48,7 +49,11 @@ def handle_download_command(args: argparse.Namespace) -> int:
         env=_runtime_env(),
     )
     if error_message:
-        sys.stderr.write(f"{error_message}\n")
+        write_text_best_effort(sys.stderr, f"{error_message}\n")
     if result is not None:
-        runtime.emit_result(result, pretty=getattr(args, "pretty", False))
+        call_best_effort(
+            runtime.emit_result,
+            result,
+            pretty=getattr(args, "pretty", False),
+        )
     return int(exit_code_for_status(outcome))

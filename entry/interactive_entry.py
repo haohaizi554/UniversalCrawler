@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     --config/二次选择等）；--run-timeout 仅保留为 --timeout 的弃用别名。
     """
     from cli.commands.interactive import add_interactive_arguments, handle_interactive_command
+    from cli.exit_codes import CliExitCode
+    from shared.sdk_cleanup import write_text_best_effort
 
     import argparse
     if argv is None:
@@ -41,7 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ucrawl-i", add_help=True)
     add_interactive_arguments(parser)
     args = parser.parse_args(argv)
-    return handle_interactive_command(args)
+    try:
+        return handle_interactive_command(args)
+    except KeyboardInterrupt:
+        write_text_best_effort(sys.stderr, "已取消\n")
+        return int(CliExitCode.CANCELLED)
 
 if __name__ == "__main__":
     sys.exit(main())

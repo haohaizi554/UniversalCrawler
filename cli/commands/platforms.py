@@ -10,6 +10,13 @@ import json
 import sys
 
 from cli.exit_codes import CliExitCode
+from shared.sdk_cleanup import (
+    attach_sdk_cleanup_failure,
+    close_sdk_once,
+    is_sdk_cleanup_control_flow,
+    write_sdk_cleanup_diagnostic,
+    write_text_best_effort,
+)
 from shared.sdk_runtime import UcrawlSDK
 
 def add_platforms_arguments(parser: argparse.ArgumentParser) -> None:
@@ -25,30 +32,69 @@ def handle_platforms_command(args: argparse.Namespace) -> int:
     sdk = UcrawlSDK(verbose=verbose)
     try:
         platforms = sdk.list_platforms()
-    finally:
-        sdk.close()
+        target = None
+        exit_code = CliExitCode.OK
+        if args.describe:
+            target = next(
+                (p for p in platforms if p["id"] == args.describe),
+                None,
+            )
+            if not target:
+                exit_code = CliExitCode.USAGE
+    except BaseException as primary_error:
+        cleanup_error = close_sdk_once(sdk)
+        if cleanup_error is not None:
+            attach_sdk_cleanup_failure(primary_error, cleanup_error)
+        raise
+
+    cleanup_error = close_sdk_once(sdk)
+    if cleanup_error is not None:
+        if exit_code != CliExitCode.OK:
+            write_sdk_cleanup_diagnostic(cleanup_error)
+        elif is_sdk_cleanup_control_flow(cleanup_error):
+            raise cleanup_error
+        else:
+            write_sdk_cleanup_diagnostic(cleanup_error)
+            return int(CliExitCode.ERROR)
 
     if args.describe:
-        target = next((p for p in platforms if p["id"] == args.describe), None)
         if not target:
-            sys.stderr.write(f"❌ 未知平台: {args.describe}\n")
+            write_text_best_effort(
+                sys.stderr,
+                f"❌ 未知平台: {args.describe}\n",
+            )
             return int(CliExitCode.USAGE)
-        sys.stdout.write(json.dumps(target, ensure_ascii=False, indent=2) + "\n")
+        write_text_best_effort(
+            sys.stdout,
+            json.dumps(target, ensure_ascii=False, indent=2) + "\n",
+        )
         return int(CliExitCode.OK)
 
     if args.pretty:
         for p in platforms:
-            sys.stdout.write(f"📦 {p['id']}: {p['name']}\n")
+            write_text_best_effort(
+                sys.stdout,
+                f"📦 {p['id']}: {p['name']}\n",
+            )
             # 与 SDK list_platforms() 对齐：显示 search_placeholder（与 GUI 搜索框 placeholder 一致）
             placeholder = p.get("search_placeholder", "")
             if placeholder:
-                sys.stdout.write(f"   搜索提示: {placeholder}\n")
+                write_text_best_effort(
+                    sys.stdout,
+                    f"   搜索提示: {placeholder}\n",
+                )
             if p.get("description"):
-                sys.stdout.write(f"   {p['description']}\n")
+                write_text_best_effort(
+                    sys.stdout,
+                    f"   {p['description']}\n",
+                )
             n = len(p.get("settings", []))
             if n:
-                sys.stdout.write(f"   参数: {n} 个\n")
-            sys.stdout.write("\n")
+                write_text_best_effort(sys.stdout, f"   参数: {n} 个\n")
+            write_text_best_effort(sys.stdout, "\n")
     else:
-        sys.stdout.write(json.dumps(platforms, ensure_ascii=False, indent=2) + "\n")
+        write_text_best_effort(
+            sys.stdout,
+            json.dumps(platforms, ensure_ascii=False, indent=2) + "\n",
+        )
     return int(CliExitCode.OK)
