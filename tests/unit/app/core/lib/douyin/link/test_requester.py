@@ -30,6 +30,12 @@ def is_douyin_public_url(url: str) -> bool:
     return bool(validator(url))
 
 
+def is_douyin_live_reflow_url(url: str) -> bool:
+    validator = getattr(requester_module, "is_douyin_live_reflow_url", None)
+    assert callable(validator), "requester must expose bounded live-path validation"
+    return bool(validator(url))
+
+
 class _RecordingLogger:
     def __init__(self) -> None:
         self.entries: list[tuple[str, tuple[Any, ...]]] = []
@@ -367,6 +373,13 @@ class RequesterSecurityTests(unittest.IsolatedAsyncioTestCase):
 
 class RequesterLiveReflowTests(unittest.IsolatedAsyncioTestCase):
     LIVE_URL = "https://webcast.amemv.com/douyin/webcast/reflow/room-token"
+
+    def test_reflow_token_decode_budget_accepts_safe_layers_and_fails_closed(self) -> None:
+        prefix = "https://webcast.amemv.com/douyin/webcast/reflow/"
+
+        self.assertTrue(is_douyin_live_reflow_url(f"{prefix}room%25252541"))
+        self.assertFalse(is_douyin_live_reflow_url(f"{prefix}room%250Asecret"))
+        self.assertFalse(is_douyin_live_reflow_url(f"{prefix}room%2525252541"))
 
     async def test_extractor_live_fetches_exact_reflow_page_through_pinned_transport(self) -> None:
         response = PinnedResponse(
