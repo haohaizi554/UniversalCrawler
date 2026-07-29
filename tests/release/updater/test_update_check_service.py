@@ -1306,6 +1306,99 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIn("<h1", browser.toHtml().lower())
         self.assertIn("<table", browser.toHtml().lower())
 
+    def test_update_markdown_links_are_activated_only_through_the_project_https_boundary(self):
+        from tempfile import TemporaryDirectory
+
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QImage, QTextDocument
+        from PyQt6.QtWidgets import QTextBrowser
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="Update available",
+            message="Review the release notes",
+            details="[Release notes](https://github.com/haohaizi554/UniversalCrawler/issues)",
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="v3.6.18",
+            latest_version="v3.6.21",
+            release_url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.21",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        browser = dialog.findChild(QTextBrowser, "UpdateMarkdownView")
+        self.assertIsNotNone(browser)
+        self.assertFalse(browser.openExternalLinks())
+        self.assertFalse(browser.openLinks())
+        self.assertIsNotNone(dialog.release_link)
+        self.assertFalse(dialog.release_link.openExternalLinks())
+
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "local.png"
+            image = QImage(1, 1, QImage.Format.Format_ARGB32)
+            self.assertTrue(image.save(str(image_path)))
+            resource = browser.loadResource(
+                QTextDocument.ResourceType.ImageResource,
+                QUrl.fromLocalFile(str(image_path)),
+            )
+        self.assertFalse(getattr(resource, "isValid", lambda: True)())
+
+        denied_urls = (
+            "file:///C:/Windows/win.ini",
+            "qrc:/internal/resource",
+            "http://github.com/haohaizi554/UniversalCrawler/issues",
+            "https://user@github.com/haohaizi554/UniversalCrawler/issues",
+            "https://@github.com/haohaizi554/UniversalCrawler/issues",
+            "https://:@github.com/haohaizi554/UniversalCrawler/issues",
+            "https://github.com:444/haohaizi554/UniversalCrawler/issues",
+            "https://attacker.example/phish",
+            "https://github.com/haohaizi554/UniversalCrawler.evil/issues",
+            "https://github.com/%2568aohaizi554/UniversalCrawler/issues",
+            "https://github.com/haohaizi554/%2575niversalCrawler/issues",
+            "https://github.com/%252568aohaizi554/UniversalCrawler/issues",
+            "https://github.com/haohaizi554/UniversalCrawler/../evil",
+            "https://github.com/haohaizi554/UniversalCrawler/./evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%2e%2e/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%252e%252e/evil",
+            "https://github.com/haohaizi554/UniversalCrawler\\evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%5c/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%255c/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%2f/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%252f/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%3f/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%23/evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%00evil",
+            "https://github.com/haohaizi554/UniversalCrawler/%250Aevil",
+            "https://github.com/haohaizi554/UniversalCrawler/%E2%80%8B",
+            "https://github.com/haohaizi554/UniversalCrawler/%C0%AF",
+            "https://github.com/haohaizi554/Univer\u017falCrawler/issues",
+        )
+        allowed_urls = (
+            "https://github.com/haohaizi554/UniversalCrawler/issues",
+            "https://GITHUB.COM:443/HAOHAIZI554/UNIVERSALCRAWLER/releases/tag/v3.6.21",
+        )
+
+        with (
+            patch("app.ui.dialogs.update_check.QDesktopServices.openUrl") as open_url,
+            patch(
+                "app.ui.dialogs.update_check._ReleaseNotesBrowser.scrollToAnchor"
+            ) as scroll_to_anchor,
+        ):
+            for raw_url in denied_urls:
+                with self.subTest(denied_url=raw_url):
+                    browser.anchorClicked.emit(QUrl(raw_url))
+            browser.anchorClicked.emit(QUrl("#security-fixes"))
+            for raw_url in allowed_urls:
+                with self.subTest(allowed_url=raw_url):
+                    browser.anchorClicked.emit(QUrl(raw_url))
+
+        scroll_to_anchor.assert_called_once_with("security-fixes")
+        self.assertEqual(
+            [call.args[0].toString() for call in open_url.call_args_list],
+            [QUrl(raw_url).toString() for raw_url in allowed_urls],
+        )
+
     def test_update_check_dialog_exposes_indeterminate_loading_state(self):
         from PyQt6.QtWidgets import QFrame, QProgressBar, QSizePolicy
 

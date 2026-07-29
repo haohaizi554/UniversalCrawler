@@ -1,12 +1,13 @@
 """提供线程安全的调试日志、敏感信息脱敏与 trace_id 生成。"""
 
 import json
+import multiprocessing
 import re
 import threading
-import multiprocessing
 import time
 import uuid
 from datetime import datetime
+from functools import wraps
 from typing import Any
 
 from app.utils.runtime_paths import user_logs_root
@@ -25,6 +26,185 @@ _TRACE_PREFIX_ALIASES = {
 }
 _VALID_RETENTION_DAYS = {1, 3, 5, 7}
 _DEFAULT_RETENTION_DAYS = 1
+_MAX_DIAGNOSTIC_TEXT_LENGTH = 8_192
+_DIAGNOSTIC_TRUNCATION_MARKER = "...[truncated]"
+_DIAGNOSTIC_HTTP_URL = re.compile(
+    r"https?(?:://|:\\/\\/)[^\s，。；：！？）》】、]+",
+    flags=re.IGNORECASE,
+)
+_DIAGNOSTIC_URL_PREFIX = re.compile(
+    r"[a-z][a-z0-9+.-]{0,31}\s*:\s*(?:[\\/]\s*)+",
+    flags=re.IGNORECASE,
+)
+_TRUNCATED_URL_AUTHORITY = re.compile(
+    r"(?P<prefix>[a-z][a-z0-9+.-]{0,31}\s*:\s*(?:[\\/]\s*)+)"
+    r"[^\s/\\?#]+$",
+    flags=re.IGNORECASE,
+)
+_URL_TRAILING_PUNCTUATION = ".,;:!?)]}，。；：！？）》】"
+
+
+def _without_url_query_and_fragment(value: str) -> str:
+    boundaries = [index for marker in ("?", "#") if (index := value.find(marker)) >= 0]
+    return value[: min(boundaries)] if boundaries else value
+
+
+def _strip_url_query_and_fragment(match: re.Match[str]) -> str:
+    """Keep a useful URL location without persisting opaque CDN capabilities."""
+
+    matched = match.group(0)
+    candidate = matched.rstrip(_URL_TRAILING_PUNCTUATION)
+    trailing = matched[len(candidate) :]
+    redacted = _without_url_query_and_fragment(candidate)
+    if redacted == candidate:
+        return matched
+    return redacted + trailing
+
+
+def _strip_complete_url_query_and_fragment(value: str) -> str:
+    """Handle a complete URL value, including Unicode host and path text."""
+
+    candidate = value.strip()
+    if any(character.isspace() for character in candidate):
+        return value
+    if not re.match(r"^https?://", candidate, flags=re.IGNORECASE):
+        return value
+    redacted = _without_url_query_and_fragment(candidate)
+    if redacted == candidate:
+        return value
+    leading = value[: len(value) - len(value.lstrip())]
+    trailing = value[len(value.rstrip()) :]
+    return leading + redacted + trailing
+
+
+def _find_malformed_http_prefix(
+    value: str,
+    search_from: int,
+) -> tuple[int, int] | None:
+    """Find one broken/escaped HTTP prefix without regex backtracking."""
+
+    candidate = search_from
+    last_candidate = len(value) - 4
+    while candidate <= last_candidate:
+        if value[candidate : candidate + 4].lower() != "http":
+            candidate += 1
+            continue
+        cursor = candidate + 4
+        if cursor < len(value) and value[cursor] in "sS":
+            cursor += 1
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        if cursor >= len(value) or value[cursor] != ":":
+            candidate += 1
+            continue
+        cursor += 1
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        slash_count = 0
+        while cursor < len(value) and value[cursor] in "/\\":
+            slash_count += 1
+            cursor += 1
+            while cursor < len(value) and value[cursor].isspace():
+                cursor += 1
+        if slash_count:
+            return candidate, cursor
+        candidate += 1
+    return None
+
+
+def _strip_suspected_url_capabilities(value: str) -> str:
+    """Strip secrets from malformed URLs in one bounded linear scan."""
+
+    pieces: list[str] = []
+    output_cursor = 0
+    search_from = 0
+    while prefix := _find_malformed_http_prefix(value, search_from):
+        _, prefix_end = prefix
+        scan = prefix_end
+        marker = -1
+        while scan < len(value):
+            character = value[scan]
+            if character in "?#":
+                marker = scan
+                break
+            if character.isspace():
+                gap_end = scan + 1
+                while gap_end < len(value) and value[gap_end].isspace():
+                    gap_end += 1
+                if gap_end < len(value) and value[gap_end] in "?#":
+                    marker = gap_end
+                break
+            scan += 1
+
+        base_end = marker
+        while base_end > prefix_end and value[base_end - 1].isspace():
+            base_end -= 1
+        if marker >= 0 and base_end > prefix_end:
+            capability_end = marker + 1
+            while capability_end < len(value):
+                character = value[capability_end]
+                if character.isspace():
+                    break
+                capability_end += 1
+            pieces.append(value[output_cursor:base_end])
+            output_cursor = capability_end
+            search_from = capability_end
+            continue
+
+        if scan >= len(value):
+            break
+        search_from = max(prefix_end, scan + 1)
+
+    if not pieces:
+        return value
+    pieces.append(value[output_cursor:])
+    return "".join(pieces)
+
+
+def _mask_url_userinfo(value: str) -> str:
+    """Mask through the final authority `@` for complete or escaped URLs."""
+
+    pieces: list[str] = []
+    cursor = 0
+    search_from = 0
+    while match := _DIAGNOSTIC_URL_PREFIX.search(value, search_from):
+        authority_start = match.end()
+        authority_end = authority_start
+        while authority_end < len(value):
+            character = value[authority_end]
+            if character.isspace() or character in "/\\?#":
+                break
+            authority_end += 1
+        authority = value[authority_start:authority_end]
+        separator = authority.rfind("@")
+        if separator >= 0:
+            pieces.extend(
+                (
+                    value[cursor:authority_start],
+                    "***:***@",
+                    authority[separator + 1 :],
+                )
+            )
+            cursor = authority_end
+        search_from = max(match.end(), authority_end)
+    if not pieces:
+        return value
+    pieces.append(value[cursor:])
+    return "".join(pieces)
+
+
+def _best_effort_diagnostic(method):
+    """Keep diagnostic failures from replacing the caller's primary outcome."""
+
+    @wraps(method)
+    def guarded(*args, **kwargs):
+        try:
+            return method(*args, **kwargs)
+        except BaseException:
+            return None
+
+    return guarded
+
 
 def normalize_trace_prefix(prefix: str = "trace") -> str:
     """把前端追踪前缀规整为稳定的 platform_name 片段。"""
@@ -178,13 +358,17 @@ class DebugLogger:
         )
 
     def _mask_inline_secret(self, value: str) -> str:
+        if len(value) > _MAX_DIAGNOSTIC_TEXT_LENGTH:
+            value = _TRUNCATED_URL_AUTHORITY.sub(
+                r"\g<prefix>[redacted]",
+                value[:_MAX_DIAGNOSTIC_TEXT_LENGTH],
+            ) + _DIAGNOSTIC_TRUNCATION_MARKER
+        masked = _mask_url_userinfo(value)
+        masked = _strip_suspected_url_capabilities(masked)
+        masked = _strip_complete_url_query_and_fragment(masked)
+        masked = _DIAGNOSTIC_HTTP_URL.sub(_strip_url_query_and_fragment, masked)
         masked = re.sub(
-            r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@:\s]+)(?::([^@/\s]*))?@",
-            r"\1***:***@",
-            value,
-        )
-        masked = re.sub(
-            r"([?&](?:token|access_token|refresh_token|sessionid(?:_ss)?|sessdata|mstoken|ttwid|authorization|cookie)=)[^&]+",
+            r"([?&](?:token|access_token|refresh_token|sessionid(?:_ss)?|sessdata|mstoken|ttwid|authorization|cookie)=)[^&\s]+",
             r"\1***",
             masked,
             flags=re.IGNORECASE,
@@ -205,6 +389,24 @@ class DebugLogger:
             return "Authorization: [已脱敏]"
         return masked
 
+    def _safe_diagnostic_text(
+        self,
+        value: Any,
+        *,
+        fallback: str = "[unprintable]",
+        single_line: bool = False,
+    ) -> str:
+        try:
+            raw = str(value)
+        except BaseException:
+            return fallback
+        if single_line:
+            raw = raw.replace("\n", " ").replace("\r", " ").strip()
+        try:
+            return self._mask_inline_secret(raw)
+        except BaseException:
+            return fallback
+
     def _redact_command_args(self, command_args: list[str] | tuple[str, ...]) -> list[str]:
         """同时脱敏参数内嵌密钥和敏感选项后的独立参数值。"""
         sensitive_flags = {
@@ -219,12 +421,12 @@ class DebugLogger:
         redacted: list[str] = []
         mask_next = False
         for item in command_args:
-            value = str(item)
+            value = self._safe_diagnostic_text(item, single_line=True)
             if mask_next:
                 redacted.append("[已脱敏]")
                 mask_next = False
                 continue
-            redacted.append(self._mask_inline_secret(value))
+            redacted.append(value)
             if value.strip().lower() in sensitive_flags:
                 mask_next = True
         return redacted
@@ -242,6 +444,15 @@ class DebugLogger:
         if isinstance(value, (dict, list, tuple, set)):
             return "[已脱敏]"
         return "***"
+
+    def _normalize_mapping_key(self, value: Any) -> str:
+        cleaned = self._safe_diagnostic_text(
+            value,
+            single_line=True,
+        )
+        if len(cleaned) > 220:
+            return cleaned[:217] + "..."
+        return cleaned
 
     def _append_lines(self, lines: list[str]):
         content = "\n".join(lines) + "\n"
@@ -281,13 +492,14 @@ class DebugLogger:
                 continue
             if isinstance(value, (list, tuple, set, dict)) and len(value) == 0:
                 continue
-            if self._is_sensitive_key(str(key)):
-                cleaned[key] = self._redact_sensitive_value(value)
+            normalized_key = self._normalize_mapping_key(key)
+            if self._is_sensitive_key(normalized_key):
+                cleaned[normalized_key] = self._redact_sensitive_value(value)
                 continue
             if isinstance(value, str):
-                cleaned[key] = self._mask_inline_secret(value)
+                cleaned[normalized_key] = self._mask_inline_secret(value)
                 continue
-            cleaned[key] = value
+            cleaned[normalized_key] = self._normalize_value(value)
         return cleaned
 
     def _format_mapping(self, title: str, data: dict[str, Any] | None) -> list[str]:
@@ -311,14 +523,15 @@ class DebugLogger:
         if isinstance(value, dict):
             result = {}
             for key, item in list(value.items())[:20]:
+                normalized_key = self._normalize_mapping_key(key)
                 normalized = (
                     self._redact_sensitive_value(item)
-                    if self._is_sensitive_key(str(key))
+                    if self._is_sensitive_key(normalized_key)
                     else self._normalize_value(item)
                 )
                 if normalized in (None, "", [], {}):
                     continue
-                result[str(key)] = normalized
+                result[normalized_key] = normalized
             return result
         if isinstance(value, (list, tuple, set)):
             items = list(value)[:10]
@@ -331,7 +544,9 @@ class DebugLogger:
             if len(cleaned) > 220:
                 return cleaned[:217] + "..."
             return cleaned
-        return value
+        if value is None or type(value) in {bool, int, float}:
+            return value
+        return self._safe_diagnostic_text(value, single_line=True)
 
     def new_trace_id(self, prefix: str = "trace") -> str:
         """生成带稳定平台前缀的规范化 trace_id。"""
@@ -466,6 +681,7 @@ class DebugLogger:
             suggestions.append("结合模块名和状态码，继续查看同时间附近的上一条 API 或 COMMAND 记录。")
         return suggestions
 
+    @_best_effort_diagnostic
     def log(
         self,
         component: str,
@@ -477,14 +693,31 @@ class DebugLogger:
         details: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ):
-        if not self._should_write_level(level):
+        level_text = self._safe_diagnostic_text(
+            level or "INFO",
+            fallback="INFO",
+            single_line=True,
+        ).upper()
+        if not self._should_write_level(level_text):
             return
-        message = self._mask_inline_secret(str(message))
+        component = self._safe_diagnostic_text(component, single_line=True)
+        action = self._safe_diagnostic_text(action, single_line=True)
+        message = self._safe_diagnostic_text(message)
+        status_code = (
+            None
+            if status_code is None
+            else self._safe_diagnostic_text(status_code, single_line=True)
+        )
+        trace_id = (
+            ""
+            if trace_id is None
+            else self._safe_diagnostic_text(trace_id, single_line=True)
+        )
         context = self._clean_mapping(context)
         details = self._clean_mapping(details)
         lines = [
             "-" * 88,
-            f"[{self._now()}] [{level.upper()}] {component} / {action}",
+            f"[{self._now()}] [{level_text}] {component} / {action}",
         ]
         if message:
             lines.append(f"说明: {message}")
@@ -496,9 +729,10 @@ class DebugLogger:
         lines.extend(self._format_mapping("详情", details))
         lines.append("")
         self._append_lines(lines)
-        if level.upper() == "ERROR":
+        if level_text == "ERROR":
             self._write_error_summary(component, action, message, status_code, trace_id, context, details)
 
+    @_best_effort_diagnostic
     def log_api(
         self,
         component: str,
@@ -510,14 +744,31 @@ class DebugLogger:
         status_code: int | str | None = None,
         trace_id: str | None = None,
     ):
-        if not self._should_write_level(level):
+        level_text = self._safe_diagnostic_text(
+            level or "INFO",
+            fallback="INFO",
+            single_line=True,
+        ).upper()
+        if not self._should_write_level(level_text):
             return
-        message = self._mask_inline_secret(str(message))
+        component = self._safe_diagnostic_text(component, single_line=True)
+        api_name = self._safe_diagnostic_text(api_name, single_line=True)
+        message = self._safe_diagnostic_text(message)
+        status_code = (
+            None
+            if status_code is None
+            else self._safe_diagnostic_text(status_code, single_line=True)
+        )
+        trace_id = (
+            ""
+            if trace_id is None
+            else self._safe_diagnostic_text(trace_id, single_line=True)
+        )
         request = self._clean_mapping(request)
         response_summary = self._clean_mapping(response_summary)
         lines = [
             "-" * 88,
-            f"[{self._now()}] [{level.upper()}] {component} / API::{api_name}",
+            f"[{self._now()}] [{level_text}] {component} / API::{api_name}",
         ]
         if message:
             lines.append(f"说明: {message}")
@@ -529,9 +780,10 @@ class DebugLogger:
         lines.extend(self._format_mapping("响应摘要", response_summary))
         lines.append("")
         self._append_lines(lines)
-        if level.upper() == "ERROR":
+        if level_text == "ERROR":
             self._write_error_summary(component, f"API::{api_name}", message, status_code, trace_id, request, response_summary)
 
+    @_best_effort_diagnostic
     def log_command(
         self,
         component: str,
@@ -545,7 +797,14 @@ class DebugLogger:
         details = {}
         if command_args:
             details["args"] = self._redact_command_args(command_args)
-        message = self._mask_inline_secret(str(message))
+        component = self._safe_diagnostic_text(component, single_line=True)
+        tool_name = self._safe_diagnostic_text(tool_name, single_line=True)
+        message = self._safe_diagnostic_text(message)
+        trace_id = (
+            ""
+            if trace_id is None
+            else self._safe_diagnostic_text(trace_id, single_line=True)
+        )
         context = self._clean_mapping(context)
         lines = [
             "-" * 88,
@@ -560,6 +819,7 @@ class DebugLogger:
         lines.append("")
         self._append_lines(lines)
 
+    @_best_effort_diagnostic
     def log_exception(
         self,
         component: str,
@@ -574,7 +834,7 @@ class DebugLogger:
             component=component,
             action=action,
             level="ERROR",
-            message=str(exc),
+            message=exc,
             context=context,
             details={"exception_type": type(exc).__name__, **(details or {})},
             trace_id=trace_id,

@@ -4,26 +4,68 @@ from __future__ import annotations
 
 from html import escape
 from typing import Any
+from unicodedata import category
+from urllib.parse import unquote_to_bytes
 
-from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtCore import QRectF, Qt, QTimer, QUrl, QVariant, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QProgressBar,
-    QPushButton,
-    QSizePolicy,
-    QTextBrowser,
-    QVBoxLayout,
-    QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar,
+    QPushButton, QSizePolicy, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from shared.localization import normalize_language, tr
 from shared.version import format_version_label
+
+
+_PROJECT_RELEASE_HOST = "github.com"
+_PROJECT_RELEASE_OWNER = "haohaizi554"
+_PROJECT_RELEASE_REPOSITORY = "universalcrawler"
+_FULLY_ENCODED = QUrl.ComponentFormattingOption.FullyEncoded
+_AMBIGUOUS_PATH_CHARACTERS = frozenset("/\\?#")
+_MAX_RELEASE_PATH_DECODE_ROUNDS = 8
+
+
+def _fully_decode_release_path_segment(encoded_segment: str) -> str | None:
+    """Return one semantic decode after rejecting nested ambiguous data."""
+
+    if not encoded_segment.isascii():
+        return None
+    raw = encoded_segment.encode("ascii")
+    semantic = unquote_to_bytes(raw)
+    current = raw
+    for _ in range(_MAX_RELEASE_PATH_DECODE_ROUNDS):
+        decoded = unquote_to_bytes(current)
+        if decoded == current:
+            break
+        current = decoded
+    else:
+        if unquote_to_bytes(current) != current:
+            return None
+
+    try:
+        segment = current.decode("utf-8", errors="strict")
+        semantic_segment = semantic.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if segment in {".", ".."}:
+        return None
+    if any(
+        character in _AMBIGUOUS_PATH_CHARACTERS
+        or category(character).startswith("C")
+        for character in segment
+    ):
+        return None
+    return semantic_segment
+
+
+class _ReleaseNotesBrowser(QTextBrowser):
+    """Render signed release text without resolving embedded resources."""
+
+    def loadResource(self, _resource_type, _name):  # noqa: N802
+        return QVariant()
 
 
 class UpdateStatusIcon(QWidget):
@@ -285,10 +327,12 @@ class UpdateCheckDialog(ChromedDialog):
         detail_title.setObjectName("UpdateDetailTitle")
         card_layout.addWidget(detail_title)
 
-        self.details_browser = QTextBrowser()
+        self.details_browser = _ReleaseNotesBrowser()
         self.details_browser.setObjectName("UpdateMarkdownView")
         self.details_browser.setFrameShape(QFrame.Shape.NoFrame)
-        self.details_browser.setOpenExternalLinks(True)
+        self.details_browser.setOpenExternalLinks(False)
+        self.details_browser.setOpenLinks(False)
+        self.details_browser.anchorClicked.connect(self._activate_release_note_link)
         self.details_browser.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
         self.details_browser.setMinimumHeight(220)
         self.details_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -301,9 +345,11 @@ class UpdateCheckDialog(ChromedDialog):
                 f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>'
             )
             self.release_link.setObjectName("UpdateReleaseLink")
-            self.release_link.setOpenExternalLinks(True)
+            self.release_link.setOpenExternalLinks(False)
             self.release_link.setTextFormat(Qt.TextFormat.RichText)
             self.release_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            self.release_link.linkActivated.connect(self._activate_release_note_link)
+            self._sync_release_link()
             card_layout.addWidget(self.release_link)
         return card
 
@@ -363,9 +409,81 @@ class UpdateCheckDialog(ChromedDialog):
         self.remote_version_value.setText(option["tag"] or self._display_version(option["version"]))
         if self.details_browser is not None:
             self._render_detail_markdown(option["notes"] or self._initial_details)
-        if self.release_link is not None and self._release_url:
-            link_text = self._tr("打开 GitHub Release 页面")
-            self.release_link.setText(f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>')
+        self._sync_release_link()
+
+    def _activate_release_note_link(self, link: QUrl | str) -> None:
+        url = link if isinstance(link, QUrl) else QUrl(str(link or ""))
+        if (
+            self.details_browser is not None
+            and url.isRelative()
+            and not url.path()
+            and bool(url.fragment())
+        ):
+            self.details_browser.scrollToAnchor(url.fragment())
+            return
+        if self._is_allowed_project_release_url(url):
+            QDesktopServices.openUrl(url)
+
+    def _sync_release_link(self) -> None:
+        if self.release_link is None:
+            return
+        url = QUrl(self._release_url)
+        allowed = self._is_allowed_project_release_url(url)
+        self.release_link.setVisible(allowed)
+        if not allowed:
+            self.release_link.clear()
+            return
+        link_text = self._tr("打开 GitHub Release 页面")
+        self.release_link.setText(
+            f'<a href="{escape(self._release_url, quote=True)}">'
+            f"{escape(link_text)}</a>"
+        )
+
+    @staticmethod
+    def _is_allowed_project_release_url(url: QUrl) -> bool:
+        if (
+            not url.isValid()
+            or url.isRelative()
+            or not url.scheme().isascii()
+            or url.scheme().lower() != "https"
+            or not url.host(_FULLY_ENCODED).isascii()
+            or url.host(_FULLY_ENCODED).lower() != _PROJECT_RELEASE_HOST
+            or url.port(-1) not in {-1, 443}
+        ):
+            return False
+
+        authority = url.authority(_FULLY_ENCODED)
+        if (
+            not authority.isascii()
+            or "@" in authority
+            or authority.lower() not in {_PROJECT_RELEASE_HOST, f"{_PROJECT_RELEASE_HOST}:443"}
+        ):
+            return False
+
+        encoded_path = url.path(_FULLY_ENCODED)
+        if not encoded_path.startswith("/"):
+            return False
+        encoded_segments = encoded_path.split("/")
+        if len(encoded_segments) < 3 or any(
+            not segment for segment in encoded_segments[1:-1]
+        ):
+            return False
+        decoded_segments = [
+            _fully_decode_release_path_segment(segment)
+            for segment in encoded_segments[1:]
+        ]
+        if any(segment is None for segment in decoded_segments):
+            return False
+
+        owner, repository = decoded_segments[:2]
+        return (
+            bool(owner)
+            and bool(repository)
+            and owner.isascii()
+            and repository.isascii()
+            and owner.lower() == _PROJECT_RELEASE_OWNER
+            and repository.lower() == _PROJECT_RELEASE_REPOSITORY
+        )
 
     def _render_detail_markdown(self, details: str) -> None:
         self._rendered_details = str(details or "")
