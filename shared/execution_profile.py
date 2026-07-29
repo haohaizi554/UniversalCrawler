@@ -246,7 +246,14 @@ def _restrict_profile(
         if approved_roots is None
         else frozenset(Path(root).resolve() for root in approved_roots)
     )
-    if not roots.issubset(profile.approved_roots):
+    if not all(
+        any(
+            requested_root == current_root
+            or current_root in requested_root.parents
+            for current_root in profile.approved_roots
+        )
+        for requested_root in roots
+    ):
         raise ExecutionProfileEscalation("approved_roots cannot be expanded")
 
     if (

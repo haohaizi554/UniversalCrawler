@@ -173,5 +173,34 @@ def test_restrict_rejects_permission_or_root_expansion(local_profile, tmp_path):
         local_profile.restrict(approved_roots=(tmp_path.parent,))
 
 
+def test_restrict_allows_approved_root_to_narrow_to_a_descendant(
+    local_profile,
+    tmp_path,
+):
+    nested = tmp_path / "downloads" / "session" / "media"
+
+    restricted = local_profile.restrict(approved_roots=(nested,))
+
+    assert restricted.approved_roots == frozenset({nested.resolve()})
+
+
+def test_restrict_rejects_a_symlink_descendant_that_resolves_outside_root(
+    local_profile,
+    tmp_path,
+):
+    approved = tmp_path / "downloads"
+    outside = tmp_path / "outside"
+    approved.mkdir()
+    outside.mkdir()
+    link = approved / "escape"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symbolic links are unavailable on this host: {exc}")
+
+    with pytest.raises(ExecutionProfileEscalation):
+        local_profile.restrict(approved_roots=(link / "media",))
+
+
 def test_restrict_returns_self_for_an_identical_profile(local_profile):
     assert local_profile.restrict() is local_profile
