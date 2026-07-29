@@ -126,6 +126,16 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("下载任务开始执行", "Download task started", "下載任務開始執行"),
     ("下载任务完成", "Download task completed", "下載任務完成"),
     ("下载任务失败", "Download task failed", "下載任務失敗"),
+    (
+        "下载批次在回滚超时前未停止",
+        "Download batch did not stop before rollback timeout",
+        "下載批次未能在回滾逾時前停止",
+    ),
+    (
+        "工具运行时超过有界关闭时间窗口",
+        "Tool runtime exceeded the bounded shutdown window",
+        "工具執行階段超過受限關閉時限",
+    ),
     ("UI 回调失败", "ui callback failed", "UI 回調失敗"),
     ("回调失败", "callback failed", "回調失敗"),
     ("下载任务被用户停止", "Download task stopped by user", "下載任務被使用者停止"),

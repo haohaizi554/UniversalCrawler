@@ -196,6 +196,8 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "下载任务开始执行", en: "Download task started", tw: "下載任務開始執行" },
   { zh: "下载任务完成", en: "Download task completed", tw: "下載任務完成" },
   { zh: "下载任务失败", en: "Download task failed", tw: "下載任務失敗" },
+  { zh: "下载批次在回滚超时前未停止", en: "Download batch did not stop before rollback timeout", tw: "下載批次未能在回滾逾時前停止" },
+  { zh: "工具运行时超过有界关闭时间窗口", en: "Tool runtime exceeded the bounded shutdown window", tw: "工具執行階段超過受限關閉時限" },
   { zh: "UI 回调失败", en: "ui callback failed", tw: "UI 回調失敗" },
   { zh: "回调失败", en: "callback failed", tw: "回調失敗" },
   { zh: "下载任务被用户停止", en: "Download task stopped by user", tw: "下載任務被使用者停止" },
