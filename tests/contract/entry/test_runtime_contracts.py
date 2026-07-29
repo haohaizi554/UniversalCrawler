@@ -84,11 +84,137 @@ class CliDownloadFacadeContractTests(unittest.TestCase):
         self.assertEqual(build_config.call_args.kwargs["source"], "douyin")
 
 class CliSdkFacadeContractTests(unittest.TestCase):
+    @staticmethod
+    def _module_operations(sdk_module):
+        return (
+            ("search", lambda: sdk_module.search("douyin", "kw")),
+            ("list_platforms", sdk_module.list_platforms),
+            ("scan_directory", lambda: sdk_module.scan_directory("downloads")),
+            (
+                "download_video",
+                lambda: sdk_module.download_video(
+                    "https://example.com/video",
+                    "douyin",
+                ),
+            ),
+        )
+
+    def test_module_facades_preserve_body_error_when_cleanup_fails(self):
+        import shared.sdk_runtime as sdk_module
+
+        for method_name, invoke in self._module_operations(sdk_module):
+            body_error = RuntimeError(f"{method_name} failed")
+            cleanup_error = ValueError(f"{method_name} cleanup failed")
+            with (
+                self.subTest(method=method_name),
+                patch.object(
+                    sdk_module.UcrawlSDK,
+                    method_name,
+                    side_effect=body_error,
+                ),
+                patch.object(
+                    sdk_module.UcrawlSDK,
+                    "close",
+                    side_effect=cleanup_error,
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    invoke()
+
+                self.assertIs(raised.exception, body_error)
+                self.assertTrue(
+                    any("cleanup failed" in note for note in body_error.__notes__)
+                )
+
+    def test_module_facades_surface_incomplete_cleanup_after_success(self):
+        import shared.sdk_runtime as sdk_module
+
+        for method_name, invoke in self._module_operations(sdk_module):
+            with (
+                self.subTest(method=method_name),
+                patch.object(
+                    sdk_module.UcrawlSDK,
+                    method_name,
+                    return_value={"status": "ok"},
+                ),
+                patch.object(sdk_module.UcrawlSDK, "close", return_value=False),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "tool runner shutdown did not complete",
+                ):
+                    invoke()
+
+    def test_module_facade_preserves_body_error_when_cleanup_is_incomplete(self):
+        import shared.sdk_runtime as sdk_module
+
+        body_error = RuntimeError("search failed")
+        with (
+            patch.object(
+                sdk_module.UcrawlSDK,
+                "search",
+                side_effect=body_error,
+            ),
+            patch.object(sdk_module.UcrawlSDK, "close", return_value=False),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                sdk_module.search("douyin", "kw")
+
+        self.assertIs(raised.exception, body_error)
+        self.assertTrue(
+            any("shutdown did not complete" in note for note in body_error.__notes__)
+        )
+
+    def test_module_facade_cleanup_annotation_survives_whole_class_replacement(self):
+        import shared.sdk_runtime as sdk_module
+
+        sdk = Mock()
+        body_error = KeyboardInterrupt("search interrupted")
+        sdk.search.side_effect = body_error
+        sdk.close.return_value = False
+
+        with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                sdk_module.search("douyin", "kw")
+
+        self.assertIs(raised.exception, body_error)
+        sdk.close.assert_called_once_with()
+        self.assertTrue(
+            any("shutdown did not complete" in note for note in body_error.__notes__)
+        )
+
+    def test_module_list_platforms_closes_after_attribute_lookup_failure(self):
+        import shared.sdk_runtime as sdk_module
+
+        body_error = KeyboardInterrupt("platform lookup interrupted")
+
+        class LookupFailingSDK:
+            def __init__(self):
+                self.close_calls = 0
+
+            def __getattribute__(self, name):
+                if name == "list_platforms":
+                    raise body_error
+                return object.__getattribute__(self, name)
+
+            def close(self):
+                self.close_calls += 1
+                return True
+
+        sdk = LookupFailingSDK()
+        with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                sdk_module.list_platforms()
+
+        self.assertIs(raised.exception, body_error)
+        self.assertEqual(sdk.close_calls, 1)
+
     def test_module_search_delegates_and_closes_sdk(self):
         import shared.sdk_runtime as sdk_module
 
         sdk = Mock()
         sdk.search.return_value = {"status": "ok"}
+        sdk.close.return_value = True
 
         with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk) as sdk_cls:
             result = sdk_module.search("douyin", "kw", save_dir="downloads", download=False, timeout=12)
@@ -111,6 +237,7 @@ class CliSdkFacadeContractTests(unittest.TestCase):
 
         sdk = Mock()
         sdk.download_video.return_value = {"status": "ok", "local_path": "demo.mp4"}
+        sdk.close.return_value = True
         progress_cb = Mock()
 
         with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk) as sdk_cls:
@@ -144,8 +271,10 @@ class CliSdkFacadeContractTests(unittest.TestCase):
 
         scan_sdk = Mock()
         scan_sdk.scan_directory.return_value = {"status": "ok", "items": []}
+        scan_sdk.close.return_value = True
         list_sdk = Mock()
         list_sdk.list_platforms.return_value = [{"id": "douyin"}]
+        list_sdk.close.return_value = True
 
         with patch("shared.sdk_runtime.UcrawlSDK", side_effect=[scan_sdk, list_sdk]):
             scan_result = sdk_module.scan_directory("downloads", scan_limit=10)

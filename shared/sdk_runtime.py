@@ -59,6 +59,47 @@ def _discover_platform_ids() -> tuple[str, ...]:
     except Exception:
         return ("douyin", "bilibili", "kuaishou", "missav", "xiaohongshu")
 
+
+def _record_sdk_cleanup_failure(
+    owner: Any,
+    body_error: BaseException,
+    cleanup_error: BaseException,
+) -> None:
+    """Attach cleanup diagnostics without relying on a replaceable SDK class."""
+
+    try:
+        object.__setattr__(owner, "_last_cleanup_error", cleanup_error)
+    except BaseException:
+        pass
+    note = "UcrawlSDK cleanup failed with unknown error"
+    try:
+        detail = str(cleanup_error)
+    except BaseException:
+        try:
+            error_name = type(cleanup_error).__name__
+        except BaseException:
+            error_name = None
+        if type(error_name) is str and error_name:
+            note = "UcrawlSDK cleanup failed with " + error_name
+    else:
+        if type(detail) is str and detail:
+            note = "UcrawlSDK cleanup failed: " + detail
+    try:
+        add_note = getattr(body_error, "add_note", None)
+    except BaseException:
+        add_note = None
+    if callable(add_note):
+        try:
+            add_note(note)
+            return
+        except BaseException:
+            pass
+    try:
+        setattr(body_error, "_ucrawl_sdk_cleanup_error", cleanup_error)
+    except BaseException:
+        pass
+
+
 class UcrawlSDK:
     """UCrawl Python SDK。
 
@@ -260,34 +301,7 @@ class UcrawlSDK:
         body_error: BaseException,
         cleanup_error: BaseException,
     ) -> None:
-        self._set_last_cleanup_error(cleanup_error)
-        note = "UcrawlSDK cleanup failed with unknown error"
-        try:
-            detail = str(cleanup_error)
-        except BaseException:
-            try:
-                error_name = type(cleanup_error).__name__
-            except BaseException:
-                error_name = None
-            if type(error_name) is str and error_name:
-                note = "UcrawlSDK cleanup failed with " + error_name
-        else:
-            if type(detail) is str and detail:
-                note = "UcrawlSDK cleanup failed: " + detail
-        try:
-            add_note = getattr(body_error, "add_note", None)
-        except BaseException:
-            add_note = None
-        if callable(add_note):
-            try:
-                add_note(note)
-                return
-            except BaseException:
-                pass
-        try:
-            setattr(body_error, "_ucrawl_sdk_cleanup_error", cleanup_error)
-        except BaseException:
-            pass
+        _record_sdk_cleanup_failure(self, body_error, cleanup_error)
 
     def _set_last_cleanup_error(
         self,
@@ -845,6 +859,39 @@ class UcrawlSDK:
             # 失败结果保留 directory，便于调用方关联原始请求。
             return {"status": "error", "error": str(e), "directory": directory}
 
+def _invoke_and_close_sdk(sdk: UcrawlSDK, operation: Any) -> Any:
+    """Run one module-level facade operation and close without masking it."""
+
+    try:
+        result = operation()
+    except BaseException as body_error:
+        cleanup_error = _close_sdk_once(sdk)
+        if cleanup_error is not None:
+            try:
+                _record_sdk_cleanup_failure(
+                    sdk,
+                    body_error,
+                    cleanup_error,
+                )
+            except BaseException:
+                pass
+        raise
+
+    cleanup_error = _close_sdk_once(sdk)
+    if cleanup_error is not None:
+        raise cleanup_error
+    return result
+
+
+def _close_sdk_once(sdk: UcrawlSDK) -> BaseException | None:
+    try:
+        if sdk.close() is True:
+            return None
+        return RuntimeError("UcrawlSDK tool runner shutdown did not complete")
+    except BaseException as cleanup_error:
+        return cleanup_error
+
+
 def search(
     source: str,
     keyword: str,
@@ -864,11 +911,19 @@ def search(
     """
     # save_dir=None 由 SDK 通过共享运行时配置解析默认目录。
     sdk = UcrawlSDK(save_dir=save_dir)
-    try:
-        return sdk.search(source, keyword, save_dir=save_dir, selection=selection,
-                          timeout=timeout, download=download, run_timeout=run_timeout, **config)
-    finally:
-        sdk.close()
+    return _invoke_and_close_sdk(
+        sdk,
+        lambda: sdk.search(
+            source,
+            keyword,
+            save_dir=save_dir,
+            selection=selection,
+            timeout=timeout,
+            download=download,
+            run_timeout=run_timeout,
+            **config,
+        ),
+    )
 
 def list_platforms() -> list[dict]:
     """列出所有可用平台。
@@ -879,10 +934,7 @@ def list_platforms() -> list[dict]:
         ...     print(p["id"], p["name"])
     """
     sdk = UcrawlSDK()
-    try:
-        return sdk.list_platforms()
-    finally:
-        sdk.close()
+    return _invoke_and_close_sdk(sdk, lambda: sdk.list_platforms())
 
 def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
     """扫描本地目录。
@@ -892,10 +944,10 @@ def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
         >>> result = scan_directory("D:/downloads", scan_limit=500)
     """
     sdk = UcrawlSDK()
-    try:
-        return sdk.scan_directory(directory, scan_limit)
-    finally:
-        sdk.close()
+    return _invoke_and_close_sdk(
+        sdk,
+        lambda: sdk.scan_directory(directory, scan_limit),
+    )
 
 def download_video(
     url: str,
@@ -915,7 +967,16 @@ def download_video(
         >>> result = download_video("https://...", "missav", title="ABC-123", config={"proxy": "http://127.0.0.1:7890"})
     """
     sdk = UcrawlSDK(save_dir=save_dir)
-    try:
-        return sdk.download_video(url=url, source=source, title=title, save_dir=save_dir, timeout=timeout, verbose=verbose, config=config, progress_callback=progress_callback)
-    finally:
-        sdk.close()
+    return _invoke_and_close_sdk(
+        sdk,
+        lambda: sdk.download_video(
+            url=url,
+            source=source,
+            title=title,
+            save_dir=save_dir,
+            timeout=timeout,
+            verbose=verbose,
+            config=config,
+            progress_callback=progress_callback,
+        ),
+    )

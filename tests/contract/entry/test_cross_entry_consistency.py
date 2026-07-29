@@ -600,6 +600,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
 
         sdk_instance = Mock()
         sdk_instance.download_video.return_value = expected
+        sdk_instance.close.return_value = True
         with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk_instance):
             sdk_result = sdk_module.download_video(
                 url="https://example.com/video.mp4",
