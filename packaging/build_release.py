@@ -54,6 +54,11 @@ from release_lock import (  # noqa: E402
     release_lock_path,
 )
 from release_tool.events import ReleaseEventEmitter  # noqa: E402
+from release_tool.cancellation_control import (  # noqa: E402
+    CancellationControlError,
+    ReleaseCancellationControl,
+    join_windows_process_job,
+)
 from release_tool.models import (  # noqa: E402
     BuildRequest,
     ReleaseMode,
@@ -1494,6 +1499,10 @@ def _build_pipeline_hooks(
         expected = uploaded if isinstance(uploaded, tuple) and uploaded else assets or state["assets"]
         publisher.verify_assets(tag, expected)
 
+    def publish_release(_request: BuildRequest) -> None:
+        _child_environment, publisher = resolve_release_context()
+        publisher.publish_release(tag)
+
     def run_smoke_tests() -> None:
         child_environment, _publisher = resolve_release_context()
         build_root = state["build_root"]
@@ -1542,6 +1551,7 @@ def _build_pipeline_hooks(
         ensure_release=ensure_release,
         upload_assets=upload_assets,
         verify_remote_assets=verify_remote_assets,
+        publish_release=publish_release,
         validate_dependencies=validate_dependencies,
         prepare=prepare,
         cleanup=resources.close,
@@ -1591,6 +1601,8 @@ def _run_release_request(
     request: BuildRequest,
     *,
     preflight_error: BaseException | None = None,
+    cancel_token: CancellationToken | None = None,
+    diagnostics: tuple[str, ...] = (),
 ) -> int:
     emitter = ReleaseEventEmitter(stream=sys.stdout)
     hooks = _build_pipeline_hooks(request, os.environ.copy(), emitter)
@@ -1599,31 +1611,94 @@ def _run_release_request(
             raise preflight_error from None
 
         hooks = replace(hooks, validate_dependencies=reject_request)
-    result = run_release_request(request, hooks, emitter, CancellationToken())
-    return 0 if result.succeeded else 1
+    result = run_release_request(
+        request,
+        hooks,
+        emitter,
+        cancel_token or CancellationToken(),
+        initial_diagnostics=diagnostics,
+    )
+    return 0 if result.succeeded or result.cancelled else 1
 
 
-def _run_request_file(request_file: Path) -> int:
+def _run_request_file(
+    request_file: Path,
+    control_directory: Path | None = None,
+    job_name: str = "",
+) -> int:
     path = Path(request_file)
     request: BuildRequest | None = None
     load_error: BaseException | None = None
+    load_diagnostics: list[str] = []
     try:
         try:
+            if job_name and control_directory is None:
+                raise CancellationControlError(
+                    "release process job requires cancellation control"
+                )
+            if job_name:
+                join_windows_process_job(job_name)
             request = load_request_file(path)
-        except (Exception, SystemExit) as error:
+        except BaseException as error:
             load_error = error
     finally:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            load_error = ValueError("release request file could not be deleted")
+            cleanup_error = ValueError("release request file could not be deleted")
+            if load_error is None:
+                load_error = cleanup_error
+            else:
+                diagnostic = (
+                    "request cleanup failed: "
+                    "release request file could not be deleted"
+                )
+                load_diagnostics.append(diagnostic)
+                _attach_request_diagnostic(
+                    load_error,
+                    diagnostic,
+                )
+        except BaseException:
+            if load_error is None:
+                raise
+            diagnostic = (
+                "request cleanup failed: "
+                "release request file could not be deleted"
+            )
+            load_diagnostics.append(diagnostic)
+            _attach_request_diagnostic(load_error, diagnostic)
     if load_error is not None:
-        return _run_controlled_preflight_failure(load_error)
+        return _run_controlled_preflight_failure(
+            load_error,
+            diagnostics=tuple(load_diagnostics),
+        )
     if request is None:
         return _run_controlled_preflight_failure(
             ValueError("release request file could not be loaded")
         )
-    return _run_release_request(request)
+    cancel_token = CancellationToken()
+    if control_directory is not None:
+        try:
+            control = ReleaseCancellationControl(Path(control_directory))
+        except CancellationControlError as error:
+            return _run_controlled_preflight_failure(error)
+        cancel_token = CancellationToken(
+            is_cancel_requested=control.is_cancel_requested,
+            begin_irreversible=control.begin_irreversible,
+        )
+    return _run_release_request(request, cancel_token=cancel_token)
+
+
+def _attach_request_diagnostic(error: BaseException, diagnostic: str) -> None:
+    try:
+        add_note = getattr(error, "add_note", None)
+    except BaseException:
+        return
+    if callable(add_note):
+        try:
+            add_note(diagnostic)
+        except BaseException:
+            pass
 
 
 def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
@@ -1651,10 +1726,15 @@ def _build_dry_run_request(*, version: str, build_only: bool) -> BuildRequest:
     )
 
 
-def _run_controlled_preflight_failure(error: BaseException) -> int:
+def _run_controlled_preflight_failure(
+    error: BaseException,
+    *,
+    diagnostics: tuple[str, ...] = (),
+) -> int:
     return _run_release_request(
         _build_dry_run_request(version="0.0.0", build_only=False),
         preflight_error=error,
+        diagnostics=diagnostics,
     )
 
 
@@ -1673,10 +1753,12 @@ def _launch_panel() -> int:
 
 
 def build_script_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--request-file", default="")
+    parser.add_argument("--control-directory", default="")
+    parser.add_argument("--job-name", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--version", default="")
     parser.add_argument("--build-only", action="store_true")
@@ -1685,10 +1767,29 @@ def build_script_parser() -> argparse.ArgumentParser:
 
 def script_main(argv: list[str]) -> int:
     raw = list(argv)
-    if "--gui" in raw or not raw:
-        return _launch_panel()
     parser = build_script_parser()
+    job_name_supplied = any(
+        token == "--job-name" or token.startswith("--job-name=")
+        for token in raw
+    )
+    abbreviated_job_flags = [
+        token
+        for token in raw
+        if token.startswith("--job")
+        and token != "--job-name"
+        and not token.startswith("--job-name=")
+    ]
+    if abbreviated_job_flags:
+        parser.error(
+            "unrecognized arguments: " + " ".join(abbreviated_job_flags)
+        )
+    if "--gui" in raw or not raw:
+        if job_name_supplied:
+            parser.error("--job-name requires --request-file and --control-directory")
+        return _launch_panel()
     args, unknown = parser.parse_known_args(raw)
+    if job_name_supplied and not args.job_name:
+        parser.error("--job-name must not be empty")
     if args.request_file:
         if (
             unknown
@@ -1700,7 +1801,24 @@ def script_main(argv: list[str]) -> int:
             )
         ):
             parser.error("unsupported arguments for --request-file")
+        if args.job_name and not args.control_directory:
+            parser.error("--job-name requires --request-file and --control-directory")
+        if args.control_directory:
+            if args.job_name:
+                return _run_request_file(
+                    Path(args.request_file),
+                    Path(args.control_directory),
+                    args.job_name,
+                )
+            return _run_request_file(
+                Path(args.request_file),
+                Path(args.control_directory),
+            )
         return _run_request_file(Path(args.request_file))
+    if args.job_name:
+        parser.error("--job-name requires --request-file and --control-directory")
+    if args.control_directory:
+        parser.error("--control-directory requires --request-file")
     if args.dry_run:
         if unknown:
             parser.error("unsupported arguments for --dry-run")

@@ -36,6 +36,7 @@ from release_tool.models import (
 )
 from release_tool import panel as panel_module
 from release_tool import process_controller as process_controller_module
+from release_tool.cancellation_control import CancellationControlError
 from release_tool.panel import (
     ReleaseBuilderWindow,
     build_confirmation_summary,
@@ -164,6 +165,50 @@ class FakeQtProcess(QProcess):
         return b""
 
 
+class FakeProcessJob:
+    def __init__(
+        self,
+        *,
+        active: bool = False,
+        assign_error: BaseException | None = None,
+        terminate_error: BaseException | None = None,
+        close_failures: int = 0,
+    ) -> None:
+        self.name = "Local\\UniversalCrawlerRelease-test"
+        self.active = active
+        self.assign_error = assign_error
+        self.terminate_error = terminate_error
+        self.close_failures = close_failures
+        self.assigned_process_ids: list[int] = []
+        self.terminate_calls = 0
+        self.closed = False
+        self.close_attempts = 0
+        self.force_close_calls = 0
+
+    def assign_process(self, process_id: int) -> None:
+        self.assigned_process_ids.append(process_id)
+        if self.assign_error is not None:
+            raise self.assign_error
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        if self.terminate_error is not None:
+            raise self.terminate_error
+
+    def has_active_processes(self) -> bool:
+        return self.active
+
+    def close(self) -> None:
+        self.close_attempts += 1
+        if self.close_attempts <= self.close_failures:
+            raise CancellationControlError("close failed")
+        self.closed = True
+
+    def force_close(self) -> None:
+        self.force_close_calls += 1
+        self.closed = True
+
+
 def success_event(sequence: int = 1) -> str:
     payload = {
         "kind": "result",
@@ -173,6 +218,19 @@ def success_event(sequence: int = 1) -> str:
         "progress": 100,
         "message": "",
         "data": {"status": "succeeded"},
+    }
+    return EVENT_PREFIX + json.dumps(payload)
+
+
+def cancelled_event(sequence: int = 1) -> str:
+    payload = {
+        "kind": "result",
+        "sequence": sequence,
+        "timestamp": "2026-07-19T00:00:00Z",
+        "stage": "cancelled",
+        "progress": 100,
+        "message": "Release cancelled",
+        "data": {"status": "cancelled"},
     }
     return EVENT_PREFIX + json.dumps(payload)
 
@@ -1006,12 +1064,19 @@ def test_qprocess_uses_exact_program_argv_proxy_environment_and_secret_safe_requ
     controller.start(request, ProxySelection.direct())
 
     assert fake.program == sys.executable
-    assert fake.arguments == [
+    assert fake.arguments[:4] == [
         str(PROJECT_ROOT / "packaging" / "build_release.py"),
         "--headless",
         "--request-file",
         str(controller.request_file),
     ]
+    assert "--control-directory" in fake.arguments
+    control_directory = getattr(controller, "control_directory", None)
+    assert isinstance(control_directory, Path)
+    assert control_directory.is_dir()
+    assert fake.arguments[fake.arguments.index("--control-directory") + 1] == str(
+        control_directory
+    )
     assert all(
         not fake.environment.contains(variable)
         for variable in PROXY_ENVIRONMENT_VARIABLES
@@ -1075,7 +1140,7 @@ def test_upload_progress_event_bypasses_log_queue_and_reaches_ui_signal(qapp):
     assert log_batches == []
 
 
-def test_panel_shows_upload_percent_speed_and_retry_context(qapp):
+def test_panel_maps_upload_progress_into_its_stage_without_regressing(qapp):
     window = make_panel(qapp)
     try:
         window._on_stage_changed("uploading", 85, "")
@@ -1095,17 +1160,150 @@ def test_panel_shows_upload_percent_speed_and_retry_context(qapp):
             }
         )
 
-        assert window.progress_bar.value() == 50
+        assert window.progress_bar.value() == 90
         assert window.upload_progress_label.isVisibleTo(window)
         assert "UniversalCrawlerPro_Setup.exe" in window.upload_progress_label.text()
         assert "150.0 MB / 300.0 MB" in window.upload_progress_label.text()
         assert "5.0 MB/s" in window.upload_progress_label.text()
         assert "第 2 次尝试" in window.upload_progress_label.text()
 
+        window._on_upload_progress(
+            {
+                "asset_name": "UniversalCrawlerPro_Setup.exe",
+                "asset_index": 1,
+                "asset_count": 2,
+                "bytes_sent": 20 * 1024 * 1024,
+                "bytes_total": 100 * 1024 * 1024,
+                "overall_bytes_sent": 120 * 1024 * 1024,
+                "overall_bytes_total": 300 * 1024 * 1024,
+                "bytes_per_second": 0,
+                "attempt": 3,
+                "state": "retrying",
+                "retry_delay_seconds": 2.0,
+            }
+        )
+
+        assert window.progress_bar.value() == 90
+
+        window._on_upload_progress(
+            {
+                "asset_name": "latest.json.sig",
+                "asset_index": 2,
+                "asset_count": 2,
+                "bytes_sent": 100,
+                "bytes_total": 100,
+                "overall_bytes_sent": 300,
+                "overall_bytes_total": 300,
+                "bytes_per_second": 1024,
+                "attempt": 1,
+                "state": "completed",
+                "retry_delay_seconds": 0.0,
+            }
+        )
+
+        assert window.progress_bar.value() == 95
+
         window._on_stage_changed("verifying", 95, "")
 
         assert window.progress_bar.value() == 95
         assert window.upload_progress_label.isHidden()
+
+        window._on_stage_changed("failed", 85, "")
+
+        assert window.progress_bar.value() == 95
+    finally:
+        window.shutdown()
+
+
+@pytest.mark.parametrize("next_stage", ("verifying", "publishing"))
+def test_panel_ignores_late_upload_progress_after_upload_stage(qapp, next_stage):
+    window = make_panel(qapp)
+    try:
+        window._on_stage_changed("uploading", 85, "")
+        window._on_stage_changed(next_stage, 95, "")
+        terminal_status = window.status_label.text()
+        terminal_progress = window.progress_bar.value()
+
+        window._on_upload_progress(
+            {
+                "asset_name": "late.exe",
+                "asset_index": 1,
+                "asset_count": 1,
+                "bytes_sent": 100,
+                "bytes_total": 100,
+                "overall_bytes_sent": 100,
+                "overall_bytes_total": 100,
+                "bytes_per_second": 1024,
+                "attempt": 1,
+                "state": "completed",
+                "retry_delay_seconds": 0.0,
+            }
+        )
+
+        assert window.upload_progress_label.isHidden()
+        assert window.status_label.text() == terminal_status
+        assert window.progress_bar.value() == terminal_progress
+    finally:
+        window.shutdown()
+
+
+def test_panel_preserves_cancelled_terminal_state_and_ignores_late_upload(qapp):
+    window = make_panel(qapp)
+    try:
+        window._on_stage_changed("uploading", 85, "")
+        window._on_process_completed(
+            ReleaseResult(
+                mode=ReleaseMode.NEW_RELEASE,
+                stage=ReleaseStage.CANCELLED,
+            )
+        )
+
+        window._on_upload_progress(
+            {
+                "asset_name": "late.exe",
+                "asset_index": 1,
+                "asset_count": 1,
+                "bytes_sent": 100,
+                "bytes_total": 100,
+                "overall_bytes_sent": 100,
+                "overall_bytes_total": 100,
+                "bytes_per_second": 1024,
+                "attempt": 1,
+                "state": "completed",
+                "retry_delay_seconds": 0.0,
+            }
+        )
+
+        assert window.status_label.text() == "已取消"
+        assert window.upload_progress_label.isHidden()
+    finally:
+        window.shutdown()
+
+
+def test_panel_resets_monotonic_progress_for_a_new_run(qapp):
+    window = make_panel(qapp)
+    try:
+        window.progress_bar.setValue(98)
+
+        window._on_running_changed(True)
+
+        assert window.progress_bar.value() == 0
+    finally:
+        window.shutdown()
+
+
+def test_panel_distinguishes_release_preparation_from_publication(qapp):
+    window = make_panel(qapp)
+    try:
+        window._on_stage_changed("preparing_release", 75, "")
+
+        assert window.progress_bar.value() == 75
+        assert window.status_label.text() == "准备 GitHub Release 草稿"
+
+        window._on_stage_changed("publishing", 98, "")
+
+        assert window.progress_bar.value() == 98
+        assert window.status_label.text() == "公开 GitHub Release"
     finally:
         window.shutdown()
 
@@ -1223,6 +1421,38 @@ def test_success_requires_one_ordered_result_and_normal_zero_exit(
         assert error_fragment in controller.result.error
 
 
+def test_protocol_error_after_cancelled_result_is_failed_in_controller_and_panel(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+    controller.feed_stdout(cancelled_event() + "\n")
+    controller.feed_stdout(stage_event(sequence=2, progress=100) + "\n")
+
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert "after final result" in controller.result.error
+    window = make_panel(qapp)
+    try:
+        window._on_process_completed(controller.result)
+        assert window._release_stage is ReleaseStage.FAILED
+        assert controller.result.error in window.status_label.text()
+    finally:
+        window.shutdown()
+
+
+def test_cancelled_result_requires_matching_terminal_status(qapp):
+    controller = ReleaseProcessController(process=FakeProcess())
+    malformed = cancelled_event().replace(
+        '"status": "cancelled"',
+        '"status": "succeeded"',
+    )
+    controller.feed_stdout(malformed + "\n")
+
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert "did not confirm cancellation" in controller.result.error
+
+
 def test_malformed_result_fails_closed_and_redacts_error(qapp):
     controller = ReleaseProcessController(process=FakeProcess())
 
@@ -1236,7 +1466,7 @@ def test_malformed_result_fails_closed_and_redacts_error(qapp):
     assert "github_pat_super_secret" not in controller.result.error
 
 
-def test_cancel_terminates_then_escalates_and_cleanup_is_deterministic(
+def test_cancel_requests_cooperation_before_terminate_and_force_kill(
     qapp, tmp_path
 ):
     fake = FakeProcess()
@@ -1245,19 +1475,271 @@ def test_cancel_terminates_then_escalates_and_cleanup_is_deterministic(
         request_directory=tmp_path,
         log_directory=tmp_path / "logs",
     )
+    stages: list[str] = []
+    controller.stage_changed.connect(
+        lambda stage, _progress, _message: stages.append(stage)
+    )
     controller.start(make_request(), ProxySelection.system())
     request_file = controller.request_file
 
     controller.cancel()
-    assert fake.terminated is True
+    assert fake.terminated is False
     assert controller.cancel_timer.interval() == 5000
+    control_directory = getattr(controller, "control_directory", None)
+    assert isinstance(control_directory, Path)
+    assert (control_directory / "cancel.requested").is_file()
+    assert stages[-1] == "cancelling"
 
     controller.escalate_cancel()
+    assert fake.terminated is True
+    assert fake.killed is False
+    controller.force_cancel()
     assert fake.killed is True
     controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+    assert controller.result.stage is ReleaseStage.CANCELLED
     assert not request_file.exists()
+    assert not control_directory.exists()
     assert controller.cancel_timer.isActive() is False
     assert controller.log_writer_active is False
+
+
+def test_windows_job_retains_descendants_when_launcher_exits_first(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    job = FakeProcessJob(active=True)
+    completed_results: list[ReleaseResult] = []
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        process_job_factory=lambda: job,
+    )
+    controller.completed.connect(completed_results.append)
+    controller.start(make_request(), ProxySelection.system())
+    request_file = controller.request_file
+    control_directory = controller.control_directory
+    assert fake.arguments[:2] == ["-I", "-S"]
+    assert fake.arguments[2].endswith("cancellation_control.py")
+    assert "--release-job-bootstrap" in fake.arguments
+    assert fake.arguments[fake.arguments.index("--job-name") + 1] == job.name
+    assert fake.arguments[fake.arguments.index("--control-directory") + 1] == str(
+        control_directory
+    )
+
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+
+    assert job.assigned_process_ids == [fake.processId()]
+    assert job.terminate_calls == 1
+    assert controller.running is True
+    assert completed_results == []
+    assert request_file.exists()
+    assert control_directory.exists()
+    assert job.closed is False
+
+    job.active = False
+    controller._poll_process_job()
+
+    assert controller.running is False
+    assert controller.result.stage is ReleaseStage.CANCELLED
+    assert len(completed_results) == 1
+    assert not request_file.exists()
+    assert not control_directory.exists()
+    assert job.closed is True
+
+
+def test_windows_job_assignment_failure_blocks_release_process_tree(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    job = FakeProcessJob(
+        assign_error=CancellationControlError("assignment failed")
+    )
+    errors: list[str] = []
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        process_job_factory=lambda: job,
+    )
+    controller.error_reported.connect(errors.append)
+
+    controller.start(make_request(), ProxySelection.system())
+
+    assert fake.killed is True
+    assert job.terminate_calls == 1
+    assert any("process job" in message for message in errors)
+
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert "process job" in controller.result.error
+    assert job.closed is True
+
+
+def test_windows_job_termination_failure_closes_kill_on_close_guard_and_finishes(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    job = FakeProcessJob(
+        active=True,
+        terminate_error=CancellationControlError("termination failed"),
+        close_failures=3,
+    )
+    completed_results: list[ReleaseResult] = []
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        process_job_factory=lambda: job,
+    )
+    controller.completed.connect(completed_results.append)
+    controller.start(make_request(), ProxySelection.system())
+    request_file = controller.request_file
+    control_directory = controller.control_directory
+
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+
+    assert job.terminate_calls == 1
+    assert job.close_attempts == 3
+    assert job.force_close_calls == 1
+    assert job.closed is True
+    assert controller._process_job_poll_timer.isActive() is False
+    assert controller.running is False
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert "process job" in controller.result.error
+    assert len(completed_results) == 1
+    assert not request_file.exists()
+    assert not control_directory.exists()
+
+
+def test_cancel_after_irreversible_marker_never_terminates_or_kills(qapp, tmp_path):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    controller.start(make_request(), ProxySelection.system())
+    control_directory = getattr(controller, "control_directory", None)
+    assert isinstance(control_directory, Path)
+    (control_directory / "irreversible.started").write_text(
+        "irreversible\n",
+        encoding="utf-8",
+    )
+
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.force_cancel()
+
+    assert fake.terminated is False
+    assert fake.killed is False
+    controller.feed_stdout(success_event() + "\n")
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+    assert controller.result.succeeded
+
+
+def test_forced_cancel_never_hides_protocol_error_without_terminal_event(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    controller.start(make_request(), ProxySelection.system())
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.feed_stdout(EVENT_PREFIX + "{malformed}\n")
+
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert "malformed release event" in controller.result.error
+
+
+def test_forced_cancel_never_hides_fatal_event_without_terminal_result(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    controller.start(make_request(), ProxySelection.system())
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.feed_stdout(error_event() + "\n")
+
+    controller.on_finished(1, QProcess.ExitStatus.CrashExit)
+
+    assert controller.result.stage is ReleaseStage.FAILED
+    assert controller.result.error == "portable build failed"
+
+
+def test_cancel_control_failure_is_fail_closed_for_process_signals(qapp, tmp_path):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    errors: list[str] = []
+    controller.error_reported.connect(errors.append)
+    controller.start(make_request(), ProxySelection.system())
+    control_directory = getattr(controller, "control_directory", None)
+    assert isinstance(control_directory, Path)
+    control_directory.rmdir()
+
+    controller.cancel()
+    controller.escalate_cancel()
+    controller.force_cancel()
+
+    assert fake.terminated is False
+    assert fake.killed is False
+    assert any("cancellation control" in message for message in errors)
+    controller.feed_stdout(success_event() + "\n")
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+    assert controller.result.succeeded
+
+
+def test_cancel_slot_normalizes_marker_close_failure_without_throwing(
+    qapp,
+    tmp_path,
+):
+    fake = FakeProcess()
+    controller = ReleaseProcessController(
+        process=fake,
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    errors: list[str] = []
+    controller.error_reported.connect(errors.append)
+    controller.start(make_request(), ProxySelection.system())
+
+    with patch(
+        "release_tool.cancellation_control.os.close",
+        side_effect=OSError("close failed"),
+    ):
+        controller.cancel()
+
+    assert fake.terminated is False
+    assert fake.killed is False
+    assert any("cancellation control" in message for message in errors)
+    controller.feed_stdout(success_event() + "\n")
+    controller.on_finished(0, QProcess.ExitStatus.NormalExit)
+    assert controller.result.succeeded
 
 
 def test_shutdown_retains_process_state_until_target_reports_stopped(qapp, tmp_path):
@@ -1272,13 +1754,16 @@ def test_shutdown_retains_process_state_until_target_reports_stopped(qapp, tmp_p
 
     assert controller.shutdown() is False
 
-    assert fake.terminated is True
+    assert fake.terminated is False
     assert fake.killed is False
     assert controller.running is True
     assert controller.cancel_timer.isActive() is True
     assert request_file.exists()
 
     controller.escalate_cancel()
+    assert fake.terminated is True
+    assert fake.killed is False
+    controller.force_cancel()
     assert fake.killed is True
     assert controller.running is True
     assert request_file.exists()
@@ -1305,6 +1790,11 @@ def test_windows_escalation_tracks_taskkill_until_confirmation(
 
     controller.cancel()
     controller.escalate_cancel()
+
+    assert target.terminated is True
+    assert controller._taskkill_process is None
+
+    controller.force_cancel()
 
     assert controller._taskkill_process is taskkill
     assert taskkill.program == "taskkill"
@@ -1342,7 +1832,7 @@ def test_window_close_while_running_retains_controller_until_stopped(qapp, tmp_p
         qapp.processEvents()
 
         assert window.close() is False
-        assert fake.terminated is True
+        assert fake.terminated is False
         assert controller.running is True
         assert request_file.exists()
         assert window.isVisible() is True
@@ -1608,6 +2098,194 @@ def test_start_failure_retains_writer_until_bounded_close_completes(tmp_path):
     assert controller.log_writer_active is False
 
 
+def test_start_failure_with_hostile_string_preserves_primary_and_closes_resources(
+    qapp,
+    tmp_path,
+):
+    class HostileStartError(RuntimeError):
+        def __str__(self) -> str:
+            raise GeneratorExit("secondary string failure")
+
+    primary = HostileStartError("start remains primary")
+
+    class FailingProcess(FakeProcess):
+        def start(self) -> None:
+            raise primary
+
+    job = FakeProcessJob()
+    controller = ReleaseProcessController(
+        process=FailingProcess(),
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        process_job_factory=lambda: job,
+    )
+
+    with pytest.raises(HostileStartError) as caught:
+        controller.start(make_request(), ProxySelection.system())
+
+    assert caught.value is primary
+    pump_until(qapp, lambda: controller.shutdown_complete)
+    assert controller.result.error == "release process failed to start"
+    assert controller._request_file is None
+    assert controller._control is None
+    assert controller._process_job is None
+    assert job.closed is True
+
+
+def test_start_failure_isolates_each_hostile_cleanup_and_keeps_primary(
+    qapp,
+    tmp_path,
+):
+    primary = RuntimeError("start remains primary")
+
+    class FailingProcess(FakeProcess):
+        def start(self) -> None:
+            raise primary
+
+    job = FakeProcessJob()
+    controller = ReleaseProcessController(
+        process=FailingProcess(),
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        process_job_factory=lambda: job,
+    )
+    cleanup_calls: list[str] = []
+
+    def hostile_cleanup(name, cleanup, failure):
+        def run(*args, **kwargs) -> None:
+            cleanup_calls.append(name)
+            cleanup(*args, **kwargs)
+            raise failure(f"Authorization: Bearer {name}-secret")
+
+        return run
+
+    controller._cleanup_request_file = hostile_cleanup(
+        "request",
+        controller._cleanup_request_file,
+        KeyboardInterrupt,
+    )
+    controller._cleanup_control = hostile_cleanup(
+        "control",
+        controller._cleanup_control,
+        GeneratorExit,
+    )
+    controller._cleanup_process_job = hostile_cleanup(
+        "job",
+        controller._cleanup_process_job,
+        SystemExit,
+    )
+    controller._finish_writer_or_defer = hostile_cleanup(
+        "writer",
+        controller._finish_writer_or_defer,
+        KeyboardInterrupt,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        controller.start(make_request(), ProxySelection.system())
+
+    assert caught.value is primary
+    assert cleanup_calls == ["request", "control", "job", "writer"]
+    assert getattr(primary, "__notes__", ()) == [
+        "startup cleanup failed: release request file could not be deleted",
+        "startup cleanup failed: release cancellation control could not be deleted",
+        "startup cleanup failed: release process job handle could not be closed",
+        "startup cleanup failed: release audit log writer could not be closed",
+    ]
+    assert "secret" not in repr(primary)
+    pump_until(qapp, lambda: controller.shutdown_complete)
+
+
+@pytest.mark.parametrize(
+    "hostile_attribute",
+    (
+        "_cleanup_request_file",
+        "_cleanup_control",
+        "_cleanup_process_job",
+        "_finish_writer_or_defer",
+        "_maybe_emit_completed",
+    ),
+)
+def test_start_failure_isolates_hostile_action_lookup_and_continues_cleanup(
+    tmp_path,
+    hostile_attribute,
+):
+    primary = RuntimeError("start remains primary")
+    failure_actions = (
+        "_cleanup_request_file",
+        "_cleanup_control",
+        "_cleanup_process_job",
+        "_finish_writer_or_defer",
+        "_maybe_emit_completed",
+    )
+
+    class FailingProcess(FakeProcess):
+        def start(self) -> None:
+            raise primary
+
+    class ImmediateWriter:
+        active = True
+        error = ""
+        progress_count = 0
+
+        def submit(self, _line: str) -> None:
+            return None
+
+        def close(self, *, timeout_seconds: float) -> bool:
+            del timeout_seconds
+            self.active = False
+            return True
+
+    class HostileLookupController(ReleaseProcessController):
+        _hostile_lookup_name = ""
+        _hostile_lookup_fired = False
+        _failure_action_lookups: list[str] = []
+
+        def __getattribute__(self, name: str):
+            if name in failure_actions:
+                target = super().__getattribute__("_hostile_lookup_name")
+                if target:
+                    lookups = super().__getattribute__("_failure_action_lookups")
+                    lookups.append(name)
+                    fired = super().__getattribute__("_hostile_lookup_fired")
+                    if name == target and not fired:
+                        super().__setattr__("_hostile_lookup_fired", True)
+                        raise LookupError(f"hostile lookup: {name}")
+            return super().__getattribute__(name)
+
+    job = FakeProcessJob()
+    controller = HostileLookupController(
+        process=FailingProcess(),
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+        writer_factory=lambda _path: ImmediateWriter(),
+        process_job_factory=lambda: job,
+    )
+    controller._failure_action_lookups = []
+    controller._hostile_lookup_name = hostile_attribute
+
+    with pytest.raises(RuntimeError) as caught:
+        controller.start(make_request(), ProxySelection.system())
+
+    assert caught.value is primary
+    assert controller._failure_action_lookups == list(failure_actions)
+    target_index = failure_actions.index(hostile_attribute)
+    if target_index < failure_actions.index("_cleanup_control"):
+        assert controller._control is None
+    if target_index < failure_actions.index("_cleanup_process_job"):
+        assert controller._process_job is None
+        assert job.closed is True
+    if target_index < failure_actions.index("_finish_writer_or_defer"):
+        assert controller._log_writer is None
+
+    controller._hostile_lookup_name = ""
+    controller._cleanup_request_file()
+    controller._cleanup_control()
+    controller._cleanup_process_job()
+    controller._finish_writer_or_defer()
+    controller._maybe_emit_completed()
+    assert controller.shutdown_complete is True
+
+
 def test_audit_log_paths_are_unique_within_one_second(tmp_path):
     controller = ReleaseProcessController(
         process=FakeProcess(),
@@ -1659,6 +2337,37 @@ def test_confirmation_summary_uses_safe_fields_and_chromed_dialog(qapp):
         assert "Release notes:" not in summary
     finally:
         window.shutdown()
+
+
+@pytest.mark.parametrize("unlink_failure", (KeyboardInterrupt, GeneratorExit))
+def test_request_write_failure_keeps_primary_when_unlink_raises_baseexception(
+    qapp,
+    tmp_path,
+    unlink_failure,
+):
+    controller = ReleaseProcessController(
+        process=FakeProcess(),
+        request_directory=tmp_path,
+        log_directory=tmp_path / "logs",
+    )
+    primary = RuntimeError("request serialization remains primary")
+
+    with (
+        patch.object(process_controller_module.json, "dump", side_effect=primary),
+        patch.object(
+            process_controller_module.Path,
+            "unlink",
+            side_effect=unlink_failure("Authorization: Bearer unlink-secret"),
+        ),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        controller._write_request_file(make_request())
+
+    assert caught.value is primary
+    assert getattr(primary, "__notes__", ()) == [
+        "request cleanup failed: temporary request file could not be removed"
+    ]
+    assert "unlink-secret" not in repr(primary)
 
 
 @pytest.mark.parametrize(

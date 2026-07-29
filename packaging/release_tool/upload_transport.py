@@ -127,10 +127,11 @@ class GitHubAssetUploadTransport:
             raise UploadTransportError("GitHub authentication is unavailable", transient=False)
 
         session = self._session_factory()
-        session.trust_env = False
         response = None
-        on_progress(0, total, 0.0)
+        primary_error: BaseException | None = None
         try:
+            session.trust_env = False
+            on_progress(0, total, 0.0)
             with asset_path.open("rb") as handle:
                 body = _ProgressReader(
                     handle,
@@ -183,12 +184,15 @@ class GitHubAssetUploadTransport:
                     "GitHub asset upload was not finalized",
                     transient=False,
                 )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            if response is not None:
-                response.close()
-            close = getattr(session, "close", None)
-            if callable(close):
-                close()
+            _close_upload_resources(
+                response,
+                session,
+                primary_error=primary_error,
+            )
 
 
 def _trusted_upload_endpoint(value: str) -> str:
@@ -207,6 +211,49 @@ def _trusted_upload_endpoint(value: str) -> str:
     if not trusted:
         raise ValueError("trusted GitHub upload URL is required")
     return endpoint
+
+
+def _close_upload_resources(
+    response: object | None,
+    session: object,
+    *,
+    primary_error: BaseException | None,
+) -> None:
+    cleanup_error: BaseException | None = None
+    for resource in (response, session):
+        if resource is None:
+            continue
+        try:
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+    if cleanup_error is None:
+        return
+    if primary_error is not None:
+        _attach_upload_cleanup_diagnostic(primary_error)
+        return
+    raise UploadTransportError(
+        "GitHub asset upload cleanup failed",
+        transient=False,
+    ) from None
+
+
+def _attach_upload_cleanup_diagnostic(primary: BaseException) -> None:
+    diagnostic = (
+        "upload cleanup failed: release upload resources could not be closed"
+    )
+    try:
+        add_note = getattr(primary, "add_note", None)
+    except BaseException:
+        return
+    if callable(add_note):
+        try:
+            add_note(diagnostic)
+        except BaseException:
+            pass
 
 
 def _request_proxies(environment: Mapping[str, str]) -> dict[str, str]:

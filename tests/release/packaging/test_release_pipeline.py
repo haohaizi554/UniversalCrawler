@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -186,6 +187,156 @@ def test_script_headless_request_file_runs_runner(tmp_path):
     run.assert_called_once_with(request_file)
 
 
+def test_script_routes_windows_job_only_with_request_and_control(tmp_path):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+    job_name = "Local\\UniversalCrawlerRelease-" + "a" * 32
+    tool = _load_tool()
+
+    with patch.object(tool, "_run_request_file", return_value=0) as run:
+        assert tool.script_main(
+            [
+                "--headless",
+                "--request-file",
+                str(request_file),
+                "--control-directory",
+                str(control_directory),
+                "--job-name",
+                job_name,
+            ]
+        ) == 0
+
+    run.assert_called_once_with(request_file, control_directory, job_name)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--headless", "--job-name", "Local\\UniversalCrawlerRelease-invalid"],
+        [
+            "--headless",
+            "--request-file",
+            "request.json",
+            "--job-name",
+            "Local\\UniversalCrawlerRelease-invalid",
+        ],
+    ],
+)
+def test_script_rejects_job_name_outside_controlled_request_mode(argv, capsys):
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit) as caught:
+        tool.script_main(argv)
+
+    assert caught.value.code == 2
+    assert "--job-name" in capsys.readouterr().err
+
+
+def test_script_rejects_job_name_even_when_gui_flag_would_otherwise_short_circuit(
+    capsys,
+):
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_launch_panel") as launch,
+        pytest.raises(SystemExit) as caught,
+    ):
+        tool.script_main(
+            [
+                "--gui",
+                "--job-name",
+                "Local\\UniversalCrawlerRelease-" + "a" * 32,
+            ]
+        )
+
+    assert caught.value.code == 2
+    launch.assert_not_called()
+    assert "--job-name" in capsys.readouterr().err
+
+
+def test_script_rejects_empty_job_name_flag_in_controlled_request_mode(
+    tmp_path,
+    capsys,
+):
+    request_file = tmp_path / "request.json"
+    control_directory = tmp_path / "control"
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit) as caught:
+        tool.script_main(
+            [
+                "--headless",
+                "--request-file",
+                str(request_file),
+                "--control-directory",
+                str(control_directory),
+                "--job-name=",
+            ]
+        )
+
+    assert caught.value.code == 2
+    assert "--job-name" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("abbreviation", ["--job", "--job-n"])
+def test_script_rejects_abbreviated_job_name_flags(abbreviation, capsys):
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_launch_panel") as launch,
+        pytest.raises(SystemExit) as caught,
+    ):
+        tool.script_main(
+            [
+                "--gui",
+                abbreviation,
+                "Local\\UniversalCrawlerRelease-" + "a" * 32,
+            ]
+        )
+
+    assert caught.value.code == 2
+    launch.assert_not_called()
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "--headless",
+            "--job=Local\\UniversalCrawlerRelease-" + "a" * 32,
+        ],
+        [
+            "--headless",
+            "--request-file",
+            "request.json",
+            "--control-directory",
+            "control",
+            "--job-n=Local\\UniversalCrawlerRelease-" + "a" * 32,
+        ],
+    ],
+)
+def test_script_rejects_abbreviated_job_name_in_legacy_and_request_modes(
+    argv,
+    capsys,
+):
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "main") as legacy,
+        patch.object(tool, "_run_request_file") as request_run,
+        pytest.raises(SystemExit) as caught,
+    ):
+        tool.script_main(argv)
+
+    assert caught.value.code == 2
+    legacy.assert_not_called()
+    request_run.assert_not_called()
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
 def test_script_headless_dry_run_builds_non_mutating_request():
     tool = _load_tool()
 
@@ -281,6 +432,118 @@ def test_request_file_is_deleted_after_loading_and_runs_the_unified_runner(tmp_p
     assert not request_file.exists()
 
 
+def test_request_file_joins_process_job_before_read_delete_or_release_side_effect(
+    tmp_path,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+    job_name = "Local\\UniversalCrawlerRelease-" + "a" * 32
+    tool = _load_tool()
+    order: list[str] = []
+
+    def join(name: str) -> None:
+        assert name == job_name
+        assert request_file.exists()
+        order.append("join")
+
+    def load(path: Path) -> BuildRequest:
+        assert path == request_file
+        assert order == ["join"]
+        order.append("load")
+        return BuildRequest(
+            target_version="3.6.21",
+            remote=RemoteReleaseInfo.available("3.6.21"),
+            build_portable=False,
+            build_installer=False,
+            run_smoke_tests=False,
+            apply_version=False,
+        )
+
+    def run(_request: BuildRequest, *, cancel_token) -> int:
+        assert order == ["join", "load"]
+        order.append("run")
+        return 0
+
+    with (
+        patch.object(tool, "join_windows_process_job", side_effect=join),
+        patch.object(tool, "load_request_file", side_effect=load),
+        patch.object(tool, "_run_release_request", side_effect=run),
+    ):
+        assert tool._run_request_file(
+            request_file,
+            control_directory,
+            job_name,
+        ) == 0
+
+    assert order == ["join", "load", "run"]
+    assert not request_file.exists()
+
+
+def test_process_job_join_failure_is_controlled_before_request_read(tmp_path, capsys):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+    job_name = "Local\\UniversalCrawlerRelease-" + "a" * 32
+    tool = _load_tool()
+
+    with (
+        patch.object(
+            tool,
+            "join_windows_process_job",
+            side_effect=tool.CancellationControlError(
+                "release process job could not be joined"
+            ),
+        ),
+        patch.object(tool, "load_request_file") as load,
+    ):
+        exit_code = tool._run_request_file(
+            request_file,
+            control_directory,
+            job_name,
+        )
+
+    assert exit_code != 0
+    load.assert_not_called()
+    assert not request_file.exists()
+    events = _release_events(capsys.readouterr().out)
+    terminal = [event for event in events if event.kind == "result"]
+    assert len(terminal) == 1
+    assert terminal[0].stage is tool.ReleaseStage.FAILED
+    assert "process job" in terminal[0].data["error"]
+
+
+def test_request_file_honors_parent_cancellation_control(tmp_path, capsys):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_request_payload()), encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+    (control_directory / "cancel.requested").write_text(
+        "cancel\n",
+        encoding="utf-8",
+    )
+    tool = _load_tool()
+
+    exit_code = tool.script_main(
+        [
+            "--headless",
+            "--request-file",
+            str(request_file),
+            "--control-directory",
+            str(control_directory),
+        ]
+    )
+
+    assert exit_code == 0
+    events = _release_events(capsys.readouterr().out)
+    terminal = [event for event in events if event.kind == "result"]
+    assert len(terminal) == 1
+    assert terminal[0].stage is tool.ReleaseStage.CANCELLED
+    assert terminal[0].data["status"] == "cancelled"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -309,6 +572,133 @@ def test_invalid_request_file_is_deleted_and_emits_one_redacted_terminal_result(
     assert result_events[0].stage is tool.ReleaseStage.FAILED
     assert result_events[0].data["status"] == "failed"
     assert len([event for event in events if event.kind == "error"]) == 1
+
+
+def test_request_cleanup_failure_preserves_parse_failure_and_emits_secondary_diagnostic(
+    tmp_path,
+    capsys,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text('{"target_version": "3.6.21",', encoding="utf-8")
+    tool = _load_tool()
+
+    with patch.object(Path, "unlink", side_effect=OSError("cleanup secret")):
+        exit_code = tool._run_request_file(request_file)
+
+    assert exit_code != 0
+    events = _release_events(capsys.readouterr().out)
+    error_events = [event for event in events if event.kind == "error"]
+    result_events = [event for event in events if event.kind == "result"]
+    assert len(error_events) == 1
+    assert "not valid JSON" in error_events[0].message
+    assert len(result_events) == 1
+    assert result_events[0].stage is tool.ReleaseStage.FAILED
+    diagnostics = result_events[0].data.get("diagnostics")
+    assert diagnostics == (
+        "request cleanup failed: release request file could not be deleted",
+    )
+    assert "cleanup secret" not in repr(events)
+
+
+def test_request_cleanup_failure_attaches_note_without_replacing_primary_error(
+    tmp_path,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text('{"target_version": "3.6.21",', encoding="utf-8")
+    tool = _load_tool()
+    observed: list[BaseException] = []
+
+    observed_diagnostics: list[tuple[str, ...]] = []
+
+    def capture(
+        error: BaseException,
+        *,
+        diagnostics: tuple[str, ...] = (),
+    ) -> int:
+        observed.append(error)
+        observed_diagnostics.append(diagnostics)
+        return 17
+
+    with (
+        patch.object(Path, "unlink", side_effect=OSError("cleanup secret")),
+        patch.object(tool, "_run_controlled_preflight_failure", side_effect=capture),
+    ):
+        assert tool._run_request_file(request_file) == 17
+
+    assert len(observed) == 1
+    assert type(observed[0]) is ValueError
+    assert str(observed[0]) == "release request file is not valid JSON"
+    assert getattr(observed[0], "__notes__", ()) == [
+        "request cleanup failed: release request file could not be deleted"
+    ]
+    assert observed_diagnostics == [
+        ("request cleanup failed: release request file could not be deleted",)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("primary_type", "cleanup_type"),
+    ((KeyboardInterrupt, GeneratorExit), (GeneratorExit, KeyboardInterrupt)),
+)
+def test_request_cleanup_baseexception_preserves_loading_primary(
+    tmp_path,
+    primary_type,
+    cleanup_type,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    tool = _load_tool()
+    primary = primary_type("request loading interrupted")
+    cleanup = cleanup_type("cleanup secret")
+    observed: list[BaseException] = []
+    observed_diagnostics: list[tuple[str, ...]] = []
+
+    def capture(
+        error: BaseException,
+        *,
+        diagnostics: tuple[str, ...] = (),
+    ) -> int:
+        observed.append(error)
+        observed_diagnostics.append(diagnostics)
+        return 23
+
+    with (
+        patch.object(tool, "load_request_file", side_effect=primary),
+        patch.object(Path, "unlink", side_effect=cleanup),
+        patch.object(tool, "_run_controlled_preflight_failure", side_effect=capture),
+    ):
+        assert tool._run_request_file(request_file) == 23
+
+    assert observed == [primary]
+    diagnostic = "request cleanup failed: release request file could not be deleted"
+    assert getattr(primary, "__notes__", ()) == [diagnostic]
+    assert observed_diagnostics == [(diagnostic,)]
+    assert "secret" not in repr(observed_diagnostics)
+
+
+@pytest.mark.parametrize("cleanup_type", (KeyboardInterrupt, GeneratorExit))
+def test_request_cleanup_non_oserror_without_primary_propagates_unchanged(
+    tmp_path,
+    cleanup_type,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    tool = _load_tool()
+    cleanup = cleanup_type("cleanup interrupted")
+
+    with (
+        patch.object(tool, "load_request_file", return_value=Mock()),
+        patch.object(Path, "unlink", side_effect=cleanup),
+        patch.object(tool, "_run_release_request") as run,
+    ):
+        caught = None
+        try:
+            tool._run_request_file(request_file)
+        except BaseException as error:  # noqa: BLE001 - identity is the contract.
+            caught = error
+
+    assert caught is cleanup
+    run.assert_not_called()
 
 
 def test_dry_run_request_sets_every_dependent_action_explicitly():
@@ -664,6 +1054,10 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
         def verify_assets(self, *_args, **_kwargs):
             calls.append("remote_verify")
 
+        def publish_release(self, tag):
+            assert tag == "v3.6.22"
+            calls.append("publish")
+
     def fake_git(argv):
         nonlocal identity_ready, tag_ready, version_staged, remote_main_commit
         git_commands.append(list(argv))
@@ -763,6 +1157,7 @@ def test_new_release_persists_identity_before_snapshot_and_publishes_after_smoke
     assert calls.index("snapshot") < calls.index("manifest")
     assert calls.index("manifest") < calls.index("smoke") < calls.index("remote_release")
     assert calls.index("remote_release") < calls.index("upload") < calls.index("remote_verify")
+    assert calls.index("remote_verify") < calls.index("publish")
     assert [
         "push",
         "origin",
@@ -799,11 +1194,18 @@ def test_portable_only_signed_build_does_not_validate_an_unbuilt_installer(tmp_p
 
 def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     tool = _load_tool()
-    public_key = tmp_path / "manifest-public.pem"
-    public_key.write_text(
-        ECC.generate(curve="Ed25519").public_key().export_key(format="PEM"),
+    private_key = tmp_path / "manifest-private.pem"
+    private_key.write_text(
+        ECC.generate(curve="Ed25519").export_key(format="PEM"),
         encoding="utf-8",
     )
+    assets = (
+        tmp_path / "installer.exe",
+        tmp_path / "latest.json",
+        tmp_path / "latest.json.sig",
+    )
+    for asset in assets:
+        asset.write_bytes(asset.name.encode("utf-8"))
     stream = io.StringIO()
     emitter = ReleaseEventEmitter(stream=stream)
 
@@ -814,7 +1216,7 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
             self.verified: tuple[Path, ...] = ()
 
         def ensure_release(self, *_args, **_kwargs):
-            self.output("publish output")
+            self.output("prepare output")
 
         def upload_assets(self, _tag, assets, **_kwargs):
             self.uploaded = tuple(assets)
@@ -824,17 +1226,23 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
             self.verified = tuple(assets)
             self.output("verify output")
 
+        def publish_release(self, _tag):
+            self.output("publish output")
+
     request = BuildRequest(
         target_version="3.6.21",
         remote=RemoteReleaseInfo.available("3.6.21"),
         release_notes_path=str(tmp_path / "notes.md"),
         apply_version=False,
         build_portable=False,
-        build_installer=False,
+        build_installer=True,
         run_smoke_tests=False,
         same_release_repair=True,
+        sign_manifest=True,
+        private_key_path=str(private_key),
+        create_or_reuse_tag=True,
         create_or_update_release=True,
-        upload_public_key=True,
+        upload_release_assets=True,
         verify_remote_assets=True,
     )
     (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
@@ -847,21 +1255,26 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
 
     with (
         patch.object(tool, "GitHubReleasePublisher", side_effect=make_publisher),
-        patch.object(tool, "_read_only_public_key_path", return_value=public_key),
-            patch.object(
-                tool,
-                "_validate_git_release_state",
-                return_value="a" * 40,
-            ),
-            patch.object(tool, "_validate_release_baseline_clean"),
-        ):
+        patch.object(
+            tool,
+            "_validate_git_release_state",
+            return_value="a" * 40,
+        ),
+        patch.object(tool, "_validate_release_baseline_clean"),
+    ):
         hooks = tool._build_pipeline_hooks(request, {}, emitter)
+        hooks = replace(
+            hooks,
+            build_installer=lambda: None,
+            sign_manifest=lambda _request: assets,
+            ensure_tag=lambda _request, _commit: None,
+        )
         result = run_release_request(request, hooks, emitter, CancellationToken())
 
     assert result.succeeded
     assert publisher is not None
-    assert publisher.uploaded == (public_key,)
-    assert publisher.verified == (public_key,)
+    assert publisher.uploaded == assets
+    assert publisher.verified == assets
     logs = [
         event
         for line in stream.getvalue().splitlines()
@@ -869,9 +1282,10 @@ def test_publisher_logs_follow_upload_and_verify_stage_progress(tmp_path):
     ]
     assert [(event.stage, event.progress) for event in logs] == [
         (tool.ReleaseStage.PREFLIGHT, 0),
-        (tool.ReleaseStage.PUBLISHING, 75),
+        (tool.ReleaseStage.PREPARING_RELEASE, 75),
         (tool.ReleaseStage.UPLOADING, 85),
         (tool.ReleaseStage.VERIFYING, 95),
+        (tool.ReleaseStage.PUBLISHING, 98),
     ]
 
 

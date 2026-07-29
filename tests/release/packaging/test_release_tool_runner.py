@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
+from unittest.mock import Mock
 
 import pytest
 
@@ -15,9 +21,17 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(RELEASE_TOOL_ROOT))
 
 
+from release_tool import cancellation_control as cancellation_control_module
 from release_tool.models import BuildRequest, ReleaseStage, RemoteReleaseInfo
+from release_tool.events import parse_event_line
+from release_tool.cancellation_control import (
+    CancellationControlError,
+    ReleaseCancellationControl,
+    WindowsReleaseProcessJob,
+)
 from release_tool.runner import (
     CancellationToken,
+    PipelineCancelled,
     ReleasePipelineHooks,
     SigningMaterial,
     load_request_file,
@@ -133,6 +147,9 @@ class RecordingHooks:
     def verify_remote_assets(self, request: BuildRequest, assets: tuple[Path, ...]) -> None:
         self.calls.append("verify_remote_assets")
 
+    def publish_release(self, request: BuildRequest) -> None:
+        self.calls.append("publish_release")
+
     def cleanup(self) -> None:
         if self.on_cleanup:
             self.calls.append("cleanup")
@@ -155,6 +172,7 @@ class RecordingHooks:
             ensure_release=self.ensure_release,
             upload_assets=self.upload_assets,
             verify_remote_assets=self.verify_remote_assets,
+            publish_release=self.publish_release,
             cleanup=self.cleanup,
         )
 
@@ -221,6 +239,364 @@ def test_cancelled_pipeline_never_reports_success():
     assert result.succeeded is False
     assert ReleaseStage.SUCCEEDED not in events.stages
     assert [event["kind"] for event in events.events].count("result") == 1
+
+
+def test_control_cancel_wins_when_published_before_irreversible_marker(tmp_path):
+    control = ReleaseCancellationControl.create(tmp_path)
+    token = CancellationToken(
+        is_cancel_requested=control.is_cancel_requested,
+        begin_irreversible=control.begin_irreversible,
+    )
+    assert control.request_cancel() is True
+
+    with pytest.raises(PipelineCancelled):
+        token.begin_irreversible()
+
+    assert control.cancel_path.is_file()
+
+
+def test_control_irreversible_marker_wins_before_late_parent_cancel(tmp_path):
+    control = ReleaseCancellationControl.create(tmp_path)
+    token = CancellationToken(
+        is_cancel_requested=control.is_cancel_requested,
+        begin_irreversible=control.begin_irreversible,
+    )
+
+    token.begin_irreversible()
+    assert control.irreversible_path.is_file()
+    assert control.request_cancel() is False
+
+    token.raise_if_cancelled()
+    token.mark_completed()
+
+
+def test_control_close_failure_is_normalized_to_the_protocol_error(tmp_path, monkeypatch):
+    control = ReleaseCancellationControl.create(tmp_path)
+    monkeypatch.setattr(
+        cancellation_control_module.os,
+        "close",
+        Mock(side_effect=OSError("close failed")),
+    )
+
+    with pytest.raises(CancellationControlError, match="could not be updated"):
+        control.request_cancel()
+
+
+def test_windows_job_assignment_uses_required_rights_and_keeps_close_secondary():
+    class Kernel32:
+        def __init__(self) -> None:
+            self.access_mask = 0
+
+        def OpenProcess(self, access_mask, _inherit, _process_id):
+            self.access_mask = int(access_mask)
+            return 222
+
+        @staticmethod
+        def IsProcessInJob(_process, _job, assigned):
+            assigned._obj.value = False
+            return True
+
+        @staticmethod
+        def AssignProcessToJobObject(_job, _process):
+            return False
+
+        @staticmethod
+        def CloseHandle(_handle):
+            return False
+
+    kernel32 = Kernel32()
+    job = WindowsReleaseProcessJob(
+        name="Local\\UniversalCrawlerRelease-" + "a" * 32,
+        handle=111,
+        kernel32=kernel32,
+    )
+
+    with pytest.raises(
+        CancellationControlError,
+        match="could not join its process job",
+    ) as caught:
+        job.assign_process(4242)
+
+    assert kernel32.access_mask == 0x1101
+    notes = getattr(caught.value, "__notes__", ())
+    assert notes == [
+        "process handle cleanup failed: "
+        "release process job handle could not be closed"
+    ]
+
+
+def test_windows_child_job_join_keeps_assignment_primary_when_close_also_fails(
+    monkeypatch,
+):
+    class Kernel32:
+        @staticmethod
+        def OpenJobObjectW(_access, _inherit, _name):
+            return 111
+
+        @staticmethod
+        def GetCurrentProcess():
+            return 222
+
+        @staticmethod
+        def IsProcessInJob(_process, _job, assigned):
+            assigned._obj.value = False
+            return True
+
+        @staticmethod
+        def AssignProcessToJobObject(_job, _process):
+            return False
+
+        @staticmethod
+        def CloseHandle(_handle):
+            return False
+
+    monkeypatch.setattr(
+        cancellation_control_module,
+        "_windows_kernel32",
+        lambda: Kernel32(),
+    )
+
+    with pytest.raises(
+        CancellationControlError,
+        match="could not join its process job",
+    ) as caught:
+        cancellation_control_module.join_windows_process_job(
+            "Local\\UniversalCrawlerRelease-" + "a" * 32
+        )
+
+    assert getattr(caught.value, "__notes__", ()) == [
+        "process job cleanup failed: "
+        "release process job handle could not be closed"
+    ]
+
+
+def test_windows_job_close_retains_handle_until_closehandle_really_succeeds():
+    class Kernel32:
+        def __init__(self) -> None:
+            self.close_results = iter((False, True))
+            self.closed_handles: list[int] = []
+
+        def CloseHandle(self, handle):
+            self.closed_handles.append(handle)
+            return next(self.close_results)
+
+    kernel32 = Kernel32()
+    job = WindowsReleaseProcessJob(
+        name="Local\\UniversalCrawlerRelease-" + "a" * 32,
+        handle=111,
+        kernel32=kernel32,
+    )
+
+    with pytest.raises(CancellationControlError, match="could not be closed"):
+        job.close()
+
+    assert job._handle == 111
+    job.close()
+    assert job._handle is None
+    assert kernel32.closed_handles == [111, 111]
+
+
+def test_windows_job_force_close_uses_close_source_contract_even_on_api_error():
+    class Kernel32:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        @staticmethod
+        def GetCurrentProcess():
+            return 222
+
+        def DuplicateHandle(self, *args):
+            self.calls.append(args)
+            return False
+
+    kernel32 = Kernel32()
+    job = WindowsReleaseProcessJob(
+        name="Local\\UniversalCrawlerRelease-" + "a" * 32,
+        handle=111,
+        kernel32=kernel32,
+    )
+
+    job.force_close()
+
+    assert job._handle is None
+    assert len(kernel32.calls) == 1
+    source_process, source_handle, target_process, target_handle, _, _, options = (
+        kernel32.calls[0]
+    )
+    assert source_process == 222
+    assert source_handle == 111
+    assert target_process is None
+    assert target_handle is None
+    assert options == 0x1
+
+
+def test_windows_bootstrap_join_failure_is_controlled_and_deletes_request(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+    target = tmp_path / "target.py"
+    target.write_text("raise AssertionError('must not run')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        cancellation_control_module,
+        "join_windows_process_job",
+        Mock(side_effect=CancellationControlError("join secret")),
+    )
+
+    exit_code = cancellation_control_module.run_windows_release_bootstrap(
+        [
+            "--release-job-bootstrap",
+            "--job-name",
+            "Local\\UniversalCrawlerRelease-" + "a" * 32,
+            "--script",
+            str(target),
+            "--request-file",
+            str(request_file),
+            "--control-directory",
+            str(control_directory),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not request_file.exists()
+    events = [
+        parse_event_line(line)
+        for line in capsys.readouterr().out.splitlines()
+    ]
+    assert all(event is not None for event in events)
+    assert [event.kind for event in events if event is not None] == [
+        "stage",
+        "error",
+        "stage",
+        "result",
+    ]
+    assert events[-1] is not None
+    assert events[-1].stage is ReleaseStage.FAILED
+    assert events[-1].data["status"] == "failed"
+    assert "join secret" not in repr(events)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job Object")
+@pytest.mark.parametrize("shutdown", ["terminate", "force_close"])
+def test_windows_bootstrap_contains_grandchild_before_target_script_runs(
+    tmp_path,
+    shutdown,
+):
+    job = WindowsReleaseProcessJob.create()
+    pid_file = tmp_path / "grandchild.pid"
+    target = tmp_path / "spawn_grandchild.py"
+    target.write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"pid_file = Path({str(pid_file)!r})\n"
+        "child = subprocess.Popen("
+        "[sys.executable, '-c', 'import time; time.sleep(30)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL"
+        ")\n"
+        "pid_file.write_text(str(child.pid), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    request_file = tmp_path / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    control_directory = tmp_path / "control"
+    control_directory.mkdir()
+
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(Path(cancellation_control_module.__file__).resolve()),
+                "--release-job-bootstrap",
+                "--job-name",
+                job.name,
+                "--script",
+                str(target),
+                "--request-file",
+                str(request_file),
+                "--control-directory",
+                str(control_directory),
+            ],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert completed.returncode == 0, completed.stderr or completed.stdout
+        assert pid_file.is_file()
+        grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert job.has_active_processes() is True
+        if shutdown == "terminate":
+            job.terminate()
+            deadline = time.monotonic() + 5.0
+            while job.has_active_processes() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert job.has_active_processes() is False
+        else:
+            job.force_close()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail("KILL_ON_JOB_CLOSE did not terminate the grandchild")
+    finally:
+        try:
+            job.terminate()
+        except CancellationControlError:
+            pass
+        job.close()
+
+
+def test_version_commit_begins_irreversible_control_before_git_mutation(tmp_path):
+    control = ReleaseCancellationControl.create(tmp_path)
+    marker_observations: list[bool] = []
+    cancellation_observations: list[bool] = []
+
+    class CancellingCommitHooks(RecordingHooks):
+        def commit_version_changes(self, request: BuildRequest) -> str:
+            self.calls.append("commit_version_changes")
+            marker_observations.append(control.irreversible_path.is_file())
+            cancellation_observations.append(control.request_cancel())
+            return self.version_commit
+
+    hooks = CancellingCommitHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+    )
+    token = CancellationToken(
+        is_cancel_requested=control.is_cancel_requested,
+        begin_irreversible=control.begin_irreversible,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert marker_observations == [True]
+    assert cancellation_observations == [False]
+    assert result.succeeded is True
+    assert result.cancelled is False
 
 
 def test_dry_run_uses_read_only_dependency_preflight_without_preparation():
@@ -329,19 +705,156 @@ def test_system_exit_from_cleanup_is_a_redacted_failure():
     assert [event["kind"] for event in events.events].count("result") == 1
 
 
+@pytest.mark.parametrize(
+    "cleanup_failure",
+    [RuntimeError, SystemExit, KeyboardInterrupt, GeneratorExit],
+)
 @pytest.mark.parametrize("interruption", [KeyboardInterrupt, GeneratorExit])
-def test_interruption_propagates_after_cleanup_without_cleanup_override(interruption):
+def test_interruption_propagates_with_cleanup_diagnostic(
+    interruption,
+    cleanup_failure,
+):
+    primary = interruption("operator interruption")
+
     def cleanup_error() -> None:
-        raise RuntimeError("cleanup must not replace interruption")
+        raise cleanup_failure("token=cleanup-secret")
 
-    hooks = RecordingHooks(build_installer_error=interruption(), cleanup=cleanup_error)
+    hooks = RecordingHooks(build_installer_error=primary, cleanup=cleanup_error)
 
-    with pytest.raises(interruption):
+    with pytest.raises(interruption) as caught:
         run_release_request(
             local_debug_request(), hooks.as_pipeline_hooks(), RecordingEmitter(), CancellationToken()
         )
 
+    assert caught.value is primary
     assert hooks.calls.count("cleanup") == 1
+    notes = getattr(primary, "__notes__", ())
+    assert len(notes) == 1
+    assert notes[0].startswith("cleanup failed:")
+    assert "cleanup-secret" not in notes[0]
+
+
+@pytest.mark.parametrize(
+    "cleanup_failure",
+    [RuntimeError, SystemExit, KeyboardInterrupt, GeneratorExit],
+)
+def test_stage_failure_keeps_primary_when_cleanup_raises_baseexception(
+    cleanup_failure,
+):
+    def cleanup_error() -> None:
+        raise cleanup_failure("Authorization: Bearer cleanup-secret")
+
+    hooks = RecordingHooks(
+        build_installer_error=RuntimeError("installer remains primary"),
+        cleanup=cleanup_error,
+    )
+
+    result = run_release_request(
+        local_debug_request(),
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.stage is ReleaseStage.FAILED
+    assert result.error == "installer remains primary"
+    assert result.errors[0] == "installer remains primary"
+    assert len(result.errors) == 2
+    assert result.errors[1].startswith("cleanup failed:")
+    assert "cleanup-secret" not in result.errors[1]
+
+
+def test_interruption_keeps_primary_and_attaches_rollback_diagnostic():
+    primary = KeyboardInterrupt("operator interrupted")
+
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=lambda: (_ for _ in ()).throw(
+                    RuntimeError("rollback unavailable")
+                ),
+            )
+
+    hooks = FailingRollbackHooks(build_installer_error=primary)
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        run_release_request(
+            request,
+            hooks.as_pipeline_hooks(),
+            RecordingEmitter(),
+            CancellationToken(),
+        )
+
+    assert caught.value is primary
+    assert getattr(primary, "__notes__", ()) == [
+        "rollback failed: rollback unavailable"
+    ]
+
+
+def test_unclassified_baseexception_preserves_primary_and_finalizes_resources():
+    primary = asyncio.CancelledError("external cancellation remains primary")
+    finalized: list[str] = []
+
+    class FinalizingHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_rollback() -> None:
+                finalized.append("rollback")
+                raise GeneratorExit("Authorization: Bearer rollback-secret")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=fail_rollback,
+            )
+
+    def fail_cleanup() -> None:
+        finalized.append("cleanup")
+        raise KeyboardInterrupt("Authorization: Bearer cleanup-secret")
+
+    hooks = FinalizingHooks(
+        build_installer_error=primary,
+        cleanup=fail_cleanup,
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        run_release_request(
+            request,
+            hooks.as_pipeline_hooks(),
+            RecordingEmitter(),
+            CancellationToken(),
+        )
+
+    assert caught.value is primary
+    assert finalized == ["rollback", "cleanup"]
+    assert getattr(primary, "__notes__", ()) == [
+        "rollback failed: Authorization: [REDACTED]",
+        "cleanup failed: Authorization: [REDACTED]",
+    ]
 
 
 def test_new_release_defers_remote_release_until_after_signed_smoke():
@@ -379,20 +892,700 @@ def test_new_release_defers_remote_release_until_after_signed_smoke():
         "ensure_release",
         "upload_assets",
         "verify_remote_assets",
+        "publish_release",
     ]
-    assert events.stages == [
-        ReleaseStage.PREFLIGHT,
-        ReleaseStage.VERSION_SYNC,
-        ReleaseStage.SOURCE_IDENTITY,
-        ReleaseStage.BUILDING_PORTABLE,
-        ReleaseStage.BUILDING_INSTALLER,
-        ReleaseStage.SIGNING,
-        ReleaseStage.SMOKE_TESTING,
-        ReleaseStage.PUBLISHING,
-        ReleaseStage.UPLOADING,
-        ReleaseStage.VERIFYING,
-        ReleaseStage.SUCCEEDED,
+    assert [stage.value for stage in events.stages] == [
+        "preflight",
+        "version_sync",
+        "source_identity",
+        "building_portable",
+        "building_installer",
+        "signing",
+        "smoke_testing",
+        "preparing_release",
+        "uploading",
+        "verifying",
+        "publishing",
+        "succeeded",
     ]
+
+
+def test_new_release_upload_failure_never_reaches_verification_or_success():
+    class UploadFailingHooks(RecordingHooks):
+        def upload_assets(self, request: BuildRequest, assets: tuple[Path, ...]) -> None:
+            self.calls.append("upload_assets")
+            raise RuntimeError("upload failed")
+
+    hooks = UploadFailingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        events,
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.UPLOADING
+    assert "verify_remote_assets" not in hooks.calls
+    assert ReleaseStage.SUCCEEDED not in events.stages
+
+
+def test_new_release_verification_failure_never_reports_success():
+    class VerifyFailingHooks(RecordingHooks):
+        def verify_remote_assets(
+            self,
+            request: BuildRequest,
+            assets: tuple[Path, ...],
+        ) -> None:
+            self.calls.append("verify_remote_assets")
+            raise RuntimeError("verification failed")
+
+    hooks = VerifyFailingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        events,
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.VERIFYING
+    assert ReleaseStage.SUCCEEDED not in events.stages
+
+
+def test_new_release_publication_failure_is_reported_as_publishing():
+    class PublishFailingHooks(RecordingHooks):
+        def publish_release(self, request: BuildRequest) -> None:
+            self.calls.append("publish_release")
+            raise RuntimeError("publication failed")
+
+    hooks = PublishFailingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        events,
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is not None
+    assert result.failed_stage.value == "publishing"
+    assert events.stages[-1] is ReleaseStage.FAILED
+
+
+def test_new_release_cleanup_failure_happens_before_irreversible_publication():
+    def fail_cleanup() -> None:
+        raise RuntimeError("cleanup failed")
+
+    hooks = RecordingHooks(cleanup=fail_cleanup)
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.PUBLISHING
+    assert "cleanup" in hooks.calls
+    assert "publish_release" not in hooks.calls
+
+
+def test_new_release_signing_commit_failure_happens_before_publication():
+    transaction_calls: list[str] = []
+
+    class CommitFailingHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_commit() -> None:
+                transaction_calls.append("commit")
+                raise RuntimeError("signing transaction commit failed")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                commit_transaction=fail_commit,
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    hooks = CommitFailingHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.failed_stage is ReleaseStage.PUBLISHING
+    assert transaction_calls == ["commit", "rollback"]
+    assert "publish_release" not in hooks.calls
+
+
+def test_cancellation_during_cleanup_is_ignored_after_remote_identity_linearizes():
+    token = CancellationToken()
+    hooks = RecordingHooks(cleanup=token.cancel)
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert result.succeeded
+    assert "cleanup" in hooks.calls
+    assert "publish_release" in hooks.calls
+
+
+def test_cancellation_during_signing_commit_is_ignored_after_linearization():
+    commit_started = Event()
+    allow_commit = Event()
+    token = CancellationToken()
+    transaction_calls: list[str] = []
+
+    class BlockingCommitHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def commit() -> None:
+                transaction_calls.append("commit")
+                commit_started.set()
+                if not allow_commit.wait(timeout=5):
+                    raise RuntimeError("timed out waiting to finish signing commit")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                commit_transaction=commit,
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    hooks = BlockingCommitHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    results = []
+    worker = Thread(
+        target=lambda: results.append(
+            run_release_request(
+                request,
+                hooks.as_pipeline_hooks(),
+                RecordingEmitter(),
+                token,
+            )
+        ),
+        daemon=True,
+    )
+
+    worker.start()
+    assert commit_started.wait(timeout=5)
+    token.cancel()
+    allow_commit.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert len(results) == 1
+    assert results[0].succeeded
+    assert transaction_calls == ["commit"]
+    assert "publish_release" in hooks.calls
+
+
+def test_trust_anchor_commit_and_remote_identity_are_after_linearization():
+    token = CancellationToken()
+    transaction_calls: list[str] = []
+
+    class CancellingTransactionHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def commit() -> None:
+                transaction_calls.append("commit")
+                token.cancel()
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=True,
+                commit_transaction=commit,
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    hooks = CancellingTransactionHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert result.succeeded
+    assert transaction_calls == ["commit"]
+    assert hooks.calls.index("commit_version_changes") < hooks.calls.index("push_main")
+    assert hooks.calls.index("push_main") < hooks.calls.index("ensure_tag")
+
+
+def test_no_release_signing_commit_is_after_linearization():
+    token = CancellationToken()
+    transaction_calls: list[str] = []
+
+    class CancellingTransactionHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def commit() -> None:
+                transaction_calls.append("commit")
+                token.cancel()
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                commit_transaction=commit,
+                rollback_transaction=lambda: transaction_calls.append("rollback"),
+            )
+
+    hooks = CancellingTransactionHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=False,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert result.succeeded
+    assert transaction_calls == ["commit"]
+
+
+def test_cancellation_after_publication_linearizes_as_success():
+    token = CancellationToken()
+
+    class CancellingPublishHooks(RecordingHooks):
+        def publish_release(self, request: BuildRequest) -> None:
+            self.calls.append("publish_release")
+            token.cancel()
+
+    hooks = CancellingPublishHooks()
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="env:RELEASE_PRIVATE_KEY_PATH",
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+    )
+    events = RecordingEmitter()
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        events,
+        token,
+    )
+
+    assert result.succeeded
+    assert events.stages[-2:] == [ReleaseStage.PUBLISHING, ReleaseStage.SUCCEEDED]
+
+
+def test_rollback_failure_is_secondary_to_the_primary_stage_failure():
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_rollback() -> None:
+                raise RuntimeError("rollback unavailable")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=fail_rollback,
+            )
+
+    hooks = FailingRollbackHooks(
+        build_installer_error=RuntimeError("installer is primary")
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.stage is ReleaseStage.FAILED
+    assert result.error == "installer is primary"
+    assert result.errors[0] == "installer is primary"
+    assert any("rollback failed: rollback unavailable" in item for item in result.errors[1:])
+
+
+def test_rollback_failure_does_not_reclassify_cancellation():
+    token = CancellationToken()
+
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=lambda: (_ for _ in ()).throw(
+                    RuntimeError("rollback unavailable")
+                ),
+            )
+
+    hooks = FailingRollbackHooks(on_build_portable=token.cancel)
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=True,
+        build_installer=False,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert result.stage is ReleaseStage.CANCELLED
+    assert any("rollback failed: rollback unavailable" in item for item in result.errors)
+
+
+def test_hostile_diagnostic_hooks_cannot_replace_or_hide_the_primary_failure():
+    class PrimaryFailure(RuntimeError):
+        def add_note(self, _note: str) -> None:
+            raise RuntimeError("note storage unavailable")
+
+    class HostileRollbackFailure(RuntimeError):
+        def __str__(self) -> str:
+            raise RuntimeError("secondary string unavailable")
+
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=lambda: (_ for _ in ()).throw(
+                    HostileRollbackFailure()
+                ),
+            )
+
+    hooks = FailingRollbackHooks(
+        build_installer_error=PrimaryFailure("installer remains primary")
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.error == "installer remains primary"
+    assert result.errors == (
+        "installer remains primary",
+        "rollback failed: release pipeline failed",
+    )
+
+
+@pytest.mark.parametrize("rollback_failure", (KeyboardInterrupt, GeneratorExit))
+def test_stage_failure_keeps_classification_when_rollback_raises_baseexception(
+    rollback_failure,
+):
+    cleanup_calls: list[str] = []
+
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_rollback() -> None:
+                raise rollback_failure("Authorization: Bearer rollback-secret")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=fail_rollback,
+            )
+
+    hooks = FailingRollbackHooks(
+        build_installer_error=RuntimeError("installer remains primary"),
+        cleanup=lambda: cleanup_calls.append("cleanup"),
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.stage is ReleaseStage.FAILED
+    assert result.failed_stage is ReleaseStage.BUILDING_INSTALLER
+    assert result.error == "installer remains primary"
+    assert cleanup_calls == ["cleanup"]
+    assert any(item.startswith("rollback failed:") for item in result.errors[1:])
+    assert "rollback-secret" not in repr(result)
+
+
+@pytest.mark.parametrize("rollback_failure", (KeyboardInterrupt, GeneratorExit))
+def test_cancellation_keeps_classification_when_rollback_raises_baseexception(
+    rollback_failure,
+):
+    token = CancellationToken()
+    cleanup_calls: list[str] = []
+
+    class FailingRollbackHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_rollback() -> None:
+                raise rollback_failure("Authorization: Bearer rollback-secret")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=fail_rollback,
+            )
+
+    hooks = FailingRollbackHooks(
+        on_build_portable=token.cancel,
+        cleanup=lambda: cleanup_calls.append("cleanup"),
+    )
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=True,
+        build_installer=False,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        token,
+    )
+
+    assert result.stage is ReleaseStage.CANCELLED
+    assert result.failed_stage is ReleaseStage.BUILDING_PORTABLE
+    assert cleanup_calls == ["cleanup"]
+    assert any(item.startswith("rollback failed:") for item in result.errors)
+    assert "rollback-secret" not in repr(result)
+
+
+@pytest.mark.parametrize("rollback_failure", (KeyboardInterrupt, GeneratorExit))
+def test_signing_validation_keeps_primary_when_rollback_raises_baseexception(
+    rollback_failure,
+):
+    cleanup_calls: list[str] = []
+
+    class InvalidSigningHooks(RecordingHooks):
+        def resolve_signing_material(self, request: BuildRequest) -> SigningMaterial:
+            self.calls.append("resolve_signing_material")
+
+            def fail_rollback() -> None:
+                raise rollback_failure("Authorization: Bearer rollback-secret")
+
+            return SigningMaterial(
+                private_key_path=Path("release-secrets/private-key.pem"),
+                public_key_path=Path("release-secrets/public-key.pem"),
+                fingerprint="A" * 64,
+                trust_anchor_changed=False,
+                rollback_transaction=fail_rollback,
+            )
+
+    hooks = InvalidSigningHooks(cleanup=lambda: cleanup_calls.append("cleanup"))
+    request = BuildRequest(
+        target_version="3.6.22",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        build_portable=False,
+        build_installer=True,
+        run_smoke_tests=False,
+        generate_manifest_key=True,
+        rotate_trust_anchor=True,
+        commit_version_changes=True,
+        push_main=True,
+        create_or_reuse_tag=True,
+    )
+
+    result = run_release_request(
+        request,
+        hooks.as_pipeline_hooks(),
+        RecordingEmitter(),
+        CancellationToken(),
+    )
+
+    assert result.stage is ReleaseStage.FAILED
+    assert result.failed_stage is ReleaseStage.PREFLIGHT
+    assert result.error == (
+        "trust anchor rotation did not update the production trust anchor"
+    )
+    assert cleanup_calls == ["cleanup"]
+    assert any(item.startswith("rollback failed:") for item in result.errors[1:])
+    assert "rollback-secret" not in repr(result)
 
 
 def test_rotated_signing_material_is_resolved_before_commit_and_build():
@@ -721,15 +1914,16 @@ def test_dry_run_plans_version_and_skips_every_side_effect():
     assert result.succeeded is True
     assert hooks.calls == ["validate_dependencies", "plan_version"]
     assert ReleaseStage.VERSION_SYNC in events.stages
-    assert events.skipped_stages == [
-        ReleaseStage.SOURCE_IDENTITY,
-        ReleaseStage.BUILDING_PORTABLE,
-        ReleaseStage.BUILDING_INSTALLER,
-        ReleaseStage.SIGNING,
-        ReleaseStage.SMOKE_TESTING,
-        ReleaseStage.PUBLISHING,
-        ReleaseStage.UPLOADING,
-        ReleaseStage.VERIFYING,
+    assert [stage.value for stage in events.skipped_stages] == [
+        "source_identity",
+        "building_portable",
+        "building_installer",
+        "signing",
+        "smoke_testing",
+        "preparing_release",
+        "uploading",
+        "verifying",
+        "publishing",
     ]
     progress = [event["progress"] for event in events.events]
     assert progress == sorted(progress)

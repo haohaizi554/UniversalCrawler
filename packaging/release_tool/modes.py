@@ -105,6 +105,16 @@ def validate_build_request(request: BuildRequest) -> tuple[str, ...]:
     if request.create_or_update_release and not request.release_notes_path.strip():
         errors.append("creating or updating a release requires release notes")
 
+    if mode is ReleaseMode.SAME_RELEASE_REPAIR and request.create_or_update_release:
+        if not request.upload_release_assets:
+            errors.append("release publication requires uploading assets")
+        if not request.verify_remote_assets:
+            errors.append("release publication requires remote asset verification")
+        if not request.create_or_reuse_tag:
+            errors.append(
+                "release publication requires creating or reusing the release tag"
+            )
+
     if mode is ReleaseMode.NEW_RELEASE and request.create_or_update_release:
         for label, attribute in (
             ("applying version changes", "apply_version"),

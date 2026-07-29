@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -69,6 +69,7 @@ class ReleasePipelineHooks:
     ensure_release: Callable[[BuildRequest], None]
     upload_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
     verify_remote_assets: Callable[[BuildRequest, tuple[Path, ...]], None]
+    publish_release: Callable[[BuildRequest], None]
     validate_dependencies: Callable[[BuildRequest], None] = lambda _request: None
     prepare: Callable[[BuildRequest, ReleaseMode], None] = lambda _request, _mode: None
     cleanup: Callable[[], None] = lambda: None
@@ -80,26 +81,55 @@ class PipelineCancelled(RuntimeError):
 
 
 class CancellationToken:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        is_cancel_requested: Callable[[], bool] | None = None,
+        begin_irreversible: Callable[[], bool] | None = None,
+    ) -> None:
         self._cancelled = threading.Event()
         self._lock = threading.Lock()
         self._completed = False
+        self._irreversible = False
+        self._external_cancel_requested = is_cancel_requested
+        self._external_begin_irreversible = begin_irreversible
 
     def cancel(self) -> None:
         with self._lock:
-            if not self._completed:
+            if not self._completed and not self._irreversible:
                 self._cancelled.set()
 
     def raise_if_cancelled(self) -> None:
         with self._lock:
-            if self._cancelled.is_set():
+            if not self._irreversible and self._is_cancel_requested_unlocked():
                 raise PipelineCancelled("release request cancelled")
 
     def mark_completed(self) -> None:
         with self._lock:
-            if self._cancelled.is_set():
+            if not self._irreversible and self._is_cancel_requested_unlocked():
                 raise PipelineCancelled("release request cancelled")
             self._completed = True
+
+    def begin_irreversible(self) -> None:
+        """Close cancellation before non-rollbackable publication work begins."""
+
+        with self._lock:
+            if self._irreversible:
+                return
+            if self._is_cancel_requested_unlocked():
+                raise PipelineCancelled("release request cancelled")
+            if (
+                self._external_begin_irreversible is not None
+                and not self._external_begin_irreversible()
+            ):
+                raise PipelineCancelled("release request cancelled")
+            self._irreversible = True
+
+    def _is_cancel_requested_unlocked(self) -> bool:
+        return self._cancelled.is_set() or (
+            self._external_cancel_requested is not None
+            and bool(self._external_cancel_requested())
+        )
 
 
 _T = TypeVar("_T")
@@ -112,9 +142,10 @@ _PROGRESS = {
     ReleaseStage.SIGNING: 65,
     ReleaseStage.SMOKE_TESTING: 70,
     ReleaseStage.GIT: 75,
-    ReleaseStage.PUBLISHING: 75,
+    ReleaseStage.PREPARING_RELEASE: 75,
     ReleaseStage.UPLOADING: 85,
     ReleaseStage.VERIFYING: 95,
+    ReleaseStage.PUBLISHING: 98,
     ReleaseStage.SUCCEEDED: 100,
     ReleaseStage.FAILED: 100,
     ReleaseStage.CANCELLED: 100,
@@ -156,6 +187,8 @@ def run_release_request(
     hooks: ReleasePipelineHooks,
     emitter: ReleaseEventSink,
     cancel_token: CancellationToken,
+    *,
+    initial_diagnostics: Sequence[str] = (),
 ) -> ReleaseResult:
     """Run requested stages once, emitting monotonic, redacted lifecycle events."""
 
@@ -165,6 +198,14 @@ def run_release_request(
     cleaned_up = False
     signing_material: SigningMaterial | None = None
     signing_transaction_finalized = False
+    secondary_diagnostics: list[str] = []
+    for diagnostic in initial_diagnostics:
+        try:
+            safe_diagnostic = redact_release_text(str(diagnostic)).strip()
+        except BaseException:
+            continue
+        if safe_diagnostic and safe_diagnostic not in secondary_diagnostics:
+            secondary_diagnostics.append(safe_diagnostic)
 
     def emit(
         kind: str,
@@ -207,6 +248,18 @@ def run_release_request(
         cleaned_up = True
         hooks.cleanup()
 
+    def cleanup_after(primary: BaseException) -> None:
+        try:
+            cleanup_once()
+        except BaseException as cleanup_error:
+            secondary_diagnostics.append(
+                _attach_secondary_diagnostic(
+                    primary,
+                    "cleanup failed",
+                    cleanup_error,
+                )
+            )
+
     def commit_signing_transaction() -> None:
         nonlocal signing_transaction_finalized
         if signing_material is None or signing_transaction_finalized:
@@ -221,7 +274,17 @@ def run_release_request(
         signing_material.rollback_transaction()
         signing_transaction_finalized = True
 
-    interrupted = False
+    def begin_irreversible_once() -> None:
+        cancel_token.raise_if_cancelled()
+        cancel_token.begin_irreversible()
+
+    def publish_irreversibly() -> None:
+        cleanup_once()
+        begin_irreversible_once()
+        commit_signing_transaction()
+        hooks.publish_release(request)
+
+    interrupted: BaseException | None = None
     try:
         def preflight() -> ReleaseMode:
             resolved_mode = _preflight(request)
@@ -239,15 +302,17 @@ def run_release_request(
                 ReleaseStage.BUILDING_INSTALLER,
                 ReleaseStage.SIGNING,
                 ReleaseStage.SMOKE_TESTING,
-                ReleaseStage.PUBLISHING,
+                ReleaseStage.PREPARING_RELEASE,
                 ReleaseStage.UPLOADING,
                 ReleaseStage.VERIFYING,
+                ReleaseStage.PUBLISHING,
             ):
                 skip_stage(stage)
         else:
             signing_material = resolve_signing_material(
                 request,
                 hooks.resolve_signing_material,
+                diagnostics=secondary_diagnostics,
             )
             if request.apply_version:
                 run_stage(ReleaseStage.VERSION_SYNC, lambda: hooks.apply_version(request.target_version))
@@ -257,6 +322,7 @@ def run_release_request(
                 def establish_source_identity() -> None:
                     nonlocal commit
                     if request.commit_version_changes:
+                        begin_irreversible_once()
                         commit = hooks.commit_version_changes(request)
                     if (
                         mode is ReleaseMode.NEW_RELEASE
@@ -266,6 +332,16 @@ def run_release_request(
                         raise ValueError(
                             "new release tag requires a verified version commit"
                         )
+                    cancel_token.raise_if_cancelled()
+                    if (
+                        (
+                            signing_material is not None
+                            and signing_material.trust_anchor_changed
+                        )
+                        or request.push_main
+                        or request.create_or_reuse_tag
+                    ):
+                        begin_irreversible_once()
                     if (
                         signing_material is not None
                         and signing_material.trust_anchor_changed
@@ -289,7 +365,10 @@ def run_release_request(
             if request.run_smoke_tests:
                 run_stage(ReleaseStage.SMOKE_TESTING, hooks.run_smoke_tests)
             if request.create_or_update_release:
-                run_stage(ReleaseStage.PUBLISHING, lambda: hooks.ensure_release(request))
+                run_stage(
+                    ReleaseStage.PREPARING_RELEASE,
+                    lambda: hooks.ensure_release(request),
+                )
             if request.upload_release_assets or request.upload_public_key:
                 run_stage(ReleaseStage.UPLOADING, lambda: hooks.upload_assets(request, artifacts))
             if request.verify_remote_assets:
@@ -297,76 +376,111 @@ def run_release_request(
                     ReleaseStage.VERIFYING,
                     lambda: hooks.verify_remote_assets(request, artifacts),
                 )
-        cancel_token.raise_if_cancelled()
-        cleanup_once()
-        cancel_token.raise_if_cancelled()
-        commit_signing_transaction()
+            if request.create_or_update_release:
+                run_stage(
+                    ReleaseStage.PUBLISHING,
+                    publish_irreversibly,
+                )
+        if not request.create_or_update_release:
+            cancel_token.raise_if_cancelled()
+            cleanup_once()
+            cancel_token.raise_if_cancelled()
+            if signing_material is not None and not signing_transaction_finalized:
+                begin_irreversible_once()
+                commit_signing_transaction()
         cancel_token.mark_completed()
-    except (KeyboardInterrupt, GeneratorExit):
-        interrupted = True
-        raise
-    except PipelineCancelled:
+    except PipelineCancelled as cancellation:
         try:
             rollback_signing_transaction()
-        except (Exception, SystemExit) as error:
-            _cleanup_once_safely(cleanup_once)
-            message = _failure_message(error)
-            emit("error", current_stage, message=message)
-            terminal_progress = _PROGRESS[current_stage]
-            emit("stage", ReleaseStage.FAILED, progress=terminal_progress)
-            emit(
-                "result",
-                ReleaseStage.FAILED,
-                data={"status": "failed", "error": message},
-                progress=terminal_progress,
+        except BaseException as rollback_error:
+            secondary_diagnostics.append(
+                _attach_secondary_diagnostic(
+                    cancellation,
+                    "rollback failed",
+                    rollback_error,
+                )
             )
-            return ReleaseResult(
-                mode=mode,
-                stage=ReleaseStage.FAILED,
-                errors=(message,),
-                artifacts=tuple(str(path) for path in artifacts),
-                failed_stage=current_stage,
-                error=message,
-            )
-        _cleanup_once_safely(cleanup_once)
+        cleanup_after(cancellation)
+        diagnostics = _combined_diagnostics(
+            cancellation,
+            secondary_diagnostics,
+        )
         terminal_progress = _PROGRESS[current_stage]
         emit("stage", ReleaseStage.CANCELLED, progress=terminal_progress)
+        result_data: dict[str, object] = {"status": "cancelled"}
+        if diagnostics:
+            result_data["diagnostics"] = list(diagnostics)
         emit(
             "result",
             ReleaseStage.CANCELLED,
-            data={"status": "cancelled"},
+            data=result_data,
             progress=terminal_progress,
         )
-        return ReleaseResult(mode=mode, stage=ReleaseStage.CANCELLED, failed_stage=current_stage)
+        return ReleaseResult(
+            mode=mode,
+            stage=ReleaseStage.CANCELLED,
+            errors=diagnostics,
+            failed_stage=current_stage,
+        )
     except (Exception, SystemExit) as error:
         failure = error
         try:
             rollback_signing_transaction()
-        except (Exception, SystemExit) as rollback_error:
-            failure = rollback_error
-        _cleanup_once_safely(cleanup_once)
+        except BaseException as rollback_error:
+            secondary_diagnostics.append(
+                _attach_secondary_diagnostic(
+                    failure,
+                    "rollback failed",
+                    rollback_error,
+                )
+            )
+        cleanup_after(failure)
         message = _failure_message(failure)
+        diagnostics = _combined_diagnostics(
+            failure,
+            secondary_diagnostics,
+        )
         emit("error", current_stage, message=message)
         terminal_progress = _PROGRESS[current_stage]
         emit("stage", ReleaseStage.FAILED, progress=terminal_progress)
+        result_data: dict[str, object] = {"status": "failed", "error": message}
+        if diagnostics:
+            result_data["diagnostics"] = list(diagnostics)
         emit(
             "result",
             ReleaseStage.FAILED,
-            data={"status": "failed", "error": message},
+            data=result_data,
             progress=terminal_progress,
         )
         return ReleaseResult(
             mode=mode,
             stage=ReleaseStage.FAILED,
-            errors=(message,),
+            errors=(message, *diagnostics),
             artifacts=tuple(str(path) for path in artifacts),
             failed_stage=current_stage,
             error=message,
         )
+    except BaseException as error:
+        interrupted = error
+        raise
     finally:
-        if interrupted:
-            _cleanup_after_interruption(rollback_signing_transaction)
-            _cleanup_after_interruption(cleanup_once)
+        if interrupted is not None:
+            try:
+                rollback_signing_transaction()
+            except BaseException as rollback_error:
+                _attach_secondary_diagnostic(
+                    interrupted,
+                    "rollback failed",
+                    rollback_error,
+                )
+            try:
+                cleanup_once()
+            except BaseException as cleanup_error:
+                _attach_secondary_diagnostic(
+                    interrupted,
+                    "cleanup failed",
+                    cleanup_error,
+                )
 
     emit("stage", ReleaseStage.SUCCEEDED)
     emit("result", ReleaseStage.SUCCEEDED, data={"status": "succeeded"})
@@ -380,6 +494,8 @@ def run_release_request(
 def resolve_signing_material(
     request: BuildRequest,
     resolver: Callable[[BuildRequest], SigningMaterial],
+    *,
+    diagnostics: list[str] | None = None,
 ) -> SigningMaterial | None:
     """Resolve signing inputs before source identity or build side effects."""
 
@@ -405,8 +521,14 @@ def resolve_signing_material(
     except (Exception, SystemExit) as error:
         try:
             material.rollback_transaction()
-        except (Exception, SystemExit) as rollback_error:
-            raise rollback_error from error
+        except BaseException as rollback_error:
+            diagnostic = _attach_secondary_diagnostic(
+                error,
+                "rollback failed",
+                rollback_error,
+            )
+            if diagnostics is not None:
+                diagnostics.append(diagnostic)
         raise
     return material
 
@@ -582,32 +704,71 @@ def _needs_source_identity_stage(request: BuildRequest) -> bool:
     )
 
 
-def _cleanup_once_safely(cleanup: Callable[[], None]) -> None:
+def _attach_secondary_diagnostic(
+    primary: BaseException,
+    label: str,
+    secondary: BaseException,
+) -> str:
+    diagnostic = f"{label}: {_failure_message(secondary)}"
     try:
-        cleanup()
-    except (Exception, SystemExit):
-        pass
-
-
-def _cleanup_after_interruption(cleanup: Callable[[], None]) -> None:
-    try:
-        cleanup()
+        add_note = getattr(primary, "add_note", None)
     except BaseException:
-        pass
+        return diagnostic
+    if callable(add_note):
+        try:
+            add_note(diagnostic)
+        except BaseException:
+            pass
+    return diagnostic
+
+
+def _failure_diagnostics(error: BaseException) -> tuple[str, ...]:
+    try:
+        notes = getattr(error, "__notes__", ())
+    except BaseException:
+        return ()
+    if not isinstance(notes, (list, tuple)):
+        return ()
+    diagnostics: list[str] = []
+    for note in notes:
+        try:
+            safe_note = redact_release_text(str(note)).strip()
+        except BaseException:
+            continue
+        if safe_note and safe_note not in diagnostics:
+            diagnostics.append(safe_note)
+    return tuple(diagnostics)
+
+
+def _combined_diagnostics(
+    error: BaseException,
+    explicit: list[str],
+) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+    for diagnostic in (*_failure_diagnostics(error), *explicit):
+        if diagnostic and diagnostic not in diagnostics:
+            diagnostics.append(diagnostic)
+    return tuple(diagnostics)
 
 
 def _failure_message(error: BaseException) -> str:
-    if isinstance(error, SystemExit):
-        value = error.code
-        if value is None:
-            text = "release pipeline exited"
-        elif isinstance(value, int):
-            text = f"release pipeline exited with status {value}"
+    try:
+        if isinstance(error, SystemExit):
+            value = error.code
+            if value is None:
+                text = "release pipeline exited"
+            elif isinstance(value, int):
+                text = f"release pipeline exited with status {value}"
+            else:
+                text = str(value)
         else:
-            text = str(value)
-    else:
-        text = str(error)
-    return redact_release_text(text) or "release pipeline failed"
+            text = str(error)
+    except BaseException:
+        text = "release pipeline failed"
+    try:
+        return redact_release_text(text) or "release pipeline failed"
+    except BaseException:
+        return "release pipeline failed"
 
 
 __all__ = [

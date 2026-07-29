@@ -25,6 +25,8 @@ DEFAULT_METADATA_TIMEOUT_SECONDS = 60.0
 DEFAULT_UPLOAD_TIMEOUT_SECONDS = 2 * 60 * 60.0
 _METADATA_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 _UPLOAD_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+_RELEASES_PER_PAGE = 100
+_MAX_RELEASE_PAGES = 100
 _COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -50,6 +52,10 @@ _TRANSIENT_GITHUB_FAILURE_FRAGMENTS = (
 
 class PublishError(RuntimeError):
     """Raised when a GitHub publication operation cannot be completed safely."""
+
+
+class _ReleaseStateChanged(PublishError):
+    """Raised when a previously pinned release changes identity or metadata."""
 
 
 @dataclass(frozen=True)
@@ -215,6 +221,11 @@ class GitHubReleasePublisher:
             token_provider=self._github_token,
             request_timeout_seconds=upload_timeout,
         ).upload
+        self._pinned_tag_commits: dict[str, str] = {}
+        self._pinned_release_ids: dict[str, int] = {}
+        self._prepared_release_metadata: dict[str, tuple[str, str]] = {}
+        self._prepared_release_tags: set[str] = set()
+        self._verified_release_assets: dict[str, tuple[ReleaseAssetInfo, ...]] = {}
         self.executed_uploads: list[tuple[str, ...]] = []
 
     def ensure_tag(self, tag: str, commit: str) -> None:
@@ -224,8 +235,10 @@ class GitHubReleasePublisher:
         checked_commit = _checked_commit(commit)
         existing = self._read_tag(checked_tag)
         if existing is not None:
-            if self._tag_commit(existing) != checked_commit:
+            resolved_commit = self._tag_commit(existing)
+            if resolved_commit != checked_commit:
                 raise PublishError("GitHub command failed")
+            self._pin_tag_commit(checked_tag, resolved_commit)
             return
 
         self._execute(
@@ -240,24 +253,59 @@ class GitHubReleasePublisher:
             timeout_seconds=self._metadata_timeout_seconds,
         )
         created = self._read_tag(checked_tag)
-        if created is None or self._tag_commit(created) != checked_commit:
+        if created is None:
             raise PublishError("GitHub command failed")
+        resolved_commit = self._tag_commit(created)
+        if resolved_commit != checked_commit:
+            raise PublishError("GitHub command failed")
+        self._pin_tag_commit(checked_tag, resolved_commit)
 
     def ensure_release(self, tag: str, title: str, notes_path: str | Path, *, repair: bool) -> None:
-        """Create a release once; existing metadata is immutable and reused."""
+        """Create or reuse a draft; an existing public release stays immutable."""
 
         checked_tag = _checked_tag(tag)
+        self._prepared_release_tags.discard(checked_tag)
+        self._prepared_release_metadata.pop(checked_tag, None)
+        self._verified_release_assets.pop(checked_tag, None)
+        self._assert_pinned_tag_commit(checked_tag)
+        if not isinstance(title, str) or not title:
+            raise ValueError("release title must be a non-empty string")
         resolved_notes = _resolved_regular_file(notes_path, label="release notes", reject_dash=True)
+        expected_body = _read_normalized_release_notes(resolved_notes)
         existing = self._read_release(checked_tag)
+        self._assert_pinned_tag_commit(checked_tag)
         if existing is not None:
+            if not _release_is_draft(existing):
+                raise PublishError("GitHub release is already public")
+            _assert_release_metadata(
+                existing,
+                expected_name=title,
+                expected_body=expected_body,
+                mismatch="release metadata does not match request",
+            )
+            self._prepared_release_metadata[checked_tag] = (title, expected_body)
+            self._prepared_release_tags.add(checked_tag)
             return
 
+        self._assert_pinned_tag_commit(checked_tag)
         self._execute(
-            self._release_command("create", checked_tag, title, resolved_notes),
+            self._create_release_command(checked_tag, title, resolved_notes),
             timeout_seconds=self._metadata_timeout_seconds,
         )
-        if self._read_release(checked_tag) is None:
+        created = self._read_release(checked_tag)
+        if created is None:
             raise PublishError("GitHub command failed")
+        if not _release_is_draft(created):
+            raise PublishError("GitHub release became public concurrently")
+        _assert_release_metadata(
+            created,
+            expected_name=title,
+            expected_body=expected_body,
+            mismatch="release metadata does not match request",
+        )
+        self._assert_pinned_tag_commit(checked_tag)
+        self._prepared_release_metadata[checked_tag] = (title, expected_body)
+        self._prepared_release_tags.add(checked_tag)
 
     def upload_assets(
         self,
@@ -266,20 +314,39 @@ class GitHubReleasePublisher:
         *,
         repair: bool,
     ) -> None:
-        """Upload assets sequentially, resuming a batch at verified file boundaries."""
+        """Upload assets sequentially with best-effort concurrent-writer checks.
+
+        GitHub exposes no conditional asset CAS, so the fresh GET before each POST
+        narrows but cannot eliminate the GET-to-POST race. Once a POST succeeds,
+        this path only verifies and reports; it never compensates a public release.
+        """
 
         checked_tag = _checked_tag(tag)
+        self._verified_release_assets.pop(checked_tag, None)
+        self._assert_pinned_tag_commit(checked_tag)
         local_assets = _local_assets(assets)
         release = self._read_release(checked_tag)
         if release is None:
             raise PublishError("invalid release asset response")
+        release_id = _release_id(release)
         remote_assets = _remote_assets_by_name(_remote_assets_from_release(release))
+        release_is_draft = _release_is_draft(release)
         pending: list[tuple[int, _LocalAsset]] = []
         overall_total = sum(asset.info.size for asset in local_assets)
         completed_bytes = 0
 
         for index, local in enumerate(local_assets, start=1):
             remote_asset = remote_assets.get(local.info.name)
+            if remote_asset is not None and remote_asset.state == "starter":
+                if not release_is_draft:
+                    raise PublishError(
+                        "published release is incomplete; "
+                        "immutable release requires a new revision"
+                    )
+                raise PublishError(
+                    f"remote asset {local.info.name} is not finalized; "
+                    "immutable release requires a new revision"
+                )
             remote = remote_asset.info if remote_asset is not None else None
             if remote is None:
                 pending.append((index, local))
@@ -309,14 +376,14 @@ class GitHubReleasePublisher:
 
         if not pending:
             return
-        upload_url_value = release.get("upload_url")
-        if not isinstance(upload_url_value, str) or not upload_url_value.strip():
-            raise PublishError("invalid release asset response")
-        upload_url = _checked_repository_upload_url(upload_url_value, self._repository_path)
+        if not release_is_draft:
+            raise PublishError(
+                "published release is incomplete; immutable release requires a new revision"
+            )
         self._upload(
             checked_tag,
-            upload_url,
             pending,
+            release_id=release_id,
             asset_count=len(local_assets),
             overall_total=overall_total,
             completed_bytes=completed_bytes,
@@ -327,21 +394,207 @@ class GitHubReleasePublisher:
         tag: str,
         expected: Sequence[str | Path | ReleaseAssetInfo],
     ) -> tuple[ReleaseAssetInfo, ...]:
-        """Read back each expected remote asset and verify size plus SHA-256 digest."""
+        """Verify each expected remote asset without changing release visibility."""
 
-        remote_assets = _assets_by_name(self._release_assets(_checked_tag(tag)))
+        checked_tag = _checked_tag(tag)
+        self._verified_release_assets.pop(checked_tag, None)
+        self._assert_pinned_tag_commit(checked_tag)
+        invalid = False
+        release: Mapping[str, object] | None = None
+        try:
+            release = self._read_release(checked_tag)
+        except _ReleaseStateChanged:
+            raise
+        except PublishError:
+            invalid = True
+        if invalid or release is None:
+            raise PublishError("invalid release asset response")
+        local_assets = _local_assets(expected)
+        expected_assets = tuple(asset.info for asset in local_assets)
+        verified = self._verify_release_assets(release, expected_assets)
+        self._verified_release_assets[checked_tag] = expected_assets
+        return verified
+
+    def publish_release(self, tag: str) -> None:
+        """Publish after a best-effort fresh read without reversing visibility.
+
+        GitHub exposes no conditional compare-and-swap for release edits, so a
+        third-party publication race cannot be eliminated. Once the edit may
+        have taken effect, this path only verifies and reports remote state; it
+        never restores draft visibility or mutates assets.
+        """
+
+        checked_tag = _checked_tag(tag)
+        self._assert_pinned_tag_commit(checked_tag)
+        expected = self._verified_release_assets.get(checked_tag)
+        if checked_tag not in self._prepared_release_tags or not expected:
+            raise PublishError("release assets were not verified")
+        release = self._read_release(checked_tag)
+        if release is None:
+            raise PublishError("GitHub command failed")
+        release_id = _release_id(release)
+        release_is_draft = _release_is_draft(release)
+        try:
+            self._verify_release_assets(release, expected)
+        except PublishError:
+            raise
+        self._assert_pinned_tag_commit(checked_tag)
+        if not release_is_draft:
+            return
+
+        # There is no atomic GitHub CAS across the tag ref and Release object.
+        # This last read only narrows the residual ref-move race before PATCH.
+        self._assert_pinned_tag_commit(checked_tag)
+        publish_error: BaseException | None = None
+        try:
+            completed = self._execute(
+                self._api_command(
+                    "PATCH",
+                    f"repos/{self._repository_path}/releases/{release_id}",
+                    "-F",
+                    "draft=false",
+                    "-F",
+                    "prerelease=false",
+                ),
+                timeout_seconds=self._metadata_timeout_seconds,
+                emit_output=False,
+            )
+            if completed.returncode:
+                self._emit_streams(completed.stdout, completed.stderr)
+                publish_error = PublishError("GitHub command failed")
+        except BaseException as error:
+            publish_error = error
+        try:
+            published = self._read_release(checked_tag)
+        except BaseException as error:
+            if publish_error is not None:
+                self._record_secondary_publish_failure(publish_error, error)
+                raise publish_error
+            raise
+        if published is None:
+            confirmation_error = PublishError("GitHub command failed")
+            if publish_error is not None:
+                self._record_secondary_publish_failure(
+                    publish_error,
+                    confirmation_error,
+                )
+                raise publish_error
+            raise confirmation_error
+        try:
+            self._assert_pinned_tag_commit(checked_tag)
+        except BaseException as error:
+            if publish_error is not None:
+                self._record_secondary_publish_failure(publish_error, error)
+                raise publish_error
+            raise
+        try:
+            published_release_id = _release_id(published)
+        except BaseException as error:
+            if publish_error is not None:
+                self._record_secondary_publish_failure(publish_error, error)
+                raise publish_error
+            raise
+        if published_release_id != release_id:
+            confirmation_error = PublishError(
+                "release identity changed during publication"
+            )
+            if publish_error is not None:
+                self._record_secondary_publish_failure(
+                    publish_error,
+                    confirmation_error,
+                )
+                raise publish_error
+            raise confirmation_error
+        try:
+            published_is_draft = _release_is_draft(published)
+        except BaseException as error:
+            if publish_error is not None:
+                self._record_secondary_publish_failure(publish_error, error)
+                raise publish_error
+            raise
+        if published_is_draft:
+            confirmation_error = PublishError("GitHub command failed")
+            if publish_error is not None:
+                self._record_secondary_publish_failure(
+                    publish_error,
+                    confirmation_error,
+                )
+                raise publish_error
+            raise confirmation_error
+        try:
+            self._verify_release_assets(published, expected)
+        except BaseException as error:
+            if publish_error is not None:
+                self._record_secondary_publish_failure(publish_error, error)
+                raise publish_error
+            raise
+        if publish_error is not None:
+            try:
+                self.output("发布响应中断，但远端 Release 已确认公开")
+            except BaseException:
+                pass
+
+    def _record_secondary_publish_failure(
+        self,
+        primary: BaseException,
+        secondary: BaseException,
+    ) -> None:
+        """Retain confirmation context without replacing the first failure."""
+
+        try:
+            detail = (
+                redact_release_text(str(secondary)).strip()
+                or "GitHub confirmation failed"
+            )
+        except BaseException:
+            detail = "GitHub confirmation failed"
+        diagnostic = f"publication confirmation failed: {detail}"
+        try:
+            add_note = getattr(primary, "add_note", None)
+        except BaseException:
+            add_note = None
+        if callable(add_note):
+            try:
+                add_note(diagnostic)
+            except BaseException:
+                pass
+        try:
+            self.output(diagnostic)
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _verify_release_assets(
+        release: Mapping[str, object],
+        expected: Sequence[ReleaseAssetInfo],
+    ) -> tuple[ReleaseAssetInfo, ...]:
+        invalid = False
+        parsed_assets: tuple[_RemoteAsset, ...] = ()
+        try:
+            parsed_assets = _remote_assets_from_release(release)
+        except (TypeError, ValueError, KeyError, PublishError):
+            invalid = True
+        if invalid:
+            raise PublishError("invalid release asset response")
+        remote_assets = _remote_assets_by_name(parsed_assets)
         verified: list[ReleaseAssetInfo] = []
-        for local in _local_assets(expected):
-            remote = remote_assets.get(local.info.name)
+        for local in expected:
+            remote = remote_assets.get(local.name)
             if remote is None:
-                raise PublishError(f"remote asset {local.info.name} is missing")
-            if remote.size != local.info.size:
-                raise PublishError(f"remote asset {local.info.name} has an unexpected size")
-            if not remote.digest:
-                raise PublishError(f"remote asset {local.info.name} digest is unavailable")
-            if remote.digest != local.info.digest:
-                raise PublishError(f"remote asset {local.info.name} has an unexpected digest")
-            verified.append(remote)
+                raise PublishError(f"remote asset {local.name} is missing")
+            if remote.state != "uploaded":
+                raise PublishError(f"remote asset {local.name} is not finalized")
+            if remote.info.size != local.size:
+                raise PublishError(f"remote asset {local.name} has an unexpected size")
+            if not remote.info.digest:
+                raise PublishError(f"remote asset {local.name} digest is unavailable")
+            if remote.info.digest != local.digest:
+                raise PublishError(f"remote asset {local.name} has an unexpected digest")
+            verified.append(remote.info)
+        expected_names = {asset.name for asset in expected}
+        unexpected_names = sorted(set(remote_assets) - expected_names)
+        if unexpected_names:
+            raise PublishError(f"remote asset {unexpected_names[0]} is unexpected")
         return tuple(verified)
 
     def _read_tag(self, tag: str) -> Mapping[str, object] | None:
@@ -380,27 +633,85 @@ class GitHubReleasePublisher:
             current = payload
         raise PublishError("invalid GitHub response")
 
+    def _pin_tag_commit(self, tag: str, commit: str) -> None:
+        pinned_commit = self._pinned_tag_commits.setdefault(tag, commit)
+        if pinned_commit != commit:
+            raise _ReleaseStateChanged("release tag target changed")
+
+    def _assert_pinned_tag_commit(self, tag: str) -> None:
+        """Best-effort guard against a tag move across release operations.
+
+        GitHub does not offer an atomic compare-and-swap spanning a tag ref and
+        release/asset mutations. These repeated reads narrow that residual race,
+        but a ref can still move between the final read and the following write.
+        """
+
+        pinned_commit = self._pinned_tag_commits.get(tag)
+        if pinned_commit is None:
+            return
+        reference = self._read_tag(tag)
+        if reference is None:
+            raise _ReleaseStateChanged("release tag is missing or was deleted")
+        if self._tag_commit(reference) != pinned_commit:
+            raise _ReleaseStateChanged("release tag target changed")
+
     def _read_release(self, tag: str) -> Mapping[str, object] | None:
-        completed = self._execute(
-            self._api_command(
-                "GET",
-                f"repos/{self._repository_path}/releases/tags/{quote(tag, safe='')}",
-                "--include",
-            ),
-            timeout_seconds=self._metadata_timeout_seconds,
-            emit_output=False,
-            retry_transient=True,
-        )
-        status, body = _included_response(completed.stdout)
-        if status == 404:
-            return None
-        if completed.returncode or status != 200:
-            self._emit_streams(completed.stdout, completed.stderr)
-            raise PublishError("GitHub command failed")
-        payload = _json_payload(body)
-        if not isinstance(payload, Mapping) or payload.get("tag_name") != tag:
-            raise PublishError("invalid GitHub response")
-        return payload
+        matching: Mapping[str, object] | None = None
+        for page_number in range(1, _MAX_RELEASE_PAGES + 1):
+            completed = self._execute(
+                self._api_command(
+                    "GET",
+                    f"repos/{self._repository_path}/releases"
+                    f"?per_page={_RELEASES_PER_PAGE}&page={page_number}",
+                ),
+                timeout_seconds=self._metadata_timeout_seconds,
+                emit_output=False,
+                retry_transient=True,
+            )
+            if completed.returncode:
+                self._emit_streams(completed.stdout, completed.stderr)
+                raise PublishError("GitHub command failed")
+            payload = _json_payload(completed.stdout)
+            if not isinstance(payload, list) or len(payload) > _RELEASES_PER_PAGE:
+                raise PublishError("invalid GitHub response")
+            for item in payload:
+                if not isinstance(item, Mapping) or not isinstance(item.get("tag_name"), str):
+                    raise PublishError("invalid GitHub response")
+                if item.get("tag_name") != tag:
+                    continue
+                if matching is not None:
+                    raise PublishError("duplicate release tag in GitHub response")
+                matching = item
+            if len(payload) < _RELEASES_PER_PAGE:
+                if matching is not None:
+                    self._pin_release_identity(tag, matching)
+                return matching
+        raise PublishError("release listing did not terminate within the page limit")
+
+    def _pin_release_identity(
+        self,
+        tag: str,
+        release: Mapping[str, object],
+    ) -> None:
+        if _release_is_prerelease(release):
+            mismatch_type = (
+                _ReleaseStateChanged if tag in self._pinned_release_ids else PublishError
+            )
+            raise mismatch_type("GitHub release is a prerelease")
+        release_id = _release_id(release)
+        pinned_id = self._pinned_release_ids.setdefault(tag, release_id)
+        if pinned_id != release_id:
+            raise _ReleaseStateChanged("release identity changed during publication")
+        expected_metadata = self._prepared_release_metadata.get(tag)
+        if expected_metadata is not None:
+            expected_name, expected_body = expected_metadata
+            _assert_release_metadata(
+                release,
+                expected_name=expected_name,
+                expected_body=expected_body,
+                mismatch="release metadata changed during publication",
+                mismatch_type=_ReleaseStateChanged,
+            )
 
     def _release_assets(self, tag: str) -> tuple[ReleaseAssetInfo, ...]:
         invalid = False
@@ -418,9 +729,9 @@ class GitHubReleasePublisher:
     def _upload(
         self,
         tag: str,
-        upload_url: str,
         assets: Sequence[tuple[int, "_LocalAsset"]],
         *,
+        release_id: int,
         asset_count: int,
         overall_total: int,
         completed_bytes: int,
@@ -431,8 +742,8 @@ class GitHubReleasePublisher:
         for asset_index, asset in assets:
             self._upload_one(
                 tag,
-                upload_url,
                 asset,
+                release_id=release_id,
                 asset_index=asset_index,
                 asset_count=asset_count,
                 completed_bytes=completed_bytes,
@@ -445,9 +756,9 @@ class GitHubReleasePublisher:
     def _upload_one(
         self,
         tag: str,
-        upload_url: str,
         asset: _LocalAsset,
         *,
+        release_id: int,
         asset_index: int,
         asset_count: int,
         completed_bytes: int,
@@ -455,6 +766,19 @@ class GitHubReleasePublisher:
     ) -> None:
         for attempt in range(1, len(_UPLOAD_RETRY_DELAYS_SECONDS) + 2):
             _assert_upload_snapshots((asset,), phase="before")
+            upload_url = self._fresh_upload_url(tag, asset, release_id)
+            if upload_url is None:
+                self._emit_upload_progress(
+                    asset,
+                    asset_index=asset_index,
+                    asset_count=asset_count,
+                    completed_bytes=completed_bytes,
+                    bytes_sent=asset.info.size,
+                    overall_total=overall_total,
+                    attempt=attempt,
+                    state="recovered",
+                )
+                return
             last_sent = 0
             last_rate = 0.0
 
@@ -478,6 +802,7 @@ class GitHubReleasePublisher:
 
             transient = False
             try:
+                self._assert_pinned_tag_commit(tag)
                 self._upload_request(upload_url, asset.path, on_progress)
                 _assert_upload_snapshots((asset,), phase="after")
             except UploadTransportError as error:
@@ -498,7 +823,11 @@ class GitHubReleasePublisher:
                 return
 
             _assert_upload_snapshots((asset,), phase="after")
-            reconciliation = self._reconcile_failed_upload(tag, asset)
+            reconciliation = self._reconcile_failed_upload(
+                tag,
+                asset,
+                release_id,
+            )
             if reconciliation is True:
                 self._emit_upload_progress(
                     asset,
@@ -511,8 +840,6 @@ class GitHubReleasePublisher:
                     state="recovered",
                 )
                 return
-            if reconciliation is None:
-                transient = True
             if not transient or attempt > len(_UPLOAD_RETRY_DELAYS_SECONDS):
                 raise PublishError("GitHub command failed") from None
 
@@ -536,29 +863,43 @@ class GitHubReleasePublisher:
 
         raise AssertionError("unreachable")
 
-    def _reconcile_failed_upload(self, tag: str, asset: _LocalAsset) -> bool | None:
+    def _reconcile_failed_upload(
+        self,
+        tag: str,
+        asset: _LocalAsset,
+        release_id: int,
+    ) -> bool:
         release = self._read_release(tag)
         if release is None:
             raise PublishError("GitHub command failed")
+        if _release_id(release) != release_id:
+            raise PublishError("release identity changed before upload")
+        release_is_draft = _release_is_draft(release)
         remote = _remote_assets_by_name(_remote_assets_from_release(release)).get(asset.info.name)
         if remote is None:
+            if not release_is_draft:
+                raise PublishError(
+                    "published release is incomplete; immutable release requires a new revision"
+                )
             return False
+        if remote.state == "starter":
+            prefix = "published release asset" if not release_is_draft else "remote asset"
+            raise PublishError(
+                f"{prefix} {asset.info.name} is not finalized; "
+                "immutable release requires a new revision"
+            )
         if (
-            remote.info.size == asset.info.size
+            remote.state == "uploaded"
+            and remote.info.size == asset.info.size
             and remote.info.digest
             and remote.info.digest == asset.info.digest
         ):
             return True
-        # GitHub may leave a zero-byte "starter" asset after a broken POST. It is
-        # safe to remove only that unfinished placeholder before retrying.
-        if remote.state == "starter" and remote.asset_id is not None:
-            self._run(
-                self._api_command(
-                    "DELETE",
-                    f"repos/{self._repository_path}/releases/assets/{remote.asset_id}",
-                )
+        if not release_is_draft:
+            raise PublishError(
+                f"published release asset {asset.info.name} differs; "
+                "immutable release requires a new revision"
             )
-            return None
         if remote.info.size == asset.info.size and not remote.info.digest:
             raise PublishError(
                 f"remote asset {asset.info.name} digest is unavailable; "
@@ -566,6 +907,51 @@ class GitHubReleasePublisher:
             )
         raise PublishError(
             f"remote asset {asset.info.name} differs; immutable release requires a new revision"
+        )
+
+    def _fresh_upload_url(
+        self,
+        tag: str,
+        asset: _LocalAsset,
+        release_id: int,
+    ) -> str | None:
+        release = self._read_release(tag)
+        if release is None:
+            raise PublishError("GitHub command failed")
+        if _release_id(release) != release_id:
+            raise PublishError("release identity changed before upload")
+        if not _release_is_draft(release):
+            raise PublishError(
+                "published release is incomplete; immutable release requires a new revision"
+            )
+        remote = _remote_assets_by_name(
+            _remote_assets_from_release(release)
+        ).get(asset.info.name)
+        if remote is not None:
+            if (
+                remote.state == "uploaded"
+                and remote.info.size == asset.info.size
+                and remote.info.digest
+                and remote.info.digest == asset.info.digest
+            ):
+                return None
+            if remote.state == "starter":
+                raise PublishError(
+                    f"remote asset {asset.info.name} is not finalized; "
+                    "immutable release requires a new revision"
+                )
+            else:
+                raise PublishError(
+                    f"remote asset {asset.info.name} differs; "
+                    "immutable release requires a new revision"
+                )
+        upload_url_value = release.get("upload_url")
+        if not isinstance(upload_url_value, str) or not upload_url_value.strip():
+            raise PublishError("invalid release asset response")
+        return _checked_repository_upload_url(
+            upload_url_value,
+            self._repository_path,
+            release_id,
         )
 
     def _emit_upload_progress(
@@ -617,11 +1003,16 @@ class GitHubReleasePublisher:
         self._github_token_cache = token
         return token
 
-    def _release_command(self, command: str, tag: str, title: str, notes_path: Path) -> list[str]:
+    def _create_release_command(
+        self,
+        tag: str,
+        title: str,
+        notes_path: Path,
+    ) -> list[str]:
         argv = [
             "gh",
             "release",
-            command,
+            "create",
             "--repo",
             self.repository,
             "--title",
@@ -629,8 +1020,7 @@ class GitHubReleasePublisher:
             "--notes-file",
             str(notes_path),
         ]
-        if command == "create":
-            argv.append("--verify-tag")
+        argv.extend(("--verify-tag", "--draft"))
         argv.extend(["--", tag])
         return argv
 
@@ -801,7 +1191,7 @@ def _remote_assets_from_release(release: Mapping[str, object]) -> tuple[_RemoteA
             isinstance(asset_id, bool) or not isinstance(asset_id, int) or asset_id <= 0
         ):
             raise ValueError("release asset id is invalid")
-        state = payload.get("state", "uploaded")
+        state = payload.get("state")
         if not isinstance(state, str) or state not in {"uploaded", "starter"}:
             raise ValueError("release asset state is invalid")
         parsed.append(
@@ -812,6 +1202,65 @@ def _remote_assets_from_release(release: Mapping[str, object]) -> tuple[_RemoteA
             )
         )
     return tuple(parsed)
+
+
+def _read_normalized_release_notes(path: Path) -> str:
+    """Read UTF-8 notes, normalizing only CRLF/CR to LF.
+
+    Leading and trailing whitespace, including the final newline count, remains
+    part of the release identity and must match GitHub exactly.
+    """
+
+    try:
+        with path.open("r", encoding="utf-8", newline="") as stream:
+            return _normalize_release_body(stream.read())
+    except (OSError, UnicodeError):
+        raise PublishError("release notes could not be read") from None
+
+
+def _normalize_release_body(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _assert_release_metadata(
+    release: Mapping[str, object],
+    *,
+    expected_name: str,
+    expected_body: str,
+    mismatch: str,
+    mismatch_type: type[PublishError] = PublishError,
+) -> None:
+    name = release.get("name")
+    body = release.get("body")
+    if not isinstance(name, str) or not isinstance(body, str):
+        raise PublishError("invalid GitHub response")
+    if name != expected_name or _normalize_release_body(body) != expected_body:
+        raise mismatch_type(mismatch)
+
+
+def _release_is_draft(release: Mapping[str, object]) -> bool:
+    draft = release.get("draft")
+    if not isinstance(draft, bool):
+        raise PublishError("invalid GitHub response")
+    return draft
+
+
+def _release_is_prerelease(release: Mapping[str, object]) -> bool:
+    prerelease = release.get("prerelease")
+    if not isinstance(prerelease, bool):
+        raise PublishError("invalid GitHub response")
+    return prerelease
+
+
+def _release_id(release: Mapping[str, object]) -> int:
+    release_id = release.get("id")
+    if (
+        isinstance(release_id, bool)
+        or not isinstance(release_id, int)
+        or release_id <= 0
+    ):
+        raise PublishError("invalid GitHub response")
+    return release_id
 
 
 def _remote_assets_by_name(assets: Sequence[_RemoteAsset]) -> dict[str, _RemoteAsset]:
@@ -908,7 +1357,11 @@ def _repository_components(repository: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _checked_repository_upload_url(value: str, repository_path: str) -> str:
+def _checked_repository_upload_url(
+    value: str,
+    repository_path: str,
+    release_id: int,
+) -> str:
     endpoint = str(value).split("{", 1)[0].strip()
     parsed = urlsplit(endpoint)
     parts = parsed.path.split("/")
@@ -921,7 +1374,7 @@ def _checked_repository_upload_url(value: str, repository_path: str) -> str:
         and parts[3].casefold() == repository_parts[1].casefold()
         and parts[4] == "releases"
         and parts[5].isdigit()
-        and int(parts[5]) > 0
+        and int(parts[5]) == release_id
         and parts[6] == "assets"
     )
     if (

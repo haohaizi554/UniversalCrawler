@@ -13,7 +13,7 @@ if str(RELEASE_TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(RELEASE_TOOL_ROOT))
 
 
-from release_tool.upload_transport import GitHubAssetUploadTransport
+from release_tool.upload_transport import GitHubAssetUploadTransport, UploadTransportError
 
 
 class _Response:
@@ -90,3 +90,175 @@ def test_transport_rejects_untrusted_upload_host_before_opening_session(tmp_path
             asset,
             lambda *_args: None,
         )
+
+
+def test_cleanup_attempts_response_and_session_without_overriding_upload_failure(tmp_path):
+    asset = tmp_path / "installer.exe"
+    asset.write_bytes(b"payload")
+    cleanup_calls: list[str] = []
+
+    class FailingResponse(_Response):
+        status_code = 422
+
+        def close(self) -> None:
+            cleanup_calls.append("response")
+            raise RuntimeError("response close failed")
+
+    class FailingSession(_Session):
+        def post(self, url, **kwargs):
+            self.request = {"url": url, **kwargs}
+            return FailingResponse()
+
+        def close(self) -> None:
+            cleanup_calls.append("session")
+            raise RuntimeError("session close failed")
+
+    transport = GitHubAssetUploadTransport(
+        environment={},
+        token_provider=lambda: "unit-test-token-value",
+        session_factory=FailingSession,
+    )
+
+    with pytest.raises(UploadTransportError, match="HTTP 422"):
+        transport.upload(
+            "https://uploads.github.com/repos/owner/repo/releases/1/assets",
+            asset,
+            lambda *_args: None,
+        )
+
+    assert cleanup_calls == ["response", "session"]
+
+
+def test_cleanup_attempts_both_resources_and_reports_failure_after_success(tmp_path):
+    asset = tmp_path / "installer.exe"
+    asset.write_bytes(b"payload")
+    cleanup_calls: list[str] = []
+
+    class FailingResponse(_Response):
+        def close(self) -> None:
+            cleanup_calls.append("response")
+            raise RuntimeError("response close failed")
+
+    class FailingSession(_Session):
+        def post(self, url, **kwargs):
+            self.request = {"url": url, **kwargs}
+            return FailingResponse()
+
+        def close(self) -> None:
+            cleanup_calls.append("session")
+            raise RuntimeError("session close failed")
+
+    transport = GitHubAssetUploadTransport(
+        environment={},
+        token_provider=lambda: "unit-test-token-value",
+        session_factory=FailingSession,
+    )
+
+    with pytest.raises(UploadTransportError, match="cleanup failed"):
+        transport.upload(
+            "https://uploads.github.com/repos/owner/repo/releases/1/assets",
+            asset,
+            lambda *_args: None,
+        )
+
+    assert cleanup_calls == ["response", "session"]
+
+
+def test_session_is_closed_when_initial_progress_callback_fails(tmp_path):
+    asset = tmp_path / "installer.exe"
+    asset.write_bytes(b"payload")
+    cleanup_calls: list[str] = []
+
+    class TrackingSession(_Session):
+        def close(self) -> None:
+            cleanup_calls.append("session")
+
+    def fail_progress(*_args) -> None:
+        raise RuntimeError("progress callback failed")
+
+    transport = GitHubAssetUploadTransport(
+        environment={},
+        token_provider=lambda: "unit-test-token-value",
+        session_factory=TrackingSession,
+    )
+
+    with pytest.raises(RuntimeError, match="progress callback failed"):
+        transport.upload(
+            "https://uploads.github.com/repos/owner/repo/releases/1/assets",
+            asset,
+            fail_progress,
+        )
+
+    assert cleanup_calls == ["session"]
+
+
+def test_cleanup_baseexception_attaches_fixed_note_without_replacing_primary(tmp_path):
+    asset = tmp_path / "installer.exe"
+    asset.write_bytes(b"payload")
+    primary = RuntimeError("upload remains primary")
+
+    class FailingSession(_Session):
+        def close(self) -> None:
+            raise KeyboardInterrupt("Authorization: Bearer cleanup-secret")
+
+    def fail_progress(*_args) -> None:
+        raise primary
+
+    transport = GitHubAssetUploadTransport(
+        environment={},
+        token_provider=lambda: "unit-test-token-value",
+        session_factory=FailingSession,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        transport.upload(
+            "https://uploads.github.com/repos/owner/repo/releases/1/assets",
+            asset,
+            fail_progress,
+        )
+
+    assert caught.value is primary
+    assert getattr(primary, "__notes__", ()) == [
+        "upload cleanup failed: release upload resources could not be closed"
+    ]
+    assert "cleanup-secret" not in repr(primary.__notes__)
+
+
+def test_hostile_primary_and_cleanup_diagnostics_never_replace_primary(tmp_path):
+    asset = tmp_path / "installer.exe"
+    asset.write_bytes(b"payload")
+
+    class HostilePrimary(RuntimeError):
+        def __str__(self) -> str:
+            raise GeneratorExit("primary string blocked")
+
+        def add_note(self, _note: str) -> None:
+            raise SystemExit("note blocked")
+
+    class HostileCleanup(KeyboardInterrupt):
+        def __str__(self) -> str:
+            raise GeneratorExit("cleanup string blocked")
+
+    primary = HostilePrimary()
+
+    class FailingSession(_Session):
+        def close(self) -> None:
+            raise HostileCleanup()
+
+    def fail_progress(*_args) -> None:
+        raise primary
+
+    transport = GitHubAssetUploadTransport(
+        environment={},
+        token_provider=lambda: "unit-test-token-value",
+        session_factory=FailingSession,
+    )
+
+    with pytest.raises(HostilePrimary) as caught:
+        transport.upload(
+            "https://uploads.github.com/repos/owner/repo/releases/1/assets",
+            asset,
+            fail_progress,
+        )
+
+    assert caught.value is primary

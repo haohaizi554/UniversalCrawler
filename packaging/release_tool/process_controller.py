@@ -28,6 +28,11 @@ from PyQt6.QtCore import (
     pyqtSlot,
 )
 
+from .cancellation_control import (
+    CancellationControlError,
+    ReleaseCancellationControl,
+    WindowsReleaseProcessJob,
+)
 from .events import EVENT_PREFIX, ReleaseEvent, parse_event_line, redact_release_text
 from .models import BuildRequest, ReleaseMode, ReleaseResult, ReleaseStage
 from .modes import resolve_release_mode, validate_build_request
@@ -44,6 +49,7 @@ WRITER_STALL_TIMEOUT_SECONDS = 5.0
 WRITER_HARD_CLOSE_TIMEOUT_SECONDS = 30.0
 WRITER_CLOSE_POLL_MS = 50
 TASKKILL_CONFIRMATION_MS = 250
+PROCESS_JOB_POLL_MS = 50
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SUPPORTED_EVENT_KINDS = frozenset(
     {"stage", "log", "upload_progress", "error", "result"}
@@ -52,6 +58,38 @@ _SUPPORTED_EVENT_KINDS = frozenset(
 
 def _default_stream_factory(path: Path, *args: Any, **kwargs: Any):
     return path.open(*args, **kwargs)
+
+
+def _attach_request_cleanup_diagnostic(primary: BaseException) -> None:
+    diagnostic = "request cleanup failed: temporary request file could not be removed"
+    try:
+        add_note = getattr(primary, "add_note", None)
+    except BaseException:
+        return
+    if callable(add_note):
+        try:
+            add_note(diagnostic)
+        except BaseException:
+            pass
+
+
+def _run_start_failure_step(
+    primary: BaseException,
+    diagnostic: str,
+    action: Callable[[], object],
+) -> None:
+    try:
+        action()
+    except BaseException:
+        try:
+            add_note = getattr(primary, "add_note", None)
+        except BaseException:
+            return
+        if callable(add_note):
+            try:
+                add_note(diagnostic)
+            except BaseException:
+                pass
 
 
 class _BackgroundLogWriter:
@@ -172,6 +210,7 @@ class ReleaseProcessController(QObject):
         ),
         monotonic_clock: Callable[[], float] = time.monotonic,
         taskkill_process_factory: Callable[[QObject], QProcess] | None = None,
+        process_job_factory: Callable[[], WindowsReleaseProcessJob] | None = None,
     ) -> None:
         super().__init__(parent)
         self.project_root = Path(project_root).resolve()
@@ -185,11 +224,16 @@ class ReleaseProcessController(QObject):
             if log_directory is not None
             else self.project_root / "dist" / "release-logs"
         )
+        owns_process = process is None
         self.process = process if process is not None else QProcess(self)
         self.cancel_timer = QTimer(self)
         self.cancel_timer.setSingleShot(True)
         self.cancel_timer.setInterval(5000)
         self.cancel_timer.timeout.connect(self.escalate_cancel)
+        self.force_cancel_timer = QTimer(self)
+        self.force_cancel_timer.setSingleShot(True)
+        self.force_cancel_timer.setInterval(5000)
+        self.force_cancel_timer.timeout.connect(self.force_cancel)
         self._log_timer = QTimer(self)
         self._log_timer.setInterval(LOG_INTERVAL_MS)
         self._log_timer.timeout.connect(self.flush_log_batch)
@@ -202,6 +246,9 @@ class ReleaseProcessController(QObject):
         self._taskkill_confirmation_timer.timeout.connect(
             self._confirm_target_after_taskkill
         )
+        self._process_job_poll_timer = QTimer(self)
+        self._process_job_poll_timer.setInterval(PROCESS_JOB_POLL_MS)
+        self._process_job_poll_timer.timeout.connect(self._poll_process_job)
         self._pending_logs: deque[str] = deque(maxlen=max(1, int(log_capacity)))
         self._stdout_partial = ""
         self._stderr_partial = ""
@@ -211,6 +258,7 @@ class ReleaseProcessController(QObject):
         self._protocol_error = ""
         self._fatal_event_error = ""
         self._request_file: Path | None = None
+        self._control: ReleaseCancellationControl | None = None
         self._writer_factory = writer_factory or _BackgroundLogWriter
         self._writer_close_timeout_seconds = max(
             0.0,
@@ -233,11 +281,24 @@ class ReleaseProcessController(QObject):
         self.audit_log_warning = ""
         self._taskkill_process_factory = taskkill_process_factory or QProcess
         self._taskkill_process: QProcess | None = None
+        self._process_job_factory = process_job_factory
+        if self._process_job_factory is None and owns_process and sys.platform.startswith(
+            "win"
+        ):
+            self._process_job_factory = WindowsReleaseProcessJob.create
+        self._process_job: WindowsReleaseProcessJob | None = None
+        self._process_job_assigned = False
+        self._process_job_termination_started = False
+        self._pending_process_finish: tuple[int, QProcess.ExitStatus] | None = None
         self._running = False
         self._finished = False
         self._completion_pending = False
         self._completed_emitted = False
         self._cancel_requested = False
+        self._termination_started = False
+        self._force_cancel_started = False
+        self._control_failure_reported = False
+        self._last_stage = ReleaseStage.IDLE
         self._mode = ReleaseMode.LOCAL_DEBUG
         self.result = ReleaseResult(
             mode=self._mode,
@@ -257,6 +318,12 @@ class ReleaseProcessController(QObject):
         return self._request_file
 
     @property
+    def control_directory(self) -> Path:
+        if self._control is None:
+            raise RuntimeError("release cancellation control has not been created")
+        return self._control.directory
+
+    @property
     def pending_log_count(self) -> int:
         return len(self._pending_logs)
 
@@ -271,6 +338,8 @@ class ReleaseProcessController(QObject):
             and not self._completion_pending
             and self._log_writer is None
             and not self._taskkill_is_running()
+            and self._process_job is None
+            and self._pending_process_finish is None
         )
 
     def start(self, request: BuildRequest, proxy: ProxySelection) -> None:
@@ -288,7 +357,12 @@ class ReleaseProcessController(QObject):
             raise ValueError("; ".join(errors))
 
         try:
+            if self._process_job_factory is not None:
+                self._process_job = self._process_job_factory()
             self._request_file = self._write_request_file(request)
+            self._control = ReleaseCancellationControl.create(
+                self.request_directory
+            )
             self.persistent_log_path = self._new_log_path(
                 self._mode,
                 request.target_version,
@@ -298,12 +372,31 @@ class ReleaseProcessController(QObject):
             process_environment = QProcessEnvironment()
             for key, value in environment.items():
                 process_environment.insert(str(key), str(value))
-            arguments = [
-                str(self.project_root / "packaging" / "build_release.py"),
-                "--headless",
-                "--request-file",
-                str(self._request_file),
-            ]
+            release_script = self.project_root / "packaging" / "build_release.py"
+            if self._process_job is not None:
+                arguments = [
+                    "-I",
+                    "-S",
+                    str(Path(__file__).with_name("cancellation_control.py")),
+                    "--release-job-bootstrap",
+                    "--job-name",
+                    self._process_job.name,
+                    "--script",
+                    str(release_script),
+                    "--request-file",
+                    str(self._request_file),
+                    "--control-directory",
+                    str(self._control.directory),
+                ]
+            else:
+                arguments = [
+                    str(release_script),
+                    "--headless",
+                    "--request-file",
+                    str(self._request_file),
+                    "--control-directory",
+                    str(self._control.directory),
+                ]
             self.process.setProgram(sys.executable)
             self.process.setArguments(arguments)
             self.process.setProcessEnvironment(process_environment)
@@ -311,14 +404,45 @@ class ReleaseProcessController(QObject):
             self._running = True
             self.running_changed.emit(True)
             self.process.start()
+            self._assign_process_job()
         except BaseException as error:
             self._running = False
-            self.running_changed.emit(False)
-            self._cleanup_request_file()
-            self._mark_result_failed(redact_release_text(str(error)))
             self._completion_pending = True
-            self._finish_writer_or_defer()
-            self._maybe_emit_completed()
+            _run_start_failure_step(
+                error,
+                "startup notification failed: running state could not be emitted",
+                lambda: self.running_changed.emit(False),
+            )
+            _run_start_failure_step(
+                error,
+                "startup cleanup failed: release request file could not be deleted",
+                lambda: self._cleanup_request_file(),
+            )
+            _run_start_failure_step(
+                error,
+                "startup cleanup failed: release cancellation control could not be deleted",
+                lambda: self._cleanup_control(),
+            )
+            _run_start_failure_step(
+                error,
+                "startup cleanup failed: release process job handle could not be closed",
+                lambda: self._cleanup_process_job(),
+            )
+            _run_start_failure_step(
+                error,
+                "startup failure state could not be recorded",
+                lambda: self._mark_result_failed("release process failed to start"),
+            )
+            _run_start_failure_step(
+                error,
+                "startup cleanup failed: release audit log writer could not be closed",
+                lambda: self._finish_writer_or_defer(),
+            )
+            _run_start_failure_step(
+                error,
+                "startup failure notification could not be emitted",
+                lambda: self._maybe_emit_completed(),
+            )
             raise
 
     def feed_stdout(self, data: bytes | bytearray | str) -> None:
@@ -361,18 +485,55 @@ class ReleaseProcessController(QObject):
         if not self._running:
             return
         if not self._cancel_requested:
+            control = self._control
+            if control is None:
+                self._report_control_failure()
+                return
+            try:
+                may_signal = control.request_cancel()
+            except CancellationControlError:
+                self._report_control_failure()
+                return
             self._cancel_requested = True
-            self.process.terminate()
-            self.cancel_timer.start()
-            self.stage_changed.emit(
-                ReleaseStage.CANCELLED.value,
-                self._last_progress,
-                "Cancellation requested",
-            )
+            if may_signal:
+                self.cancel_timer.start()
+                self.stage_changed.emit(
+                    ReleaseStage.CANCELLING.value,
+                    self._last_progress,
+                    "Cancellation requested",
+                )
+            else:
+                self.stage_changed.emit(
+                    self._last_stage.value,
+                    self._last_progress,
+                    "Cancellation arrived after irreversible publication began",
+                )
 
     @pyqtSlot()
     def escalate_cancel(self) -> None:
-        if not self._running or not self._target_process_is_running():
+        self.cancel_timer.stop()
+        if (
+            not self._running
+            or not self._target_process_is_running()
+            or not self._may_signal_process()
+        ):
+            return
+        self._termination_started = True
+        self.process.terminate()
+        self.force_cancel_timer.start()
+
+    @pyqtSlot()
+    def force_cancel(self) -> None:
+        self.force_cancel_timer.stop()
+        if (
+            not self._running
+            or not self._target_process_is_running()
+            or not self._may_signal_process()
+        ):
+            return
+        self._force_cancel_started = True
+        if self._process_job is not None:
+            self._terminate_process_job()
             return
         process_id = int(self.process.processId())
         if not isinstance(self.process, QProcess):
@@ -389,34 +550,72 @@ class ReleaseProcessController(QObject):
         exit_code: int,
         exit_status: QProcess.ExitStatus,
     ) -> None:
-        if self._finished:
+        if self._finished or self._pending_process_finish is not None:
             return
         self.read_stdout()
         self.read_stderr()
         self._flush_partial_streams()
-        self._finished = True
         self.cancel_timer.stop()
+        self.force_cancel_timer.stop()
         self._taskkill_confirmation_timer.stop()
+        self._pending_process_finish = (int(exit_code), exit_status)
+        if self._process_job is not None and self._process_job_has_active_processes():
+            self._terminate_process_job()
+            if self._process_job is None:
+                self._complete_pending_process_finish()
+                return
+            if not self._process_job_poll_timer.isActive():
+                self._process_job_poll_timer.start()
+            return
+        self._complete_pending_process_finish()
+
+    def _finalize_process_exit(
+        self,
+        exit_code: int,
+        exit_status: QProcess.ExitStatus,
+    ) -> None:
+        self._finished = True
         self._running = False
         error = self._completion_error(exit_code, exit_status)
         terminal = self._terminal_event
-        if not error and terminal is not None:
+        forced_cancelled = (
+            terminal is None
+            and self._cancel_requested
+            and self._termination_started
+            and not self._protocol_error
+            and not self._fatal_event_error
+            and self._control_confirms_pre_irreversible_cancel()
+        )
+        clean_terminal_cancel = (
+            terminal is not None
+            and terminal.stage is ReleaseStage.CANCELLED
+            and not self._protocol_error
+            and not self._fatal_event_error
+            and exit_status == QProcess.ExitStatus.NormalExit
+            and int(exit_code) == 0
+            and terminal.data.get("status") == "cancelled"
+        )
+        if forced_cancelled or clean_terminal_cancel:
+            self.result = ReleaseResult(
+                mode=self._mode,
+                stage=ReleaseStage.CANCELLED,
+            )
+        elif not error and terminal is not None:
             self.result = ReleaseResult(
                 mode=self._mode,
                 stage=ReleaseStage.SUCCEEDED,
             )
         else:
-            stage = terminal.stage if terminal is not None else ReleaseStage.FAILED
-            if stage is ReleaseStage.SUCCEEDED:
-                stage = ReleaseStage.FAILED
             terminal_error = error or self._terminal_error(terminal)
             self.result = ReleaseResult(
                 mode=self._mode,
-                stage=stage,
+                stage=ReleaseStage.FAILED,
                 errors=(terminal_error,) if terminal_error else (),
                 error=terminal_error,
             )
         self._cleanup_request_file()
+        self._cleanup_control()
+        self._cleanup_process_job()
         self.flush_log_batch()
         self._completion_pending = True
         self.running_changed.emit(False)
@@ -432,9 +631,13 @@ class ReleaseProcessController(QObject):
             self._maybe_emit_completed()
             return self.shutdown_complete
         self.cancel_timer.stop()
+        self.force_cancel_timer.stop()
         self._log_timer.stop()
         self._taskkill_confirmation_timer.stop()
+        self._process_job_poll_timer.stop()
         self._cleanup_request_file()
+        self._cleanup_control()
+        self._cleanup_process_job()
         if self._log_writer is not None:
             self._completion_pending = True
             self._finish_writer_or_defer()
@@ -446,14 +649,28 @@ class ReleaseProcessController(QObject):
         self.process.readyReadStandardError.connect(self.read_stderr)
         self.process.finished.connect(self.on_finished)
         self.process.errorOccurred.connect(self._on_process_error)
+        started = getattr(self.process, "started", None)
+        if started is not None:
+            try:
+                started.connect(self._on_process_started)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
 
     def _reset_protocol(self) -> None:
         self._finished = False
         self._completion_pending = False
         self._completed_emitted = False
         self._cancel_requested = False
+        self._termination_started = False
+        self._force_cancel_started = False
+        self._process_job_assigned = False
+        self._process_job_termination_started = False
+        self._pending_process_finish = None
+        self._process_job_poll_timer.stop()
+        self._control_failure_reported = False
         self._last_sequence = 0
         self._last_progress = 0
+        self._last_stage = ReleaseStage.IDLE
         self._terminal_event = None
         self._protocol_error = ""
         self._fatal_event_error = ""
@@ -496,8 +713,11 @@ class ReleaseProcessController(QObject):
                     sort_keys=True,
                 )
                 stream.write("\n")
-        except BaseException:
-            path.unlink(missing_ok=True)
+        except BaseException as error:
+            try:
+                path.unlink(missing_ok=True)
+            except BaseException:
+                _attach_request_cleanup_diagnostic(error)
             raise
         return path
 
@@ -578,6 +798,7 @@ class ReleaseProcessController(QObject):
             # the log queue prevents large transfers from starving log paints.
             self.upload_progress_changed.emit(dict(event.data))
             return
+        self._last_stage = event.stage
         self.stage_changed.emit(
             event.stage.value,
             event.progress,
@@ -618,6 +839,11 @@ class ReleaseProcessController(QObject):
             return "release process exited abnormally"
         if int(exit_code) != 0:
             return f"release process returned exit code {int(exit_code)}"
+        if (
+            self._terminal_event.stage is ReleaseStage.CANCELLED
+            and self._terminal_event.data.get("status") != "cancelled"
+        ):
+            return "final result event did not confirm cancellation"
         if self._terminal_event.stage is not ReleaseStage.SUCCEEDED:
             return self._terminal_error(self._terminal_event)
         status = self._terminal_event.data.get("status")
@@ -638,11 +864,124 @@ class ReleaseProcessController(QObject):
             return "release process was cancelled"
         return f"release process reported {event.stage.value}"
 
+    @pyqtSlot()
+    def _on_process_started(self) -> None:
+        self._assign_process_job()
+
+    def _assign_process_job(self) -> None:
+        job = self._process_job
+        if job is None or self._process_job_assigned:
+            return
+        try:
+            process_id = int(self.process.processId())
+        except (RuntimeError, TypeError, ValueError):
+            process_id = 0
+        if process_id <= 0:
+            return
+        try:
+            job.assign_process(process_id)
+        except (CancellationControlError, OSError, RuntimeError, TypeError, ValueError):
+            self._set_process_job_error(
+                "release process job assignment failed; release was blocked"
+            )
+            self._terminate_process_job()
+            self._cleanup_process_job()
+            try:
+                self.process.kill()
+            except RuntimeError:
+                pass
+            return
+        self._process_job_assigned = True
+
+    def _set_process_job_error(self, message: str) -> None:
+        if self._fatal_event_error:
+            return
+        self._fatal_event_error = redact_release_text(message)
+        self.error_reported.emit(self._fatal_event_error)
+
+    def _terminate_process_job(self) -> None:
+        job = self._process_job
+        if job is None or self._process_job_termination_started:
+            return
+        self._process_job_termination_started = True
+        try:
+            job.terminate()
+        except (CancellationControlError, OSError, RuntimeError, TypeError, ValueError):
+            self._set_process_job_error(
+                "release process job could not be terminated safely"
+            )
+            self._cleanup_process_job(safety_critical=True)
+            try:
+                self.process.kill()
+            except RuntimeError:
+                pass
+
+    def _process_job_has_active_processes(self) -> bool:
+        job = self._process_job
+        if job is None:
+            return False
+        try:
+            return bool(job.has_active_processes())
+        except (CancellationControlError, OSError, RuntimeError, TypeError, ValueError):
+            self._set_process_job_error(
+                "release process job state could not be verified"
+            )
+            self._terminate_process_job()
+            if self._process_job is not None:
+                self._cleanup_process_job(safety_critical=True)
+            return False
+
+    @pyqtSlot()
+    def _poll_process_job(self) -> None:
+        if self._pending_process_finish is None:
+            self._process_job_poll_timer.stop()
+            return
+        if self._process_job_has_active_processes():
+            self._terminate_process_job()
+            return
+        self._complete_pending_process_finish()
+
+    def _complete_pending_process_finish(self) -> None:
+        pending, self._pending_process_finish = self._pending_process_finish, None
+        if pending is None:
+            return
+        self._process_job_poll_timer.stop()
+        self._finalize_process_exit(*pending)
+
     def _target_process_is_running(self) -> bool:
         try:
             return self.process.state() != QProcess.ProcessState.NotRunning
         except RuntimeError:
             return False
+
+    def _may_signal_process(self) -> bool:
+        control = self._control
+        if control is None:
+            self._report_control_failure()
+            return False
+        try:
+            return control.may_signal_process()
+        except CancellationControlError:
+            self._report_control_failure()
+            return False
+
+    def _control_confirms_pre_irreversible_cancel(self) -> bool:
+        control = self._control
+        if control is None:
+            return False
+        try:
+            return control.may_signal_process()
+        except CancellationControlError:
+            self._report_control_failure()
+            return False
+
+    def _report_control_failure(self) -> None:
+        if self._control_failure_reported:
+            return
+        self._control_failure_reported = True
+        self.error_reported.emit(
+            "release cancellation control is unavailable; process signals were blocked"
+        )
 
     def _cleanup_request_file(self) -> None:
         if self._request_file is None:
@@ -655,6 +994,40 @@ class ReleaseProcessController(QObject):
             )
         finally:
             self._request_file = None
+
+    def _cleanup_control(self) -> None:
+        control, self._control = self._control, None
+        if control is None:
+            return
+        try:
+            control.cleanup()
+        except CancellationControlError:
+            self.audit_log_warning = (
+                "release cancellation control could not be deleted"
+            )
+
+    def _cleanup_process_job(self, *, safety_critical: bool = False) -> bool:
+        job = self._process_job
+        if job is None:
+            return True
+        for _attempt in range(3):
+            try:
+                job.close()
+            except BaseException:
+                continue
+            self._process_job = None
+            return True
+        try:
+            job.force_close()
+        except BaseException:
+            message = "release process job handle could not be closed"
+            if safety_critical:
+                self._set_process_job_error(message)
+            self.audit_log_warning = message
+            self.error_reported.emit(message)
+            return False
+        self._process_job = None
+        return True
 
     def _finish_writer_or_defer(self) -> None:
         writer = self._log_writer
@@ -776,6 +1149,8 @@ class ReleaseProcessController(QObject):
             or self._completed_emitted
             or self._log_writer is not None
             or self._taskkill_is_running()
+            or self._process_job is not None
+            or self._pending_process_finish is not None
         ):
             return
         self._completion_pending = False
@@ -814,7 +1189,7 @@ class ReleaseProcessController(QObject):
         if (
             exit_status != QProcess.ExitStatus.NormalExit
             or int(exit_code) != 0
-        ) and self._running:
+        ) and self._running and self._may_signal_process():
             self.process.kill()
         elif self._running:
             self._taskkill_confirmation_timer.start()
@@ -826,13 +1201,14 @@ class ReleaseProcessController(QObject):
             taskkill, self._taskkill_process = self._taskkill_process, None
             if taskkill is not None:
                 taskkill.deleteLater()
-            self.process.kill()
+            if self._may_signal_process():
+                self.process.kill()
 
     @pyqtSlot()
     def _confirm_target_after_taskkill(self) -> None:
         if not self._running:
             return
-        if self._target_process_is_running():
+        if self._target_process_is_running() and self._may_signal_process():
             self.process.kill()
 
     @pyqtSlot(QProcess.ProcessError)

@@ -130,13 +130,17 @@ _STAGE_LABELS = {
     ReleaseStage.SIGNING.value: "签署更新清单",
     ReleaseStage.SMOKE_TESTING.value: "执行冒烟测试",
     ReleaseStage.GIT.value: "提交 Git 变更",
-    ReleaseStage.PUBLISHING.value: "创建 GitHub Release",
+    ReleaseStage.PREPARING_RELEASE.value: "准备 GitHub Release 草稿",
     ReleaseStage.UPLOADING.value: "上传发布资产",
     ReleaseStage.VERIFYING.value: "校验远端资产",
+    ReleaseStage.PUBLISHING.value: "公开 GitHub Release",
+    ReleaseStage.CANCELLING.value: "正在取消",
     ReleaseStage.SUCCEEDED.value: "构建成功",
     ReleaseStage.FAILED.value: "构建失败",
     ReleaseStage.CANCELLED.value: "已取消",
 }
+_UPLOAD_PROGRESS_START = 85
+_UPLOAD_PROGRESS_END = 95
 _ACTION_LABELS = {
     "apply version changes": "应用版本变更",
     "applying version changes": "应用版本变更",
@@ -295,6 +299,12 @@ def _upload_progress_view(payload: Mapping[str, object]) -> tuple[int, str]:
     speed = _format_transfer_size(number("bytes_per_second"))
     attempt_text = f" · 第 {attempt} 次尝试" if attempt > 1 else ""
     return percent, f"{prefix} · {totals} · {speed}/s{attempt_text}"
+
+
+def _upload_stage_progress(percent: int) -> int:
+    bounded = max(0, min(100, int(percent)))
+    span = _UPLOAD_PROGRESS_END - _UPLOAD_PROGRESS_START
+    return _UPLOAD_PROGRESS_START + (bounded * span + 50) // 100
 
 
 class _ReleaseSectionCard(QGroupBox):
@@ -513,6 +523,7 @@ class ReleaseBuilderWindow(QWidget):
         self._accept_remote_results = True
         self._close_pending = False
         self._shutting_down = False
+        self._release_stage = ReleaseStage.IDLE
         self._mode: ReleaseMode | None = None
         self._panel_intent: PanelBuildIntent | None = None
         self._local_mode_forced = False
@@ -1709,7 +1720,11 @@ class ReleaseBuilderWindow(QWidget):
         progress: int,
         message: str,
     ) -> None:
-        self.progress_bar.setValue(progress)
+        try:
+            self._release_stage = ReleaseStage(stage)
+        except ValueError:
+            pass
+        self._set_monotonic_progress(progress)
         self.status_label.setText(
             _localize_release_message(message)
             or _STAGE_LABELS.get(stage, stage)
@@ -1723,15 +1738,28 @@ class ReleaseBuilderWindow(QWidget):
 
     @pyqtSlot(object)
     def _on_upload_progress(self, payload: object) -> None:
-        if not isinstance(payload, Mapping):
+        if (
+            self._release_stage is not ReleaseStage.UPLOADING
+            or not isinstance(payload, Mapping)
+        ):
             return
         percent, text = _upload_progress_view(payload)
-        self.progress_bar.setValue(percent)
+        self._set_monotonic_progress(_upload_stage_progress(percent))
         self.upload_progress_label.setText(text)
         self.upload_progress_label.show()
 
+    def _set_monotonic_progress(self, progress: int) -> None:
+        bounded = max(0, min(100, int(progress)))
+        self.progress_bar.setValue(max(self.progress_bar.value(), bounded))
+
     @pyqtSlot(str)
     def _on_process_error(self, message: str) -> None:
+        if self._release_stage in {
+            ReleaseStage.SUCCEEDED,
+            ReleaseStage.FAILED,
+            ReleaseStage.CANCELLED,
+        }:
+            return
         self.status_label.setText(
             _localize_release_message(redact_release_text(message))
         )
@@ -1740,11 +1768,15 @@ class ReleaseBuilderWindow(QWidget):
     def _on_running_changed(self, running: bool) -> None:
         self.start_button.setEnabled(False)
         self.cancel_button.setEnabled(running)
+        if running:
+            self._release_stage = ReleaseStage.IDLE
+            self.progress_bar.setValue(0)
         if not running:
             self.refresh_mode()
 
     @pyqtSlot(object)
     def _on_process_completed(self, result: ReleaseResult) -> None:
+        self._release_stage = result.stage
         self.upload_progress_label.hide()
         if result.succeeded:
             message = "发布构建成功"
@@ -1752,6 +1784,8 @@ class ReleaseBuilderWindow(QWidget):
                 message += "；审计日志可能不完整"
             self.status_label.setText(message)
             self.progress_bar.setValue(100)
+        elif result.cancelled:
+            self.status_label.setText(_STAGE_LABELS[ReleaseStage.CANCELLED.value])
         else:
             self.status_label.setText(
                 _localize_release_message(

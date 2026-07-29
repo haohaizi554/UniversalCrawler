@@ -337,6 +337,55 @@ def test_new_release_publication_rejects_omitted_upload_or_verification(omitted,
     assert message in validate_build_request(replace(request, **{omitted: False}))
 
 
+def test_same_release_publication_requires_upload_and_remote_verification():
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        same_release_repair=True,
+        release_notes_path="notes.md",
+        create_or_update_release=True,
+    )
+
+    errors = validate_build_request(request)
+
+    assert "release publication requires uploading assets" in errors
+    assert "release publication requires remote asset verification" in errors
+
+
+def test_same_release_publication_cannot_publish_only_the_public_key():
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        same_release_repair=True,
+        release_notes_path="notes.md",
+        create_or_update_release=True,
+        upload_public_key=True,
+        verify_remote_assets=True,
+    )
+
+    assert "release publication requires uploading assets" in validate_build_request(request)
+
+
+def test_same_release_publication_requires_creating_or_reusing_the_target_tag():
+    request = BuildRequest(
+        target_version="3.6.21",
+        remote=RemoteReleaseInfo.available("3.6.21"),
+        same_release_repair=True,
+        release_notes_path="notes.md",
+        sign_manifest=True,
+        private_key_path="private.pem",
+        create_or_update_release=True,
+        upload_release_assets=True,
+        verify_remote_assets=True,
+        create_or_reuse_tag=False,
+    )
+
+    assert (
+        "release publication requires creating or reusing the release tag"
+        in validate_build_request(request)
+    )
+
+
 def test_upload_public_key_requires_a_release_and_remote_verification():
     request = BuildRequest(
         target_version="3.6.22",
