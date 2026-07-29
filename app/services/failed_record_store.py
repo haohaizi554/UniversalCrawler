@@ -309,18 +309,26 @@ class FailedRecordStore:
             self._refresh_after_mutation()
         return deleted_count
 
-    def shutdown(self) -> None:
-        """拒绝新任务并最多等待后台线程一秒，不保证排空待处理任务。
+    def shutdown(self, timeout: float = 1.0) -> bool:
+        """关闭新任务准入，并等待已经接收的后台工作排空。
 
-        后台线程观察到关闭标志后会直接退出，尚在 ``_pending`` 或刷新、清理请求槽
-        中的工作可能不再执行；等待超时后本方法也会直接返回。
+        超时只限制调用方等待时间；后台守护线程仍会继续持有并完成已接收的写入、
+        刷新和清理请求。返回值用于让生命周期所有者识别尚未完成的关闭。
         """
+        wait_timeout = max(0.0, float(timeout))
         with self._lock:
             self._shutdown = True
+            if self._has_queued_work_locked():
+                self._ensure_worker_locked()
             self._event.set()
             thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=1.0)
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        if thread.is_alive():
+            thread.join(timeout=wait_timeout)
+        return not thread.is_alive()
 
     def _ensure_worker_locked(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -333,8 +341,6 @@ class FailedRecordStore:
         while True:
             self._event.wait()
             with self._lock:
-                if self._shutdown:
-                    return
                 batch = list(self._pending.values())
                 self._pending.clear()
                 batch_ids = {str(record.get("video_id") or "") for record in batch}
@@ -352,6 +358,13 @@ class FailedRecordStore:
                 self._pruning = prune_retention_days is not None
                 self._refreshing = refresh_request is not None
             if not batch and prune_retention_days is None and refresh_request is None:
+                with self._lock:
+                    work_remaining = self._has_queued_work_locked()
+                    should_exit = self._shutdown and not work_remaining
+                    if work_remaining:
+                        self._event.set()
+                if should_exit:
+                    return
                 continue
             try:
                 write_failed = False
@@ -405,6 +418,19 @@ class FailedRecordStore:
                     self._writing = False
                     self._refreshing = False
                     self._pruning = False
+                    work_remaining = self._has_queued_work_locked()
+                    should_exit = self._shutdown and not work_remaining
+                    if work_remaining:
+                        self._event.set()
+                if should_exit:
+                    return
+
+    def _has_queued_work_locked(self) -> bool:
+        return bool(
+            self._pending
+            or self._refresh_requested is not None
+            or self._prune_retention_days is not None
+        )
 
     @contextmanager
     def _open_connection(self) -> Iterator[sqlite3.Connection]:

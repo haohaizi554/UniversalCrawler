@@ -416,3 +416,85 @@ def test_failed_record_store_prune_expired_records_removes_old_failed_at(tmp_pat
         store.shutdown()
 
     assert [row["id"] for row in rows] == ["fresh"]
+
+
+def test_shutdown_drains_an_accepted_upsert_before_the_worker_starts(tmp_path):
+    db_path = tmp_path / "failed.sqlite3"
+    store = FailedRecordStore(db_path=db_path)
+    original_ensure_worker = store._ensure_worker_locked
+    try:
+        # Keep accepted work in the admission slot until shutdown owns the drain.
+        store._ensure_worker_locked = lambda: None  # type: ignore[method-assign]
+        store.queue_upsert([{"id": "shutdown-pending", "reason": "network"}])
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+
+        assert store.shutdown(timeout=2.0) is True
+    finally:
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+        store.shutdown()
+
+    reopened = FailedRecordStore(db_path=db_path)
+    try:
+        assert [row["id"] for row in reopened.query(limit=10)] == ["shutdown-pending"]
+    finally:
+        reopened.shutdown()
+
+
+def test_shutdown_timeout_is_observable_while_accepted_work_keeps_draining(tmp_path):
+    db_path = tmp_path / "failed.sqlite3"
+    store = FailedRecordStore(db_path=db_path)
+    original_write_batch = store._write_batch
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_write(records: list[dict]) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+        original_write_batch(records)
+
+    try:
+        store._write_batch = delayed_write  # type: ignore[method-assign]
+        store.queue_upsert([{"id": "shutdown-inflight", "reason": "network"}])
+        assert started.wait(timeout=2)
+
+        assert store.shutdown(timeout=0.01) is False
+        release.set()
+        assert store.shutdown(timeout=2.0) is True
+    finally:
+        release.set()
+        store.shutdown()
+
+    reopened = FailedRecordStore(db_path=db_path)
+    try:
+        assert [row["id"] for row in reopened.query(limit=10)] == ["shutdown-inflight"]
+    finally:
+        reopened.shutdown()
+
+
+def test_shutdown_drains_an_accepted_prune_request(tmp_path):
+    db_path = tmp_path / "failed.sqlite3"
+    old_failed_at = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+    seed = FailedRecordStore(db_path=db_path)
+    try:
+        seed.queue_upsert([{"id": "expired-before-shutdown", "failed_at": old_failed_at}])
+        assert seed.flush(timeout=2)
+    finally:
+        seed.shutdown()
+
+    store = FailedRecordStore(db_path=db_path)
+    original_ensure_worker = store._ensure_worker_locked
+    try:
+        store._ensure_worker_locked = lambda: None  # type: ignore[method-assign]
+        store.request_prune(7)
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+
+        assert store.shutdown(timeout=2.0) is True
+    finally:
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+        store.shutdown()
+
+    reopened = FailedRecordStore(db_path=db_path)
+    try:
+        assert reopened.query(limit=10) == []
+    finally:
+        reopened.shutdown()
