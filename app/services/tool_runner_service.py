@@ -25,6 +25,7 @@ from app.core.tools.contracts import (
     ToolRunResult,
     ToolRunStatus,
     ToolValidationResult,
+    freeze_private_data,
 )
 from app.core.tools.registry import ToolRegistry
 from app.debug_logger import debug_logger
@@ -47,6 +48,29 @@ class PrivateToolResult:
     run_id: str
     tool_id: str
     output_paths: tuple[Path, ...]
+    structured_data: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    private_data: Mapping[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "output_paths",
+            tuple(Path(str(path)) for path in self.output_paths),
+        )
+        object.__setattr__(
+            self,
+            "structured_data",
+            freeze_private_data(self.structured_data),
+        )
+        object.__setattr__(
+            self,
+            "private_data",
+            freeze_private_data(self.private_data),
+        )
 
 
 @dataclass(slots=True)
@@ -64,6 +88,8 @@ class _RunRecord:
     message: str = ""
     progress_details: dict[str, Any] = field(default_factory=dict)
     result: ToolRunResult | None = None
+    runtime_private_result: bool = field(default=False, repr=False)
+    claimed_candidate_ids: set[str] = field(default_factory=set, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -163,10 +189,13 @@ class ToolRunnerService:
         descriptor = self.registry.descriptor(tool_id)
         if descriptor is None:
             return {"status": "error", "valid": False, "errors": ["unknown tool"], "tool_id": tool_id}
-        return self._validate_descriptor(
-            descriptor,
-            dict(params or {}),
-            execution_profile,
+        return _public_validation_payload(
+            self._validate_descriptor(
+                descriptor,
+                dict(params or {}),
+                execution_profile,
+            ),
+            tool_id=descriptor.tool.manifest.id,
         )
 
     def _validate_descriptor(
@@ -229,7 +258,10 @@ class ToolRunnerService:
             execution_profile,
         )
         if validation.get("status") != "ok":
-            return validation
+            return _public_validation_payload(
+                validation,
+                tool_id=tool.manifest.id,
+            )
         normalized_parameters = dict(validation.get("parameters") or params or {})
         try:
             grant = self._evaluate_grant(
@@ -252,7 +284,10 @@ class ToolRunnerService:
             run_id,
             tool.manifest.id,
             ToolRunStatus.QUEUED,
-            _redact_parameters(normalized_parameters),
+            _redact_parameters(
+                normalized_parameters,
+                sensitive_fields=("text",) if tool.manifest.id == "link_parser" else (),
+            ),
             host_surface=execution_profile.host_surface,
             owner_id=execution_profile.owner_id,
         )
@@ -422,13 +457,9 @@ class ToolRunnerService:
         self._history_loaded.wait()
         with self._lock:
             record = self._records.get(normalized)
-            if (
-                record is None
-                or not self._is_owned_by(record, execution_profile)
-                or not _is_terminal_status(record.status)
-                or record.result is None
-            ):
+            if not self._record_has_private_result(record, execution_profile):
                 return None
+            assert record is not None and record.result is not None
             return PrivateToolResult(
                 run_id=record.run_id,
                 tool_id=record.tool_id,
@@ -437,7 +468,83 @@ class ToolRunnerService:
                     for path in record.result.output_paths
                     if str(path).strip()
                 ),
+                structured_data=record.result.data,
+                private_data=record.result.private_data,
             )
+
+    def _claim_private_candidates(
+        self,
+        run_id: str,
+        candidate_ids: tuple[str, ...],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> bool:
+        """Atomically reserve current-process private candidates for one owner."""
+
+        normalized_run_id = str(run_id or "").strip()
+        normalized_ids = tuple(str(candidate_id or "").strip() for candidate_id in candidate_ids)
+        if (
+            not normalized_run_id
+            or not normalized_ids
+            or len(set(normalized_ids)) != len(normalized_ids)
+            or any(not candidate_id for candidate_id in normalized_ids)
+            or _profile_identity_error(execution_profile) is not None
+        ):
+            return False
+        self._history_loaded.wait()
+        with self._lock:
+            record = self._records.get(normalized_run_id)
+            if not self._record_has_private_result(record, execution_profile):
+                return False
+            assert record is not None
+            if record.claimed_candidate_ids.intersection(normalized_ids):
+                return False
+            record.claimed_candidate_ids.update(normalized_ids)
+            return True
+
+    def _release_private_candidates(
+        self,
+        run_id: str,
+        candidate_ids: tuple[str, ...],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> bool:
+        """Release a reservation only while the same private result is still live."""
+
+        normalized_run_id = str(run_id or "").strip()
+        normalized_ids = tuple(str(candidate_id or "").strip() for candidate_id in candidate_ids)
+        if (
+            not normalized_run_id
+            or not normalized_ids
+            or len(set(normalized_ids)) != len(normalized_ids)
+            or any(not candidate_id for candidate_id in normalized_ids)
+            or _profile_identity_error(execution_profile) is not None
+        ):
+            return False
+        self._history_loaded.wait()
+        with self._lock:
+            record = self._records.get(normalized_run_id)
+            if not self._record_has_private_result(record, execution_profile):
+                return False
+            assert record is not None
+            if not set(normalized_ids).issubset(record.claimed_candidate_ids):
+                return False
+            record.claimed_candidate_ids.difference_update(normalized_ids)
+            return True
+
+    @staticmethod
+    def _record_has_private_result(
+        record: _RunRecord | None,
+        execution_profile: ExecutionProfile,
+    ) -> bool:
+        return bool(
+            record is not None
+            and ToolRunnerService._is_owned_by(record, execution_profile)
+            and record.status is ToolRunStatus.SUCCEEDED
+            and record.result is not None
+            and _coerce_run_status(record.result.status) is ToolRunStatus.SUCCEEDED
+            and record.runtime_private_result
+        )
 
     def snapshot(
         self,
@@ -681,6 +788,7 @@ class ToolRunnerService:
             else:
                 record.status = result_status
                 record.result = result
+                record.runtime_private_result = True
                 record.message = result.message
                 record.progress = (
                     100 if result_status == ToolRunStatus.SUCCEEDED else record.progress
@@ -1155,13 +1263,37 @@ def _profile_identity_error(
     }
 
 
-def _redact_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
+def _redact_parameters(
+    parameters: Mapping[str, Any],
+    *,
+    sensitive_fields: tuple[str, ...] = (),
+) -> dict[str, Any]:
     sensitive = ("token", "secret", "password", "cookie", "authorization", "proxy_auth")
+    explicit = {str(key).casefold() for key in sensitive_fields}
     result: dict[str, Any] = {}
     for key, value in parameters.items():
         normalized = str(key).casefold()
-        result[str(key)] = "[redacted]" if any(marker in normalized for marker in sensitive) else _json_value(value)
+        result[str(key)] = (
+            "[redacted]"
+            if normalized in explicit or any(marker in normalized for marker in sensitive)
+            else _json_value(value)
+        )
     return result
+
+
+def _public_validation_payload(
+    payload: Mapping[str, Any],
+    *,
+    tool_id: str,
+) -> dict[str, Any]:
+    public_payload = dict(payload)
+    parameters = payload.get("parameters")
+    if isinstance(parameters, Mapping):
+        public_payload["parameters"] = _redact_parameters(
+            parameters,
+            sensitive_fields=("text",) if tool_id == "link_parser" else (),
+        )
+    return public_payload
 
 
 def _coerce_run_status(value: Any) -> ToolRunStatus:

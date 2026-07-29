@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,49 @@ def test_run_result_is_json_compatible() -> None:
         "output_paths": ["D:/output.mp4"],
         "warnings": ["warning"],
     }
+
+
+def test_run_result_private_data_is_immutable_and_never_serialized() -> None:
+    private_url = "https://example.com/watch?token=contract-private"
+    result = ToolRunResult.success(
+        "parsed",
+        data={"links": [{"candidate_id": "candidate-1"}]},
+        private_data={
+            "candidates": [
+                {"candidate_id": "candidate-1", "private_url": private_url}
+            ]
+        },
+    )
+
+    serialized = json.dumps(result.to_dict(), ensure_ascii=False)
+
+    assert private_url not in serialized
+    assert result.private_data["candidates"][0]["private_url"] == private_url
+    with pytest.raises(TypeError):
+        result.private_data["new"] = "mutation"
+    with pytest.raises(TypeError):
+        result.private_data["candidates"][0]["private_url"] = "mutation"
+    with pytest.raises(TypeError):
+        json.dumps(result.private_data)
+
+
+def test_run_result_private_data_copies_binary_leaves_and_rejects_mutable_objects() -> None:
+    source = bytearray(b"private")
+    result = ToolRunResult.success(
+        "parsed",
+        private_data={"binary": source},
+    )
+
+    source[:] = b"mutated"
+
+    assert result.private_data["binary"] == b"private"
+    assert isinstance(result.private_data["binary"], bytes)
+
+    class MutableLeaf:
+        pass
+
+    with pytest.raises(TypeError, match="unsupported private data value"):
+        ToolRunResult.success("parsed", private_data={"leaf": MutableLeaf()})
 
 
 def test_download_residue_requirements_change_with_requested_mode() -> None:

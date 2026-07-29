@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from shared.execution_profile import ExecutionProfile
@@ -313,10 +314,16 @@ class ToolRunResult:
     data: Mapping[str, Any] = field(default_factory=dict)
     output_paths: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    private_data: Mapping[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_paths", tuple(str(path) for path in self.output_paths))
         object.__setattr__(self, "warnings", tuple(str(item) for item in self.warnings))
+        object.__setattr__(self, "private_data", freeze_private_data(self.private_data))
 
     @classmethod
     def success(
@@ -326,6 +333,7 @@ class ToolRunResult:
         data: Mapping[str, Any] | None = None,
         output_paths: tuple[str, ...] = (),
         warnings: tuple[str, ...] = (),
+        private_data: Mapping[str, Any] | None = None,
     ) -> ToolRunResult:
         return cls(
             ToolRunStatus.SUCCEEDED,
@@ -333,6 +341,7 @@ class ToolRunResult:
             dict(data or {}),
             tuple(str(path) for path in output_paths),
             tuple(str(item) for item in warnings),
+            dict(private_data or {}),
         )
 
     @classmethod
@@ -342,6 +351,7 @@ class ToolRunResult:
         *,
         data: Mapping[str, Any] | None = None,
         warnings: tuple[str, ...] = (),
+        private_data: Mapping[str, Any] | None = None,
     ) -> ToolRunResult:
         return cls(
             ToolRunStatus.FAILED,
@@ -349,6 +359,7 @@ class ToolRunResult:
             dict(data or {}),
             (),
             tuple(str(item) for item in warnings),
+            dict(private_data or {}),
         )
 
     @classmethod
@@ -444,6 +455,37 @@ def _plain_value(value: Any) -> Any:
     return str(value)
 
 
+def freeze_private_data(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Return a fresh recursively immutable mapping excluded from serialization."""
+
+    source = value if isinstance(value, Mapping) else {}
+    return MappingProxyType(
+        {str(key): _freeze_private_value(item) for key, item in source.items()}
+    )
+
+
+def _freeze_private_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_private_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_private_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_private_value(item) for item in value)
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return _freeze_private_value(value.value)
+    if value is None or type(value) in {str, int, float, bool, bytes}:
+        return value
+    raise TypeError(
+        f"unsupported private data value: {type(value).__name__}"
+    )
+
+
 __all__ = [
     "CancellationToken",
     "PathAuthorizer",
@@ -459,4 +501,5 @@ __all__ = [
     "ToolRunResult",
     "ToolRunStatus",
     "ToolValidationResult",
+    "freeze_private_data",
 ]

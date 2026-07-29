@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 import app.services.tool_runner_service as tool_runner_module
 from app.core.tools.contracts import (
     ToolManifest,
@@ -58,8 +60,18 @@ class OutputTool:
     def run(self, context):
         return ToolRunResult.success(
             "private output",
-            data={"secret": "private-result-sentinel"},
+            data={"artifacts": {"count": 1}},
             output_paths=(str(context.parameters["path"]),),
+            private_data={
+                "candidates": [
+                    {
+                        "candidate_id": "candidate-1",
+                        "private_url": (
+                            "https://example.com/watch?token=private-result-sentinel"
+                        ),
+                    }
+                ]
+            },
         )
 
 
@@ -114,6 +126,60 @@ class StubbornTool:
         self.started.set()
         self.release.wait()
         return ToolRunResult.success("released")
+
+
+class PrivateBlockingTool:
+    manifest = ToolManifest(
+        id="private-blocking",
+        title="Private blocking",
+        summary="Return private structured data after release",
+        supports_cancel=True,
+    )
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
+
+    def validate(self, context):
+        return []
+
+    def run(self, context):
+        self.started.set()
+        self.release.wait()
+        return ToolRunResult.success(
+            "released",
+            data={"candidate_id": "terminal-structured"},
+            private_data={"candidate_id": "terminal-private"},
+        )
+
+
+class FailedPrivateTool:
+    manifest = ToolManifest(
+        id="failed-private",
+        title="Failed private",
+        summary="Return private data with a failed result",
+    )
+
+    @staticmethod
+    def requirements_for(parameters):
+        del parameters
+        return ToolRequirements()
+
+    def validate(self, context):
+        del context
+        return []
+
+    def run(self, context):
+        del context
+        return ToolRunResult.failure(
+            "failed",
+            private_data={"candidate_id": "must-not-be-readable"},
+        )
 
 
 class ReturningTool:
@@ -405,10 +471,12 @@ def test_runner_private_result_lookup_is_owner_scoped_and_never_public(
     owner = _profile(tmp_path, owner_id="gui:owner", host_surface="desktop_gui")
     other_owner = _profile(tmp_path, owner_id="gui:other", host_surface="desktop_gui")
     other_host = _profile(tmp_path, owner_id="gui:owner", host_surface="sdk")
+    events: list[tuple[str, dict]] = []
     service = ToolRunnerService(
         registry=_registry(OutputTool()),
         history_path=history_path,
         max_workers=1,
+        event_callback=lambda topic, payload: events.append((topic, payload)),
     )
 
     queued = service.run(
@@ -431,6 +499,26 @@ def test_runner_private_result_lookup_is_owner_scoped_and_never_public(
     assert private.run_id == queued["run_id"]
     assert private.tool_id == "output"
     assert private.output_paths == (output_path,)
+    assert private.structured_data["artifacts"]["count"] == 1
+    assert private.private_data["candidates"][0]["private_url"] == (
+        "https://example.com/watch?token=private-result-sentinel"
+    )
+    private_again = service.lookup_private_result(
+        queued["run_id"],
+        execution_profile=owner,
+    )
+    assert private_again is not None
+    assert private_again.structured_data is not private.structured_data
+    assert private_again.private_data is not private.private_data
+    with pytest.raises(TypeError):
+        private.structured_data["new"] = "mutation"
+    with pytest.raises(TypeError):
+        private.structured_data["artifacts"]["count"] = 2
+    with pytest.raises(TypeError):
+        private.private_data["new"] = "mutation"
+    with pytest.raises(TypeError):
+        private.private_data["candidates"][0]["private_url"] = "mutation"
+    assert "private-result-sentinel" not in repr(private)
     try:
         private.run_id = "mutated"
     except AttributeError:
@@ -450,21 +538,121 @@ def test_runner_private_result_lookup_is_owner_scoped_and_never_public(
         execution_profile=owner,
     ) is None
 
+    candidate_ids = ("a" * 64, "b" * 64)
+    assert service._claim_private_candidates(
+        queued["run_id"],
+        candidate_ids,
+        execution_profile=owner,
+    )
+    assert not service._claim_private_candidates(
+        queued["run_id"],
+        (candidate_ids[0],),
+        execution_profile=owner,
+    )
+    assert not service._release_private_candidates(
+        queued["run_id"],
+        candidate_ids,
+        execution_profile=other_owner,
+    )
+    assert service._release_private_candidates(
+        queued["run_id"],
+        candidate_ids,
+        execution_profile=owner,
+    )
+    assert service._claim_private_candidates(
+        queued["run_id"],
+        candidate_ids,
+        execution_profile=owner,
+    )
+
     public_run = service.get_run(queued["run_id"], execution_profile=owner)
     public_history = service.history(execution_profile=owner)
     public_text = json.dumps(
         {"run": public_run, "history": public_history},
         ensure_ascii=False,
     )
+    internal_text = json.dumps(
+        service._records[queued["run_id"]].to_dict(),
+        ensure_ascii=False,
+    )
     assert str(output_path) not in public_text
     assert "request-sentinel" not in public_text
     assert "private-result-sentinel" not in public_text
+    assert "private-result-sentinel" not in internal_text
+    assert all(payload == {} for _topic, payload in events)
 
     assert service.shutdown(wait=True)
     persisted_text = history_path.read_text(encoding="utf-8")
     assert str(output_path) not in persisted_text
     assert "request-sentinel" not in persisted_text
     assert "private-result-sentinel" not in persisted_text
+
+    reloaded = ToolRunnerService(
+        registry=_registry(OutputTool()),
+        history_path=history_path,
+        max_workers=1,
+    )
+    assert reloaded.lookup_private_result(
+        queued["run_id"],
+        execution_profile=owner,
+    ) is None
+    assert reloaded.shutdown(wait=True)
+
+
+def test_runner_private_structured_data_is_unavailable_before_terminal(
+    tmp_path: Path,
+) -> None:
+    tool = PrivateBlockingTool()
+    profile = _profile(tmp_path, owner_id="gui:terminal", host_surface="desktop_gui")
+    service = ToolRunnerService(
+        registry=_registry(tool),
+        history_path=tmp_path / "private-terminal-history.json",
+        max_workers=1,
+    )
+    queued = service.run("private-blocking", {}, execution_profile=profile)
+    assert tool.started.wait(1.0)
+    try:
+        assert service.lookup_private_result(
+            queued["run_id"], execution_profile=profile
+        ) is None
+    finally:
+        tool.release.set()
+    terminal = service.wait_for_run(
+        queued["run_id"], execution_profile=profile, timeout=2.0
+    )
+    private = service.lookup_private_result(
+        queued["run_id"], execution_profile=profile
+    )
+    assert terminal["status"] == "succeeded"
+    assert private is not None
+    assert private.structured_data["candidate_id"] == "terminal-structured"
+    assert private.private_data["candidate_id"] == "terminal-private"
+    assert service.shutdown(wait=True)
+
+
+def test_runner_private_result_is_unavailable_for_failed_terminal_run(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path, owner_id="gui:failed", host_surface="desktop_gui")
+    service = ToolRunnerService(
+        registry=_registry(FailedPrivateTool()),
+        history_path=tmp_path / "failed-private-history.json",
+        max_workers=1,
+    )
+
+    queued = service.run("failed-private", {}, execution_profile=profile)
+    terminal = service.wait_for_run(
+        queued["run_id"], execution_profile=profile, timeout=2.0
+    )
+
+    assert terminal["status"] == "failed"
+    assert (
+        service.lookup_private_result(
+            queued["run_id"], execution_profile=profile
+        )
+        is None
+    )
+    assert service.shutdown(wait=True)
 
 
 def test_runner_rejects_non_exact_execution_profiles_before_owner_state_access(

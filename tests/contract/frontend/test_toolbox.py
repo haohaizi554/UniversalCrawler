@@ -8,6 +8,8 @@ import subprocess
 
 import pytest
 
+from app.ui.pages.toolbox_models import result_lines
+
 
 ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = ROOT / "app" / "web" / "static"
@@ -543,6 +545,40 @@ def test_toolbox_display_batch_wins_and_result_projection_omits_raw_logs() -> No
     assert result["history"][0]["historyId"] == "history-1"
     assert result["history"][0]["title"] == "File verify"
     assert result["openEnabled"] is True
+
+
+def test_gui_and_web_render_the_same_safe_link_parser_projection() -> None:
+    candidate_id = "a" * 64
+    projection = {
+        "id": "run-link-parser",
+        "display_text": "Parsed 1 link",
+        "rows": [
+            {
+                "id": candidate_id,
+                "candidate_id": candidate_id,
+                "label": "generic page · PLATFORM",
+                "value": "https://example.com/[redacted]",
+                "platform": "generic",
+                "resource_kind": "page",
+                "format_hint": "PLATFORM",
+                "expanded": False,
+            }
+        ],
+        "warnings": [],
+    }
+
+    gui_lines = result_lines(projection, str)
+    web_lines = _run_toolbox_contract(
+        f"contract.resultDisplayLines({json.dumps(projection, ensure_ascii=False)})"
+    )
+
+    assert gui_lines == web_lines == [
+        "Parsed 1 link",
+        "generic page · PLATFORM: https://example.com/[redacted]",
+    ]
+    rendered = json.dumps({"gui": gui_lines, "web": web_lines}, ensure_ascii=False)
+    assert "private_url" not in rendered
+    assert "token=" not in rendered
 
 
 def test_toolbox_projection_reducer_preserves_form_across_progress_only_delta() -> None:

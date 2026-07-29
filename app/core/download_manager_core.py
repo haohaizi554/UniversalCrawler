@@ -8,6 +8,7 @@ import threading
 import time
 from collections import deque
 from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 from app.config import cfg, normalize_download_concurrency
 from app.debug_logger import debug_logger
@@ -59,7 +60,6 @@ class PendingDownloadQueue:
             if count:
                 self._condition.notify_all()
         return count
-
     def get(self, timeout: float | None = None) -> tuple[VideoItem, str]:
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._condition:
@@ -99,18 +99,29 @@ class PendingDownloadQueue:
 
     def remove_video_instance(self, video: VideoItem) -> int:
         """只移除与捕获对象相同的排队项，保留复用同一 ID 的新任务。"""
+        return len(self.remove_video_instances((video,)))
+
+    def remove_video_instances(
+        self,
+        videos: Iterable[VideoItem],
+    ) -> list[VideoItem]:
+        """Remove captured queue objects in one scan without touching ID reuses."""
+
+        target_identities = {id(video) for video in videos if video is not None}
+        if not target_identities:
+            return []
         with self._condition:
             retained: deque[tuple[VideoItem, str]] = deque()
-            removed_count = 0
+            removed: list[VideoItem] = []
             while self._items:
                 queued_video, save_dir = self._items.popleft()
-                if queued_video is video:
-                    removed_count += 1
+                if id(queued_video) in target_identities:
+                    removed.append(queued_video)
                     self._track_dequeue(queued_video.id)
                     continue
                 retained.append((queued_video, save_dir))
             self._items = retained
-            return removed_count
+            return removed
 
     def remove_videos(self, video_ids: Iterable[str]) -> list[VideoItem]:
         ids = {str(video_id) for video_id in video_ids if video_id}
@@ -132,6 +143,33 @@ class PendingDownloadQueue:
     def snapshot_video_ids(self) -> set[str]:
         with self._condition:
             return set(self._queued_ids)
+
+
+def _project_url_for_log(value: object) -> str:
+    """Expose only a stable HTTP(S) origin and a fixed private-location marker."""
+
+    try:
+        parts = urlsplit(str(value or "").strip())
+        scheme = parts.scheme.casefold()
+        host = (parts.hostname or "").casefold()
+        if scheme not in {"http", "https"} or not host:
+            return "[redacted]"
+        port = parts.port
+    except (AttributeError, TypeError, UnicodeError, ValueError):
+        return "[redacted]"
+
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority = f"{authority}:{port}"
+    has_private_location = (
+        parts.username is not None
+        or parts.password is not None
+        or parts.path not in {"", "/"}
+        or bool(parts.query)
+        or bool(parts.fragment)
+    )
+    path = "/[redacted]" if has_private_location else "/"
+    return urlunsplit((scheme, authority, path, "", ""))
 
 class DownloadManagerCore:
     """统一管理入队、并发槽位、取消操作及工作线程生命周期。"""
@@ -627,7 +665,11 @@ class DownloadManagerCore:
                     "source",
                 ),
                 details=debug_logger.pick_used(
-                    {"title": video.title, "url": video.url, "content_type": video.meta.get("content_type")},
+                    {
+                        "title": video.title,
+                        "url": _project_url_for_log(video.url),
+                        "content_type": video.meta.get("content_type"),
+                    },
                     "title",
                     "url",
                     "content_type",
@@ -650,7 +692,12 @@ class DownloadManagerCore:
                 "trace_id", "video_id", "source",
             ),
             details=debug_logger.pick_used(
-                {"title": video.title, "save_dir": save_dir, "url": video.url, "content_type": video.meta.get("content_type")},
+                {
+                    "title": video.title,
+                    "save_dir": save_dir,
+                    "url": _project_url_for_log(video.url),
+                    "content_type": video.meta.get("content_type"),
+                },
                 "title", "save_dir", "url", "content_type",
             ),
             trace_id=trace_id,
@@ -703,7 +750,7 @@ class DownloadManagerCore:
                 try:
                     wait_ok = bool(worker.wait(wait_timeout_ms))
                 except RuntimeError:
-                    wait_ok = True
+                    wait_ok = False
                 if wait_ok:
                     stopped_workers.add(identity)
 
@@ -776,7 +823,7 @@ class DownloadManagerCore:
                 try:
                     wait_ok = bool(worker.wait(wait_timeout_ms))
                 except RuntimeError:
-                    wait_ok = True
+                    wait_ok = False
                 if wait_ok:
                     stopped_workers.add(identity)
 
@@ -786,6 +833,115 @@ class DownloadManagerCore:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return self._cancel_wait_timeout(video.id, timeout_ms)
+            threading.Event().wait(min(0.01, remaining))
+
+    def cancel_videos_and_wait(
+        self,
+        videos: Iterable[VideoItem],
+        timeout_ms: int | None = None,
+    ) -> dict[str, str]:
+        """Cancel an exact object batch and prove no captured item can keep running."""
+
+        targets: dict[int, VideoItem] = {}
+        for video in videos:
+            if video is not None:
+                targets.setdefault(id(video), video)
+        if not targets:
+            return {}
+
+        for video in targets.values():
+            video.meta["frontend_status"] = "待下载"
+            video.meta["user_cancel_requested"] = True
+
+        remove_instances = getattr(self.queue, "remove_video_instances", None)
+        if callable(remove_instances):
+            remove_instances(tuple(targets.values()))
+        else:
+            for video in targets.values():
+                self.queue.remove_video_instance(video)
+
+        if timeout_ms is None:
+            timeout_ms = self.WORKER_STOP_TIMEOUT_MS
+        timeout_ms = max(0, int(timeout_ms))
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        tracked_workers: dict[int, Any] = {}
+        stop_requested: set[int] = set()
+        stopped_workers: set[int] = set()
+        dispatching_identities: set[int] = set()
+
+        while True:
+            with self._workers_lock:
+                dispatching_identities = {
+                    id(dispatching_video)
+                    for dispatching_video, _save_dir in list(
+                        getattr(self, "_dispatching_tasks", [])
+                    )
+                    if id(dispatching_video) in targets
+                }
+                for worker in list(self.workers):
+                    worker_video = getattr(worker, "video", None)
+                    if id(worker_video) in targets:
+                        tracked_workers.setdefault(id(worker), worker)
+
+            for identity, worker in tuple(tracked_workers.items()):
+                if identity in stop_requested:
+                    continue
+                stop_requested.add(identity)
+                try:
+                    worker.stop()
+                except (AttributeError, RuntimeError):
+                    pass
+
+            for identity, worker in tuple(tracked_workers.items()):
+                if identity in stopped_workers:
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                wait_timeout_ms = max(1, int(remaining * 1000 + 0.999))
+                try:
+                    wait_ok = bool(worker.wait(wait_timeout_ms))
+                except RuntimeError:
+                    wait_ok = False
+                if wait_ok:
+                    stopped_workers.add(identity)
+
+            if (
+                not dispatching_identities
+                and len(stopped_workers) == len(tracked_workers)
+            ):
+                return {video.id: "cancelled" for video in targets.values()}
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                unresolved_identities = set(dispatching_identities)
+                unresolved_identities.update(
+                    id(getattr(worker, "video", None))
+                    for identity, worker in tracked_workers.items()
+                    if identity not in stopped_workers
+                )
+                unresolved_video_ids = [
+                    video.id
+                    for identity, video in targets.items()
+                    if identity in unresolved_identities
+                ]
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="cancel_video_batch_wait_timeout",
+                    level="WARN",
+                    message="Download batch did not stop before rollback timeout",
+                    status_code="DL_CANCEL_BATCH_WAIT_TIMEOUT",
+                    details={
+                        "video_ids": unresolved_video_ids,
+                        "timeout_ms": timeout_ms,
+                    },
+                )
+                return {
+                    video.id: (
+                        "timeout" if identity in unresolved_identities else "cancelled"
+                    )
+                    for identity, video in targets.items()
+                }
             threading.Event().wait(min(0.01, remaining))
 
     @staticmethod

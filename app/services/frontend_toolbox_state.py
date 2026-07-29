@@ -8,7 +8,9 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+from app.core.tools.builtin.link_parser import LINK_FORMAT_HINTS, normalize_link_url
 from app.core.tools.contracts import ToolContext
 from app.debug_logger import debug_logger
 from app.services.frontend_action_result import FrontendActionResult
@@ -22,6 +24,12 @@ from shared.execution_profile import (
 
 class FrontendToolboxStateMixin:
     """Keep toolbox behavior independent from the broader frontend state service."""
+
+    _TOOL_RESULT_MAX_ROWS = 64
+    _TOOL_RESULT_MAX_STRING_LENGTH = 256
+    _TOOL_RESULT_MAX_TOTAL_TEXT = 16_384
+    _TOOL_RESULT_MAX_WARNINGS = 16
+    _TOOL_RESULT_TRUNCATION_WARNING = "Tool result display was truncated."
 
     _TOOL_ACTIONS = frozenset(
         {
@@ -301,19 +309,210 @@ class FrontendToolboxStateMixin:
             "display_text": message,
         }
 
-    @staticmethod
-    def _tool_result_projection(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _tool_result_projection(
+        self,
+        record: Mapping[str, Any],
+        *,
+        execution_profile: ExecutionProfile,
+    ) -> dict[str, Any] | None:
         result = record.get("result")
         if not isinstance(result, Mapping):
             return None
-        run_id = str(record.get("run_id") or "")
-        return {
+
+        run_id, run_id_truncated = self._bounded_tool_result_text(
+            record.get("run_id")
+        )
+        display_text, display_truncated = self._bounded_tool_result_text(
+            result.get("message") or record.get("message")
+        )
+        warnings, warnings_truncated = self._bounded_tool_result_warnings(
+            result.get("warnings")
+        )
+        projection = {
             "id": run_id,
             "result_id": run_id,
-            "display_text": str(result.get("message") or record.get("message") or ""),
+            "display_text": display_text,
             "rows": [],
-            "warnings": list(result.get("warnings") or ()),
+            "warnings": warnings,
         }
+        truncated = run_id_truncated or display_truncated or warnings_truncated
+        remaining_budget = (
+            self._TOOL_RESULT_MAX_TOTAL_TEXT
+            - len(self._TOOL_RESULT_TRUNCATION_WARNING)
+            - sum(len(value) for value in (run_id, run_id, display_text, *warnings))
+        )
+
+        if (
+            execution_profile.allow_tool_execution
+            and str(record.get("status") or "").strip().lower() == "succeeded"
+            and str(record.get("tool_id") or "").strip() == "link_parser"
+            and run_id
+        ):
+            try:
+                private_result = self.tool_runner_service.lookup_private_result(
+                    run_id,
+                    execution_profile=execution_profile,
+                )
+            except Exception as exc:
+                self._log_tool_result_exception("project_tool_result_rows", exc)
+                private_result = None
+            if private_result is not None and private_result.tool_id == "link_parser":
+                rows, rows_truncated = self._project_link_parser_rows(
+                    private_result.structured_data,
+                    text_budget=max(0, remaining_budget),
+                )
+                projection["rows"] = rows
+                truncated = truncated or rows_truncated
+
+        if truncated:
+            projection["warnings"] = [
+                warning
+                for warning in projection["warnings"]
+                if warning != self._TOOL_RESULT_TRUNCATION_WARNING
+            ]
+            projection["warnings"].append(self._TOOL_RESULT_TRUNCATION_WARNING)
+        return projection
+
+    def _project_link_parser_rows(
+        self,
+        structured_data: Mapping[str, Any],
+        *,
+        text_budget: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        links = (
+            structured_data.get("links")
+            if isinstance(structured_data, Mapping)
+            else None
+        )
+        if not isinstance(links, Sequence) or isinstance(
+            links, (str, bytes, bytearray)
+        ):
+            return [], False
+
+        rows: list[dict[str, Any]] = []
+        remaining_budget = max(0, int(text_budget))
+        truncated = False
+        for index, item in enumerate(links):
+            if index >= self._TOOL_RESULT_MAX_ROWS:
+                truncated = True
+                break
+            row, row_truncated = self._project_link_parser_row(item)
+            truncated = truncated or row_truncated
+            if row is None:
+                continue
+            row_text_size = sum(
+                len(value) for value in row.values() if isinstance(value, str)
+            )
+            if row_text_size > remaining_budget:
+                truncated = True
+                break
+            rows.append(row)
+            remaining_budget -= row_text_size
+        return rows, truncated
+
+    def _project_link_parser_row(
+        self,
+        item: Any,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        if not isinstance(item, Mapping):
+            return None, False
+        candidate_id = item.get("candidate_id")
+        display_url = item.get("display_url")
+        platform = item.get("platform")
+        resource_kind = item.get("resource_kind")
+        format_hint = item.get("format_hint")
+        expanded = item.get("expanded")
+        if (
+            not self._is_safe_candidate_id(candidate_id)
+            or not self._is_safe_display_url(display_url)
+            or not self._is_safe_projection_text(platform)
+            or not self._is_safe_projection_text(resource_kind)
+            or not isinstance(format_hint, str)
+            or format_hint not in LINK_FORMAT_HINTS
+            or type(expanded) is not bool
+        ):
+            return None, False
+
+        bounded_platform, platform_truncated = self._bounded_tool_result_text(platform)
+        bounded_kind, kind_truncated = self._bounded_tool_result_text(resource_kind)
+        bounded_format, format_truncated = self._bounded_tool_result_text(format_hint)
+        label, label_truncated = self._bounded_tool_result_text(
+            f"{bounded_platform} {bounded_kind} · {bounded_format}"
+        )
+        return (
+            {
+                "id": candidate_id,
+                "candidate_id": candidate_id,
+                "label": label,
+                "value": display_url,
+                "platform": bounded_platform,
+                "resource_kind": bounded_kind,
+                "format_hint": bounded_format,
+                "expanded": expanded,
+            },
+            (
+                platform_truncated
+                or kind_truncated
+                or format_truncated
+                or label_truncated
+            ),
+        )
+
+    @classmethod
+    def _bounded_tool_result_text(cls, value: Any) -> tuple[str, bool]:
+        text = str(value or "")
+        if len(text) <= cls._TOOL_RESULT_MAX_STRING_LENGTH:
+            return text, False
+        return text[: cls._TOOL_RESULT_MAX_STRING_LENGTH - 3] + "...", True
+
+    @classmethod
+    def _bounded_tool_result_warnings(cls, value: Any) -> tuple[list[str], bool]:
+        if not isinstance(value, (list, tuple)):
+            return [], False
+        warnings: list[str] = []
+        truncated = len(value) > cls._TOOL_RESULT_MAX_WARNINGS
+        for item in value[: cls._TOOL_RESULT_MAX_WARNINGS]:
+            if item is None or type(item) in {str, int, float, bool}:
+                warning, was_truncated = cls._bounded_tool_result_text(item)
+                warnings.append(warning)
+                truncated = truncated or was_truncated
+        return warnings, truncated
+
+    @staticmethod
+    def _is_safe_candidate_id(value: Any) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    @classmethod
+    def _is_safe_projection_text(cls, value: Any) -> bool:
+        return (
+            isinstance(value, str)
+            and bool(value)
+            and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+        )
+
+    @classmethod
+    def _is_safe_display_url(cls, value: Any) -> bool:
+        if (
+            not cls._is_safe_projection_text(value)
+            or len(value) > cls._TOOL_RESULT_MAX_STRING_LENGTH
+            or any(character.isspace() for character in value)
+        ):
+            return False
+        try:
+            parts = urlsplit(value)
+            canonical_url = normalize_link_url(value)
+        except (TypeError, ValueError):
+            return False
+        return (
+            canonical_url == value
+            and not parts.query
+            and not parts.fragment
+            and parts.path in {"/", "/[redacted]"}
+        )
 
     def _tool_result_has_private_output(
         self,
@@ -382,7 +581,10 @@ class FrontendToolboxStateMixin:
                 "message": "参数可用" if valid else "；".join(errors) or "参数无效",
             }
             state, status_text = ("ready", "准备就绪") if valid else ("error", "参数无效")
-        result = self._tool_result_projection(record)
+        result = self._tool_result_projection(
+            record,
+            execution_profile=profile,
+        )
         has_private_output = bool(result) and self._tool_result_has_private_output(
             record,
             execution_profile=profile,

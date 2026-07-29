@@ -118,6 +118,45 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertEqual(image.progress, 0)
         self.assertTrue(image.meta["skipped_by_video_only"])
 
+    def test_queue_log_redacts_private_url_components(self):
+        video = VideoItem(
+            url="https://user:password@example.com/private/share/path?token=secret#fragment",
+            title="private candidate",
+            source="generic",
+        )
+        video.meta["content_type"] = "video"
+
+        with patch("app.core.download_manager_core.debug_logger.log") as log:
+            DownloadManagerCore._log_queue_task(video, "downloads")
+
+        details = log.call_args.kwargs["details"]
+        self.assertEqual(details["url"], "https://example.com/[redacted]")
+        serialized = repr(log.call_args.kwargs)
+        self.assertNotIn("password", serialized)
+        self.assertNotIn("private/share/path", serialized)
+        self.assertNotIn("token=secret", serialized)
+        self.assertNotIn("fragment", serialized)
+
+    def test_video_only_skip_log_redacts_private_url_components(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.video_only = True
+        image = VideoItem(
+            url="https://example.com/private/cover.jpg?signature=secret",
+            title="private cover",
+            source="generic",
+        )
+        image.meta["content_type"] = "image/jpeg"
+
+        with patch("app.core.download_manager_core.debug_logger.log") as log:
+            skipped = manager._log_and_skip_video_only(image)
+
+        self.assertTrue(skipped)
+        details = log.call_args.kwargs["details"]
+        self.assertEqual(details["url"], "https://example.com/[redacted]")
+        serialized = repr(log.call_args.kwargs)
+        self.assertNotIn("private/cover.jpg", serialized)
+        self.assertNotIn("signature=secret", serialized)
+
     def test_startup_sweep_removes_non_hls_orphan_download_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "app.core.download_manager_core.cfg.get",
@@ -540,6 +579,156 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertFalse(replacement.meta.get("user_cancel_requested", False))
         self.assertIs(manager.queue.get_nowait()[0], replacement)
         self.assertTrue(manager.queue.empty())
+
+    def test_cancel_videos_and_wait_confirms_exact_batch_with_one_deadline(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        queued = VideoItem(url="https://example.com/q.mp4", title="queued", source="douyin")
+        running = VideoItem(url="https://example.com/r.mp4", title="running", source="douyin")
+        keep = VideoItem(url="https://example.com/k.mp4", title="keep", source="douyin")
+        running_worker = _FakeWorker(running, "downloads")
+        manager.workers = [running_worker]
+        manager._dispatching_tasks = []
+        manager.queue.put((queued, "downloads"))
+        manager.queue.put((keep, "downloads"))
+
+        result = manager.cancel_videos_and_wait((queued, running), timeout_ms=50)
+
+        self.assertEqual(result, {queued.id: "cancelled", running.id: "cancelled"})
+        self.assertTrue(queued.meta["user_cancel_requested"])
+        self.assertTrue(running.meta["user_cancel_requested"])
+        running_worker.stop.assert_called_once()
+        running_worker.wait.assert_called_once()
+        self.assertIs(manager.queue.get_nowait()[0], keep)
+        self.assertTrue(manager.queue.empty())
+
+    def test_cancel_videos_and_wait_reports_only_unconfirmed_exact_workers(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        stopped = VideoItem(
+            url="https://example.com/stopped.mp4",
+            title="stopped",
+            source="douyin",
+        )
+        unresolved = VideoItem(
+            url="https://example.com/unresolved.mp4",
+            title="unresolved",
+            source="douyin",
+        )
+        stopped_worker = _FakeWorker(stopped, "downloads")
+        unresolved_worker = _FakeWorker(unresolved, "downloads")
+        unresolved_worker.wait.return_value = False
+        manager.workers = [stopped_worker, unresolved_worker]
+        manager._dispatching_tasks = []
+
+        result = manager.cancel_videos_and_wait((stopped, unresolved), timeout_ms=50)
+
+        self.assertEqual(
+            result,
+            {stopped.id: "cancelled", unresolved.id: "timeout"},
+        )
+        stopped_worker.stop.assert_called_once()
+        unresolved_worker.stop.assert_called_once()
+        stopped_worker.wait.assert_called_once()
+        unresolved_worker.wait.assert_called()
+
+    def test_cancel_videos_and_wait_treats_wait_errors_as_unconfirmed(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        manager._dispatching_tasks = []
+        captured = VideoItem(
+            url="https://example.com/wait-error.mp4",
+            title="wait-error",
+            source="douyin",
+        )
+        worker = _FakeWorker(captured, "downloads")
+        worker.wait.side_effect = RuntimeError("worker wait unavailable")
+        manager.workers = [worker]
+
+        result = manager.cancel_videos_and_wait((captured,), timeout_ms=50)
+
+        self.assertEqual(result, {captured.id: "timeout"})
+        worker.stop.assert_called_once()
+        worker.wait.assert_called()
+
+    def test_cancel_videos_and_wait_preserves_same_id_replacement_instances(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        captured = VideoItem(
+            url="https://example.com/captured.mp4",
+            title="captured",
+            source="douyin",
+        )
+        replacement = VideoItem(
+            url="https://example.com/replacement.mp4",
+            title="replacement",
+            source="douyin",
+        )
+        replacement.id = captured.id
+        replacement_worker = _FakeWorker(replacement, "downloads")
+        manager.workers = [replacement_worker]
+        manager._dispatching_tasks = [(replacement, "downloads")]
+        manager.queue.put((captured, "downloads"))
+        manager.queue.put((replacement, "downloads"))
+
+        result = manager.cancel_videos_and_wait((captured,), timeout_ms=50)
+
+        self.assertEqual(result, {captured.id: "cancelled"})
+        replacement_worker.stop.assert_not_called()
+        replacement_worker.wait.assert_not_called()
+        self.assertFalse(replacement.meta.get("user_cancel_requested", False))
+        self.assertIs(manager.queue.get_nowait()[0], replacement)
+        self.assertTrue(manager.queue.empty())
+
+    def test_cancel_videos_and_wait_covers_queue_to_dispatch_handoff_window(self):
+        popped = threading.Event()
+        resume_dispatch = threading.Event()
+
+        class HandoffQueue(PendingDownloadQueue):
+            def get(self, *args, **kwargs):
+                item = super().get(*args, **kwargs)
+                popped.set()
+                resume_dispatch.wait(timeout=2)
+                return item
+
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = HandoffQueue()
+        manager._workers_lock = threading.RLock()
+        manager._start_stop_lock = threading.RLock()
+        manager._startup_maintenance_done = threading.Event()
+        manager._startup_maintenance_done.set()
+        manager._dispatching_tasks = []
+        manager.workers = []
+        manager.is_running = True
+        manager._wait_for_dispatch_slot = Mock(side_effect=[True, False])
+        manager._release_dispatch_slot = Mock()
+        manager._has_capacity_for = Mock(return_value=True)
+        manager._register_download_directory = Mock()
+        manager._create_worker = Mock()
+
+        captured = VideoItem(
+            url="https://example.com/handoff.mp4",
+            title="handoff",
+            source="douyin",
+        )
+        manager.queue.put((captured, "downloads"))
+        dispatcher = threading.Thread(target=manager._dispatch_loop)
+        dispatcher.start()
+        self.assertTrue(popped.wait(timeout=1))
+
+        result = manager.cancel_videos_and_wait((captured,), timeout_ms=50)
+        resume_dispatch.set()
+        dispatcher.join(timeout=2)
+
+        self.assertEqual(result, {captured.id: "cancelled"})
+        self.assertFalse(dispatcher.is_alive())
+        self.assertTrue(captured.meta["user_cancel_requested"])
+        manager._create_worker.assert_not_called()
+        self.assertEqual(manager._dispatching_tasks, [])
 
     def test_pending_work_counts_includes_dequeued_dispatching_tasks(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)

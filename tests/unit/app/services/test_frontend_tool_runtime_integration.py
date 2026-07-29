@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from contextlib import contextmanager
@@ -157,6 +158,13 @@ class _FakeToolRunner:
         for record in self.records:
             if record.get("run_id") != run_id:
                 continue
+            if record.get("status") != "succeeded":
+                return None
+            if record.get("_runtime_private_result", True) is not True:
+                return None
+            expected_owner = str(record.get("_private_owner_id") or "")
+            if expected_owner and execution_profile.owner_id != expected_owner:
+                return None
             result = record.get("result")
             if not isinstance(result, dict):
                 return None
@@ -169,6 +177,8 @@ class _FakeToolRunner:
                 run_id=run_id,
                 tool_id=str(record.get("tool_id") or ""),
                 output_paths=output_paths,
+                structured_data=record.get("_structured_data") or {},
+                private_data=record.get("_private_data") or {},
             )
         return None
 
@@ -198,15 +208,20 @@ def _record(
     status: str = "succeeded",
     source: Path | None = None,
     output_path: Path | None = None,
+    tool_id: str = "file_verify",
+    structured_data: dict[str, Any] | None = None,
+    private_data: dict[str, Any] | None = None,
+    private_owner_id: str = "",
+    runtime_private_result: bool = True,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "message": "校验完成",
         "data": {"checked": 1},
         "output_paths": [str(output_path)] if output_path is not None else [],
     }
-    return {
+    record = {
         "run_id": run_id,
-        "tool_id": "file_verify",
+        "tool_id": tool_id,
         "status": status,
         "message": "校验完成" if status == "succeeded" else "运行中",
         "parameters": {"source": str(source)} if source is not None else {},
@@ -214,6 +229,11 @@ def _record(
         "finished_at": 1_700_000_000 if status == "succeeded" else None,
         "result": result if status == "succeeded" else None,
     }
+    record["_structured_data"] = deepcopy(structured_data or result["data"])
+    record["_private_data"] = deepcopy(private_data or {})
+    record["_private_owner_id"] = private_owner_id
+    record["_runtime_private_result"] = runtime_private_result
+    return record
 
 
 @contextmanager
@@ -290,6 +310,245 @@ def test_dynamic_toolbox_snapshot_comes_from_injected_runner(tmp_path: Path) -> 
     assert projection["actions"]["tool_open_result"] is False
     assert runner.calls.count(("list",)) == 1
     assert runner.calls.count(("history", profile, None, 20)) == 1
+
+
+def test_link_parser_projection_uses_only_owner_scoped_safe_structured_rows(
+    tmp_path: Path,
+) -> None:
+    profile = _desktop_profile(tmp_path, owner_id="desktop:link-owner")
+    candidate_id = hashlib.sha256(b"candidate-one").hexdigest()
+    private_url = "https://example.com/private/path?token=projection-secret"
+    runner = _FakeToolRunner(
+        records=[
+            _record(
+                tool_id="link_parser",
+                private_owner_id=profile.owner_id,
+                structured_data={
+                    "links": [
+                        {
+                            "candidate_id": candidate_id,
+                            "display_url": "https://example.com/[redacted]",
+                            "platform": "generic",
+                            "resource_kind": "page",
+                            "format_hint": "PLATFORM",
+                            "expanded": False,
+                            "ignored": "must-not-be-projected",
+                        }
+                    ]
+                },
+                private_data={
+                    "candidates": [
+                        {"candidate_id": candidate_id, "private_url": private_url}
+                    ]
+                },
+            )
+        ]
+    )
+
+    with _service(tmp_path, runner, execution_profile=profile) as service:
+        snapshot = service.get_snapshot(
+            sections=frozenset({"toolbox_display_projection"})
+        )
+
+    result = snapshot["toolbox_display_projection"]["result"]
+    assert result["rows"] == [
+        {
+            "id": candidate_id,
+            "candidate_id": candidate_id,
+            "label": "generic page · PLATFORM",
+            "value": "https://example.com/[redacted]",
+            "platform": "generic",
+            "resource_kind": "page",
+            "format_hint": "PLATFORM",
+            "expanded": False,
+        }
+    ]
+    rendered = repr(snapshot)
+    assert "projection-secret" not in rendered
+    assert "private/path" not in rendered
+    assert "private_data" not in rendered
+    assert "must-not-be-projected" not in rendered
+    assert (
+        "lookup_private_result",
+        profile,
+        "run-finished",
+    ) in runner.calls
+
+
+@pytest.mark.parametrize(
+    "display_url",
+    (
+        "https://example.com/[redacted]",
+        "https://xn--r8jz45g.xn--zckzah/[redacted]",
+        "https://[2001:db8::1]/[redacted]",
+    ),
+)
+def test_link_parser_projection_accepts_only_well_formed_display_authorities(
+    display_url: str,
+) -> None:
+    assert FrontendStateService._is_safe_display_url(display_url)
+
+
+@pytest.mark.parametrize(
+    "display_url",
+    (
+        "https://example..com/[redacted]",
+        "https://-example.com/[redacted]",
+        "https://[2001:db8::1/[redacted]",
+        "https://example.com:/[redacted]",
+        "https://[2001:db8::1]:/[redacted]",
+        "https://exa\u200bmple.com/[redacted]",
+        "https://exa\u00admple.com/[redacted]",
+        "https://xn--a.com/[redacted]",
+        "https://例え.テスト/[redacted]",
+        "https://faß.de/[redacted]",
+        "https://example.com:443/[redacted]",
+        "http://[fe80::1%25eth0]/[redacted]",
+    ),
+)
+def test_link_parser_projection_rejects_malformed_display_authorities(
+    display_url: str,
+) -> None:
+    assert not FrontendStateService._is_safe_display_url(display_url)
+
+
+@pytest.mark.parametrize("format_hint", ([], {}, 1, "UNKNOWN"))
+def test_link_parser_projection_rejects_untrusted_format_hints_without_raising(
+    tmp_path: Path,
+    format_hint: Any,
+) -> None:
+    profile = _desktop_profile(tmp_path, owner_id="desktop:format-hint")
+    candidate_id = hashlib.sha256(b"candidate-format-hint").hexdigest()
+    runner = _FakeToolRunner(
+        records=[
+            _record(
+                tool_id="link_parser",
+                private_owner_id=profile.owner_id,
+                structured_data={
+                    "links": [
+                        {
+                            "candidate_id": candidate_id,
+                            "display_url": "https://example.com/[redacted]",
+                            "platform": "generic",
+                            "resource_kind": "page",
+                            "format_hint": format_hint,
+                            "expanded": False,
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+
+    with _service(tmp_path, runner, execution_profile=profile) as service:
+        projection = service.get_snapshot(
+            sections=frozenset({"toolbox_display_projection"})
+        )["toolbox_display_projection"]
+
+    assert projection["result"]["rows"] == []
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "status", "owner_id", "runtime_private_result", "display_url"),
+    (
+        ("file_verify", "succeeded", "desktop:projection", True, "https://example.com/[redacted]"),
+        ("link_parser", "failed", "desktop:projection", True, "https://example.com/[redacted]"),
+        ("link_parser", "succeeded", "desktop:other", True, "https://example.com/[redacted]"),
+        ("link_parser", "succeeded", "desktop:projection", False, "https://example.com/[redacted]"),
+        ("link_parser", "succeeded", "desktop:projection", True, "https://example.com/private?token=unsafe"),
+        ("link_parser", "succeeded", "desktop:projection", True, "https://exa mple.com/[redacted]"),
+        ("link_parser", "succeeded", "desktop:projection", True, "https://example.com /[redacted]"),
+    ),
+)
+def test_tool_projection_rejects_unavailable_or_non_whitelisted_structured_rows(
+    tmp_path: Path,
+    tool_id: str,
+    status: str,
+    owner_id: str,
+    runtime_private_result: bool,
+    display_url: str,
+) -> None:
+    profile = _desktop_profile(tmp_path, owner_id="desktop:projection")
+    candidate_id = hashlib.sha256(b"candidate-two").hexdigest()
+    record = _record(
+        tool_id=tool_id,
+        status=status,
+        private_owner_id=owner_id,
+        runtime_private_result=runtime_private_result,
+        structured_data={
+            "links": [
+                {
+                    "candidate_id": candidate_id,
+                    "display_url": display_url,
+                    "platform": "generic",
+                    "resource_kind": "page",
+                    "format_hint": "PLATFORM",
+                    "expanded": False,
+                }
+            ]
+        },
+    )
+    if status != "succeeded":
+        record["result"] = {
+            "status": "failed",
+            "message": "safe failure fallback",
+            "warnings": ["safe warning"],
+        }
+    runner = _FakeToolRunner(records=[record])
+
+    with _service(tmp_path, runner, execution_profile=profile) as service:
+        projection = service.get_snapshot(
+            sections=frozenset({"toolbox_display_projection"})
+        )["toolbox_display_projection"]
+
+    assert projection["result"]["rows"] == []
+    if status != "succeeded":
+        assert projection["result"]["display_text"] == "safe failure fallback"
+        assert projection["result"]["warnings"] == ["safe warning"]
+    assert "token=unsafe" not in repr(projection)
+
+
+def test_link_parser_projection_is_bounded_and_deterministic(tmp_path: Path) -> None:
+    profile = _desktop_profile(tmp_path, owner_id="desktop:bounded")
+    links = [
+        {
+            "candidate_id": hashlib.sha256(f"candidate-{index}".encode()).hexdigest(),
+            "display_url": "https://example.com/[redacted]",
+            "platform": "platform-" + ("x" * 400),
+            "resource_kind": "page",
+            "format_hint": "PLATFORM",
+            "expanded": bool(index % 2),
+        }
+        for index in range(200)
+    ]
+    record = _record(
+        tool_id="link_parser",
+        private_owner_id=profile.owner_id,
+        structured_data={"links": links},
+    )
+    record["result"]["message"] = "m" * 600
+    record["result"]["warnings"] = ["w" * 600]
+    runner = _FakeToolRunner(records=[record])
+
+    with _service(tmp_path, runner, execution_profile=profile) as service:
+        first = service.get_snapshot(
+            sections=frozenset({"toolbox_display_projection"})
+        )["toolbox_display_projection"]["result"]
+        second = service.get_snapshot(
+            sections=frozenset({"toolbox_display_projection"})
+        )["toolbox_display_projection"]["result"]
+
+    assert first == second
+    assert 0 < len(first["rows"]) < len(links)
+    assert len(first["display_text"]) <= 256
+    assert all(
+        len(value) <= 256
+        for row in first["rows"]
+        for value in row.values()
+        if isinstance(value, str)
+    )
+    assert first["warnings"][-1] == "Tool result display was truncated."
+    assert first["warnings"].count("Tool result display was truncated.") == 1
 
 
 def test_tool_validate_forwards_parameters_and_exact_host_owned_profile(tmp_path: Path) -> None:
