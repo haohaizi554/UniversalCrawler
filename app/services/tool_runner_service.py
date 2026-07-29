@@ -1044,7 +1044,10 @@ class ToolRunnerService:
             thread = threading.Thread(
                 target=self._persist_shutdown_snapshot,
                 name="tool-history-shutdown",
-                daemon=True,
+                # A timed-out owner may return and let the interpreter exit. Keep
+                # already-accepted terminal history alive until this final snapshot
+                # is durable instead of abandoning it with a daemon worker.
+                daemon=False,
             )
             self._shutdown_persist_thread = thread
             thread.start()

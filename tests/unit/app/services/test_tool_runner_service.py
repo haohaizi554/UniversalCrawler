@@ -826,6 +826,10 @@ def test_runner_shutdown_timeout_bounds_slow_history_write(tmp_path: Path) -> No
         assert service.shutdown(wait=True, timeout=0.01) is False
         assert persist_entered.wait(0.5)
         assert time.monotonic() - started_at < 0.5
+        persist_guard = service._shutdown_persist_thread
+        assert persist_guard is not None
+        assert persist_guard.is_alive()
+        assert persist_guard.daemon is False
     finally:
         release_persist.set()
     assert service.shutdown(wait=True, timeout=1.0) is True
