@@ -1,12 +1,17 @@
 """本地媒体库的扫描、重命名与受约束删除逻辑。"""
 
+import ctypes
+import errno
 import heapq
 import os
 import re
 import shutil
+import stat
+import sys
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -16,6 +21,12 @@ from app.models import VideoItem
 from app.utils import sanitize_filename
 
 T = TypeVar("T")
+
+
+class _RenameOutcome(Enum):
+    COMPLETED = auto()
+    NOT_COMPLETED = auto()
+    UNKNOWN = auto()
 
 @dataclass
 class ScanResult:
@@ -506,26 +517,218 @@ class MediaLibraryService:
             )
         return removed
 
-    def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
-        
-        if not os.path.exists(video.local_path):
-            raise FileOperationError("文件不存在，无法重命名")
+    @staticmethod
+    def _actual_directory_entry_name(path: str) -> str | None:
+        absolute = os.path.abspath(os.path.normpath(path))
+        parent = os.path.dirname(absolute) or os.curdir
+        requested_name = os.path.basename(absolute)
+        normalized_matches: list[str] = []
+        try:
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    if entry.name == requested_name:
+                        return entry.name
+                    if entry.name.casefold() == requested_name.casefold():
+                        normalized_matches.append(entry.name)
+        except (OSError, TypeError, ValueError):
+            return None
+        return normalized_matches[0] if len(normalized_matches) == 1 else None
 
+    @classmethod
+    def _rename_target_state(cls, source_path: str, target_path: str) -> str:
+        source_lexical = os.path.abspath(os.path.normpath(source_path))
+        target_lexical = os.path.abspath(os.path.normpath(target_path))
+        if source_lexical == target_lexical:
+            return "same"
+        try:
+            target_exists = os.path.lexists(target_path)
+        except (OSError, TypeError, ValueError):
+            return "conflict"
+        if not target_exists:
+            return "available"
+        try:
+            if not os.path.samefile(source_path, target_path):
+                return "conflict"
+            if stat.S_ISLNK(os.lstat(source_path).st_mode) or stat.S_ISLNK(
+                os.lstat(target_path).st_mode
+            ):
+                return "conflict"
+            source_parent = os.path.dirname(source_lexical) or os.curdir
+            target_parent = os.path.dirname(target_lexical) or os.curdir
+            if not os.path.samefile(source_parent, target_parent):
+                return "conflict"
+        except (OSError, TypeError, ValueError):
+            return "conflict"
+        source_entry = cls._actual_directory_entry_name(source_path)
+        target_entry = cls._actual_directory_entry_name(target_path)
+        if source_entry is None or source_entry != target_entry:
+            return "conflict"
+        if os.path.basename(source_lexical) != os.path.basename(target_lexical):
+            return "case_alias"
+        return "same"
+
+    @staticmethod
+    def _regular_rename_source_stat(
+        source_path: str,
+        expected: os.stat_result | None = None,
+    ) -> os.stat_result:
+        try:
+            current = os.lstat(source_path)
+        except FileNotFoundError as exc:
+            raise FileOperationError("文件不存在，无法重命名") from exc
+        except OSError as exc:
+            raise FileOperationError(str(exc)) from exc
+        if not stat.S_ISREG(current.st_mode):
+            raise FileOperationError("重命名源必须是普通媒体文件，不能是目录或符号链接")
+        if expected is not None and not os.path.samestat(current, expected):
+            raise FileOperationError("重命名源文件在重试期间发生变化")
+        return current
+
+    @staticmethod
+    def _atomic_rename_no_replace(
+        source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        target_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> None:
+        """Use only native atomic rename variants that refuse an existing target."""
+
+        source_path = os.fspath(source_path)
+        target_path = os.fspath(target_path)
+        for path in (source_path, target_path):
+            nul = b"\0" if isinstance(path, bytes) else "\0"
+            if nul in path:
+                raise FileOperationError("重命名路径不能包含 NUL 字节")
+        if os.name == "nt":
+            os.rename(source_path, target_path)
+            return
+        if sys.platform.startswith(("linux", "freebsd")):
+            function_name, flag = "renameat2", 1  # RENAME/AT_RENAME_NOREPLACE
+        elif sys.platform == "darwin":
+            function_name, flag = "renamex_np", 4  # RENAME_EXCL
+        else:
+            raise FileOperationError("当前平台不支持原子无覆盖重命名")
+        try:
+            function = getattr(ctypes.CDLL(None, use_errno=True), function_name)
+        except (AttributeError, OSError) as exc:
+            raise FileOperationError("当前平台不支持原子无覆盖重命名") from exc
+        encoded_source = os.fsencode(source_path)
+        encoded_target = os.fsencode(target_path)
+        function.restype = ctypes.c_int
+        if function_name == "renameat2":
+            function.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            result = function(-100, encoded_source, -100, encoded_target, flag)
+        else:
+            function.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+            result = function(encoded_source, encoded_target, flag)
+        if result == 0:
+            return
+        error_code = ctypes.get_errno()
+        if error_code in (errno.EEXIST, errno.ENOTEMPTY):
+            raise FileExistsError(error_code, os.strerror(error_code), target_path)
+        raise OSError(error_code, os.strerror(error_code), target_path)
+
+    @staticmethod
+    def _rename_outcome_after_error(
+        source_path: str,
+        target_path: str,
+        source_stat: os.stat_result,
+    ) -> _RenameOutcome:
+        def _matches_frozen_regular(candidate: os.stat_result) -> bool:
+            return stat.S_ISREG(candidate.st_mode) and os.path.samestat(
+                candidate, source_stat
+            )
+
+        def _target_is_absent() -> bool:
+            try:
+                os.lstat(target_path)
+            except FileNotFoundError:
+                return True
+            return False
+
+        try:
+            try:
+                first_source = os.lstat(source_path)
+            except FileNotFoundError:
+                if not _matches_frozen_regular(os.lstat(target_path)):
+                    return _RenameOutcome.UNKNOWN
+                try:
+                    os.lstat(source_path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    return _RenameOutcome.UNKNOWN
+                if _matches_frozen_regular(os.lstat(target_path)):
+                    return _RenameOutcome.COMPLETED
+                return _RenameOutcome.UNKNOWN
+            if not _matches_frozen_regular(first_source) or not _target_is_absent():
+                return _RenameOutcome.UNKNOWN
+            second_source = os.lstat(source_path)
+            if not _matches_frozen_regular(second_source) or not _target_is_absent():
+                return _RenameOutcome.UNKNOWN
+            return _RenameOutcome.NOT_COMPLETED
+        except BaseException:
+            return _RenameOutcome.UNKNOWN
+
+    @staticmethod
+    def _unknown_rename_error(primary: OSError | FileOperationError) -> FileOperationError:
+        try:
+            primary.add_note("重命名失败后的状态对账无法确认；保留原始异常")
+        except BaseException:
+            pass
+        if isinstance(primary, FileOperationError):
+            return primary
+        try:
+            message = str(primary)
+        except BaseException:
+            message = "重命名失败后的状态对账无法确认"
+        return FileOperationError(message)
+
+    def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
         old_path = video.local_path
+        source_stat = self._regular_rename_source_stat(old_path)
         ext = os.path.splitext(old_path)[1]
         safe_name = sanitize_filename(new_title) + ext
         new_path = os.path.join(save_dir, safe_name)
 
-        if os.path.exists(new_path) and new_path.lower() != old_path.lower():
-            # Windows 下文件名大小写不敏感，因此需要按 lower() 比较是否真的是同一路径。
+        target_state = self._rename_target_state(old_path, new_path)
+        if target_state == "same":
+            return old_path, new_path
+        if target_state == "conflict":
             raise FileOperationError(f"文件名 '{safe_name}' 已存在")
 
-        def _rename() -> tuple[str, str]:
-            os.rename(old_path, new_path)
+        def _native_rename() -> tuple[str, str]:
+            self._regular_rename_source_stat(old_path, source_stat)
+            current_state = self._rename_target_state(old_path, new_path)
+            if current_state == "same":
+                return old_path, new_path
+            if current_state == "conflict":
+                raise FileOperationError(f"文件名 '{safe_name}' 已存在")
+            # This closes mutations inside preflight. An external actor may still
+            # replace the source after this final probe, as at any successful syscall boundary.
+            self._regular_rename_source_stat(old_path, source_stat)
+            try:
+                self._atomic_rename_no_replace(old_path, new_path)
+            except FileExistsError as exc:
+                raise FileOperationError(f"文件名 '{safe_name}' 已存在") from exc
+            except (OSError, FileOperationError) as exc:
+                outcome = self._rename_outcome_after_error(old_path, new_path, source_stat)
+                if outcome is _RenameOutcome.COMPLETED:
+                    return old_path, new_path
+                if outcome is _RenameOutcome.UNKNOWN:
+                    domain_error = self._unknown_rename_error(exc)
+                    if domain_error is exc:
+                        raise
+                    raise domain_error from exc
+                raise
             return old_path, new_path
 
         result = self._run_file_mutation_with_retry(
-            _rename,
+            _native_rename,
             error_message="重命名文件失败",
             required=True,
         )
