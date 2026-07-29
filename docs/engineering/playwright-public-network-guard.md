@@ -2,7 +2,7 @@
 
 > 本文记录项目中外部 URL 从输入、浏览器访问到 HLS 传输的统一安全边界。凡是由用户输入、站点返回值、重定向或页面脚本决定目标地址的代码，都必须遵守本文约束。
 
-更新日期：2026-07-16
+更新日期：2026-07-29
 
 ## 结论
 
@@ -84,16 +84,18 @@ page = context.new_page()
 
 只调用 `DomainPolicyEngine.require_public_url()` 仍存在检查与使用时机差异：策略校验时域名可以解析到公网地址，`session.get()` 真正连接时再次解析却可能得到 loopback 或私网地址。
 
-`app/core/downloaders/m3u8.py::_curl_cffi_session_response()` 的公网策略路径必须逐跳执行：
+`app/core/downloaders/m3u8.py::_curl_cffi_session_response()` 的公网策略路径现在委托
+`shared/network/pinned_transport.py::PinnedTransport`，并逐跳执行：
 
-1. 调用 `resolve_public_addresses(current_url)`，同时完成 URL 校验并取得本次已验证的地址集合。
-2. 调用 `hls_proxy.curl_resolve_options()` 生成 `CurlOpt.RESOLVE`，保留 URL 的真实端口。
-3. IPv6 地址在 curl resolve 条目中使用方括号，IPv4 与 IPv6 可以同时固定。
-4. 把 resolve 选项临时合并到当前 `Session.curl_options`，执行 `session.get(..., allow_redirects=False)`。
-5. 在 `finally` 中恢复 Session 原有选项，避免本次主机固定污染下一跳或下一次请求。
-6. 手动解析重定向，下一跳重新执行验证和 pinning；跨源跳转继续剥离 Cookie、Authorization、Host 和代理认证头。
+1. 规范化 HTTP(S) URL、hostname、真实端口和 authority；拒绝 userinfo、模糊数字 IP 与歧义端口。
+2. 调用 `resolve_public_addresses(current_url)`，同时完成 URL 校验并取得本次已验证的地址集合。
+3. 正常生产路径只接受传输模块自己创建的精确 `curl_cffi.requests.Session`，并验证其请求合并状态仍是项目声明版本的安全默认值。显式 `session_factory` 若返回任何真实 `Session`（包括子类），必须先关闭再在联网前拒绝；factory 注入只保留给不执行真实网络的测试替身。这样调用方无法把默认 Host/Authorization headers、Cookie、auth、base URL、params、proxy、代理认证、弱化的证书校验、额外 JA3/Akamai/指纹、interface、客户端证书或自定义响应/重试行为带入传输边界。
+4. 每一跳都先调用底层 `Curl.reset()` 清除 URL、`CONNECT_TO` 等单次传输状态，再只设置模块权威的完整 `curl_options` 映射：`CurlOpt.NOSIGNAL=1`、`CurlOpt.FRESH_CONNECT=1`、`CurlOpt.FORBID_REUSE=1`、本跳 `CurlOpt.RESOLVE` 和 `CurlOpt.PROXY=""`。[`curl_easy_reset`](https://curl.se/libcurl/c/curl_easy_reset.html) 明确不会清除存活连接、DNS cache、Cookie 或 share 关联，因此不能把 reset 当成连接隔离；[`CURLOPT_FRESH_CONNECT`](https://curl.se/libcurl/c/CURLOPT_FRESH_CONNECT.html) 强制下一跳新建连接，[`CURLOPT_FORBID_REUSE`](https://curl.se/libcurl/c/CURLOPT_FORBID_REUSE.html) 要求该跳完成后关闭连接。IPv6 地址使用方括号，IPv4 与 IPv6 可以同时固定。setter 前保存独立深快照，setter 后回读并精确复核整张映射；任何多键、少键、替换值或嵌套列表原地变异都必须在 request 前失败关闭。
+5. 关闭 curl 自动重定向并手动解析 `Location`；每一跳重新规范化、解析、验证和 pinning，跨源时剥离 Cookie、Authorization、Host 和代理认证头。POST/PUT 等请求因 301/302/303 改写为 GET 时必须同时清空请求体、四个 [Fetch `request-body header`](https://fetch.spec.whatwg.org/#request-body-header-name)（Content-Encoding、Content-Language、Content-Location、Content-Type）以及 Content-Length、Transfer-Encoding、Trailer、Expect；303 保留 HEAD 方法时也不得把原请求体或这些陈旧声明带到下一跳。
+6. 同源跳可以复用本次私有 Session 的 Cookie 状态，但每跳仍必须新建底层连接；跨源跳关闭旧 Session 并剥离敏感请求头。整次操作结束时无论成功或异常都关闭响应与 Session，固定项不会污染调用方或后续任务。
+7. 超时、响应体和重定向数必须是有限且类型明确的预算；共享传输的单次总超时上限为 86,400 秒，有限但超出上限的值同样拒绝。总 deadline 必须覆盖 resolver、Session 创建、handle reset、option 写入/回读和响应完成，在真正 request 前及响应返回后重新核对，不能拿过期的正 timeout 继续联网。请求头字段名或值含控制字符时，在 DNS 和网络请求前失败关闭。响应体上限对每一跳生效，不能只检查最终 2xx；若 callback 已收集的字节与 `response.content` 同时存在却不一致，必须失败关闭，不能挑较短的一份返回。
 
-当前 `curl_cffi` 版本的 `Session.get()` 不接受请求级 `curl_options`。不能为了代码看起来更局部而传入一个运行时不支持的参数；固定解析必须通过 Session 支持的选项完成。如果 Session 不暴露可安全合并的 `curl_options` 字典，公网策略路径必须失败关闭。
+当前 `curl_cffi` 版本的 `Session.get()` 不接受请求级 `curl_options`。不能为了代码看起来更局部而传入一个运行时不支持的参数；固定解析由共享传输在自有私有 Session 的 `curl_options` 上完成。如果 Session 不暴露可设置并可精确回读的 `curl_options` 字典、默认请求状态发生版本漂移、handle 无法逐跳复位，或 factory 试图注入真实 Session，公网策略路径都必须失败关闭。
 
 禁止退回以下写法：
 
@@ -108,10 +110,16 @@ session.get(url)  # 实际连接会再次解析 DNS，未固定已验证地址
 - 覆盖非默认端口，例如 `8443`。
 - 同时覆盖 IPv4 和 IPv6 格式。
 - 断言没有给 `Session.get()` 传入不兼容的请求级 `curl_options`。
-- 成功、异常和重定向后都恢复原 Session 选项。
+- 成功、异常和重定向后都关闭本次私有响应/Session，不污染调用方 Session。
 - 私网首跳和私网重定向在发起下一次请求前被拒绝。
+- `NaN`/无限或超过 86,400 秒的超时、非整数大小或重定向预算，以及 CR/LF/NUL 请求头在联网前被拒绝。
+- 测试替身即使保留 RESOLVE/PROXY，也不得注入 URL/CONNECT_TO 等额外 steering 键；删除或替换权威键、原地改写 `CurlOpt.RESOLVE` 列表同样必须在真正 request 前被独立深快照和全映射精确回读拒绝。
+- 显式 factory 返回的真实 Session 及其子类必须关闭并在零网络请求时拒绝；真实同源重定向应使用两个监听地址证明第二跳命中新 pin，而不是复用第一跳连接。
+- resolver、Session factory/options 准备或响应完成跨过总 deadline 时必须失败；准备阶段超时不得调用 request。
+- callback/raw 双通道不一致必须失败关闭；302 等中间响应的实际响应体也必须在跟随下一跳前执行同一大小上限。
+- POST/PUT/HEAD 的 301/302/303 跳转必须同时断言下一跳方法、请求体和 body/framing 请求头，不能只断言 URL 或方法。
 
-对应测试入口是 `tests/integration/app/core/downloaders/test_runtime.py` 和 `tests/integration/app/core/downloaders/m3u8/test_lifecycle.py`。
+对应测试入口是 `tests/unit/shared/network/test_pinned_transport.py`、`tests/integration/app/core/downloaders/test_runtime.py` 和 `tests/integration/app/core/downloaders/m3u8/test_lifecycle.py`。
 
 快手分享短链的请求级 DNS 固定、保存态 Cookie 逐跳筛选，以及从详情响应到签名 CDN 地址的交接约束，见 [快手 Playwright 会话启动与闪窗排障实践](kuaishou-playwright-session-startup.md#短链-http-快路cookie-与-cdn-交接)。该文档描述平台专用流水线；本节仍是共享 HLS 传输层的安全基线。
 
@@ -232,7 +240,11 @@ DoH hostname 校验证书。格式依据见 [Chromium DoH 文档](https://www.ch
 - [ ] `page.request` / `APIRequestContext` 是否禁止自动重定向，或已对每一跳重新执行公网校验？
 - [ ] 是否包含真实 popup 首请求和脚本网络通道回归？
 - [ ] 结论是否诚实区分 URL 校验与传输层 DNS pinning？
-- [ ] curl_cffi 公网请求是否把已验证地址固定到真实连接，并在请求后恢复 Session 选项？
+- [ ] curl_cffi 公网请求是否把已验证地址固定到真实连接，并在请求后关闭本次私有 Session？
 - [ ] 自定义端口和 IPv6 是否包含在 DNS pinning 回归中？
+- [ ] 每跳 `curl_options` 是否只包含 NOSIGNAL、FRESH_CONNECT、FORBID_REUSE、RESOLVE、PROXY 这组模块权威映射，并在 setter 后完成独立深快照的全映射精确复核？
+- [ ] 真实 Session 是否只由传输模块创建，显式 factory 注入是否在联网前关闭拒绝，handle 是否逐跳 reset 且不复用旧连接？
+- [ ] 响应体预算是否覆盖每一跳，并拒绝 callback 与 raw body 不一致？
+- [ ] 公网传输预算是否有限且类型明确，总 deadline 是否覆盖 resolver、Session/options 准备和响应完成，请求头控制字符是否在联网前失败关闭？
 - [ ] 平台域名是否基于解析后的 hostname 做精确域名/真实子域判断，而不是字符串包含？
 - [ ] 带登录 Cookie 的浏览器入口遇到外域或伪子域时是否在创建页面前安全回退？

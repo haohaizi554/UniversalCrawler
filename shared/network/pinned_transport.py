@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -18,9 +20,23 @@ from shared.runtime_options import (
 
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _LEGACY_NUMERIC_IPV4_COMPONENT = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)\Z")
+_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _CURL_WRITEFUNC_ERROR = 0xFFFFFFFF
+_MAX_TIMEOUT_SECONDS = 86_400.0
 _SENSITIVE_REDIRECT_HEADERS = frozenset(
     {"authorization", "cookie", "proxy-authorization"}
+)
+_REDIRECT_BODY_AND_FRAMING_HEADERS = frozenset(
+    {
+        "content-encoding",
+        "content-language",
+        "content-length",
+        "content-location",
+        "content-type",
+        "expect",
+        "trailer",
+        "transfer-encoding",
+    }
 )
 
 
@@ -133,7 +149,11 @@ def canonicalize_request_target(url: str) -> CanonicalRequestTarget:
         explicit_port = parts.port
     except ValueError as exc:
         raise DomainPolicyViolation("invalid public request port") from exc
-    port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+    port = (
+        explicit_port
+        if explicit_port is not None
+        else (443 if scheme == "https" else 80)
+    )
     if not 1 <= port <= 65535:
         raise DomainPolicyViolation("invalid public request port")
     authority_host = f"[{host}]" if ":" in host else host
@@ -203,14 +223,24 @@ def curl_resolve_options(
 def _default_session_factory():
     from curl_cffi import requests as curl_requests
 
-    return curl_requests.Session(impersonate="chrome")
+    return curl_requests.Session(
+        impersonate="chrome",
+        trust_env=False,
+        allow_redirects=False,
+    )
 
 
 def _copy_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(headers, Mapping):
+        raise TypeError("request headers must be a mapping")
     copied: dict[str, str] = {}
     for key, value in headers.items():
         if type(key) is not str or type(value) is not str:
             raise TypeError("request headers must contain only strings")
+        if _HEADER_NAME.fullmatch(key) is None or any(
+            ord(character) < 0x20 or ord(character) == 0x7F for character in value
+        ):
+            raise DomainPolicyViolation("request header is invalid")
         if key.lower() in {"host", "proxy-authorization"}:
             continue
         copied[key] = value
@@ -240,6 +270,146 @@ def _close_session(session: Any) -> None:
         close()
 
 
+def _close_resources(
+    response: Any | None,
+    session: Any | None,
+    *,
+    suppress_errors: bool,
+) -> None:
+    first_error: BaseException | None = None
+    for resource, close_resource in (
+        (response, _close_response),
+        (session, _close_session),
+    ):
+        if resource is None:
+            continue
+        try:
+            close_resource(resource)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None and not suppress_errors:
+        raise first_error
+
+
+def _curl_option_value_matches_exactly(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if type(expected) is list:
+        return len(actual) == len(expected) and all(
+            _curl_option_value_matches_exactly(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected)
+        )
+    return bool(actual == expected)
+
+
+def _curl_options_match_exactly(actual: Any, expected: dict[Any, Any]) -> bool:
+    if type(actual) is not dict or len(actual) != len(expected):
+        return False
+    if {id(option) for option in actual} != {id(option) for option in expected}:
+        return False
+    return all(
+        _curl_option_value_matches_exactly(actual[option], expected_value)
+        for option, expected_value in expected.items()
+    )
+
+
+def _real_session_request_state_is_clean(session: Any) -> bool:
+    """Reject curl_cffi Session defaults that would be merged into a request."""
+
+    from curl_cffi import requests as curl_requests
+
+    if not isinstance(session, curl_requests.Session):
+        return True
+    if type(session) is not curl_requests.Session:
+        return False
+    try:
+        retry = getattr(session, "retry", None)
+        retry_is_default = retry is None or (
+            type(getattr(retry, "count", None)) is int
+            and retry.count == 0
+            and type(getattr(retry, "delay", None)) in {int, float}
+            and float(retry.delay) == 0.0
+            and type(getattr(retry, "jitter", None)) in {int, float}
+            and float(retry.jitter) == 0.0
+            and getattr(retry, "backoff", None) == "linear"
+        )
+        return bool(
+            not session.headers
+            and not session.cookies
+            and session.auth is None
+            and session.base_url is None
+            and session.params is None
+            and not session.proxies
+            and session.proxy_auth is None
+            and session.verify is True
+            and session.trust_env is False
+            and session.ja3 is None
+            and session.akamai is None
+            and session.extra_fp is None
+            and session.impersonate == "chrome"
+            and session.default_headers is True
+            and session.http_version is None
+            and session.interface is None
+            and session.cert is None
+            and retry_is_default
+            and getattr(session, "perk", None) is None
+            and getattr(session, "response_class", curl_requests.Response)
+            is curl_requests.Response
+            and getattr(session, "raise_for_status", False) is False
+            and getattr(session, "discard_cookies", False) is False
+            and not getattr(session, "curl_infos", ())
+            and getattr(session, "debug", False) is False
+            and getattr(session, "_thread", None) is None
+            and getattr(session, "_closed", False) is False
+            and getattr(session, "_use_thread_local_curl", True) is True
+            and getattr(session, "_is_customized_curl", False) is False
+        )
+    except Exception:
+        return False
+
+
+def _reset_real_session_handle(session: Any) -> None:
+    """Reset an injected real handle so options outside curl_options cannot survive."""
+
+    from curl_cffi import requests as curl_requests
+
+    if not isinstance(session, curl_requests.Session):
+        return
+    try:
+        reset = session.curl.reset
+        if not callable(reset):
+            raise TypeError("curl reset is unavailable")
+        reset()
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise DomainPolicyViolation(
+            "curl session cannot reset inherited request state"
+        ) from exc
+
+
+def _bounded_response_body(
+    response: Any,
+    buffered: bytearray,
+    max_response_bytes: int,
+) -> bytes:
+    raw_content = getattr(response, "content", b"") or b""
+    try:
+        callback_body = bytes(buffered)
+        raw_body = bytes(raw_content)
+    except (TypeError, ValueError) as exc:
+        raise DomainPolicyViolation("public response body is invalid") from exc
+    if (
+        len(callback_body) > max_response_bytes
+        or len(raw_body) > max_response_bytes
+    ):
+        raise DomainPolicyViolation("public response exceeds size limit")
+    if callback_body and raw_body and callback_body != raw_body:
+        raise DomainPolicyViolation("public response has inconsistent response body")
+    return callback_body or raw_body
+
+
 class PinnedTransport:
     """Perform one operation in one private curl session with pinned DNS."""
 
@@ -251,13 +421,24 @@ class PinnedTransport:
         timeout: float = 60.0,
         max_response_bytes: int = 64 * 1024 * 1024,
     ) -> None:
-        if timeout <= 0:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError("timeout must be positive")
-        if max_response_bytes <= 0:
+        try:
+            normalized_timeout = float(timeout)
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("timeout must be positive") from exc
+        if (
+            not math.isfinite(normalized_timeout)
+            or normalized_timeout <= 0
+            or normalized_timeout > _MAX_TIMEOUT_SECONDS
+        ):
+            raise ValueError("timeout must be positive and at most 86400 seconds")
+        if type(max_response_bytes) is not int or max_response_bytes <= 0:
             raise ValueError("max_response_bytes must be positive")
         self._policy = policy
+        self._owns_real_session_factory = session_factory is None
         self._session_factory = session_factory or _default_session_factory
-        self._timeout = float(timeout)
+        self._timeout = normalized_timeout
         self._max_response_bytes = int(max_response_bytes)
 
     def request(
@@ -269,7 +450,9 @@ class PinnedTransport:
         body: bytes | None = None,
         max_redirects: int = 5,
     ) -> PinnedResponse:
-        normalized_method = str(method or "").upper()
+        if type(method) is not str:
+            raise ValueError("unsupported HTTP method")
+        normalized_method = method.upper()
         if normalized_method not in {
             "GET",
             "POST",
@@ -283,29 +466,51 @@ class PinnedTransport:
             raise ValueError("unsupported HTTP method")
         if body is not None and type(body) is not bytes:
             raise TypeError("body must be bytes or None")
-        if max_redirects < 0:
-            raise ValueError("max_redirects must not be negative")
+        if type(max_redirects) is not int or max_redirects < 0:
+            raise ValueError("max_redirects must be a non-negative integer")
 
         request_headers = _copy_request_headers(headers)
         target = canonicalize_request_target(url)
         redirect_chain = [target.url]
         session: Any | None = None
-        base_curl_options: dict[Any, Any] = {}
 
         def open_session() -> None:
-            nonlocal session, base_curl_options
+            nonlocal session
             candidate = self._session_factory()
-            options = getattr(candidate, "curl_options", {})
-            if not isinstance(options, dict):
-                _close_session(candidate)
+            from curl_cffi import requests as curl_requests
+
+            if (
+                isinstance(candidate, curl_requests.Session)
+                and not self._owns_real_session_factory
+            ):
+                _close_resources(None, candidate, suppress_errors=True)
+                raise DomainPolicyViolation(
+                    "real curl sessions must be transport owned"
+                )
+            try:
+                options = candidate.curl_options
+            except BaseException as exc:
+                _close_resources(None, candidate, suppress_errors=True)
+                if not isinstance(exc, Exception):
+                    raise
+                raise DomainPolicyViolation(
+                    "curl session cannot enforce pinned DNS"
+                ) from exc
+            if type(options) is not dict:
+                _close_resources(None, candidate, suppress_errors=True)
                 raise DomainPolicyViolation("curl session cannot enforce pinned DNS")
+            if not _real_session_request_state_is_clean(candidate):
+                _close_resources(None, candidate, suppress_errors=True)
+                raise DomainPolicyViolation(
+                    "curl session contains inherited request state"
+                )
             session = candidate
-            base_curl_options = dict(options)
 
         deadline = time.monotonic() + self._timeout
         current_method = normalized_method
         current_body = body
         response: Any | None = None
+        primary_error: BaseException | None = None
         try:
             for redirect_count in range(max_redirects + 1):
                 remaining = deadline - time.monotonic()
@@ -317,12 +522,41 @@ class PinnedTransport:
                     raise TimeoutError("public request deadline exceeded")
                 if session is None:
                     open_session()
-                if session is None:  # pragma: no cover - open_session either assigns or raises
+                if (
+                    session is None
+                ):  # pragma: no cover - open_session either assigns or raises
                     raise RuntimeError("private curl session is unavailable")
-                session.curl_options = {
-                    **base_curl_options,
-                    **curl_resolve_options(target, addresses, disable_proxy=True),
+                _reset_real_session_handle(session)
+                pin_curl_options = curl_resolve_options(
+                    target, addresses, disable_proxy=True
+                )
+                from curl_cffi.const import CurlOpt
+
+                authoritative_curl_options = {
+                    CurlOpt.NOSIGNAL: 1,
+                    CurlOpt.FRESH_CONNECT: 1,
+                    CurlOpt.FORBID_REUSE: 1,
+                    **pin_curl_options,
                 }
+                expected_curl_options = deepcopy(authoritative_curl_options)
+                try:
+                    session.curl_options = authoritative_curl_options
+                    effective_curl_options = session.curl_options
+                except BaseException as exc:
+                    if not isinstance(exc, Exception):
+                        raise
+                    raise DomainPolicyViolation(
+                        "curl session cannot enforce pinned DNS"
+                    ) from exc
+                if not _curl_options_match_exactly(
+                    effective_curl_options, expected_curl_options
+                ):
+                    raise DomainPolicyViolation(
+                        "curl session cannot enforce pinned DNS"
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("public request deadline exceeded")
                 buffered = bytearray()
                 response_too_large = False
 
@@ -350,14 +584,28 @@ class PinnedTransport:
                             "public response exceeds size limit"
                         ) from exc
                     raise
+                if response_too_large:
+                    raise DomainPolicyViolation(
+                        "public response exceeds size limit"
+                    )
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("public request deadline exceeded")
+                payload = _bounded_response_body(
+                    response,
+                    buffered,
+                    self._max_response_bytes,
+                )
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("public request deadline exceeded")
                 status_code = int(getattr(response, "status_code", 0) or 0)
                 response_headers = _response_headers(response)
-                location = response_headers.get("Location") or response_headers.get("location")
-                if status_code not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
-                    raw_content = getattr(response, "content", b"") or b""
-                    payload = bytes(buffered) if buffered else bytes(raw_content)
-                    if len(payload) > self._max_response_bytes:
-                        raise DomainPolicyViolation("public response exceeds size limit")
+                location = response_headers.get("Location") or response_headers.get(
+                    "location"
+                )
+                if (
+                    status_code not in DomainPolicyEngine.REDIRECT_STATUS_CODES
+                    or not location
+                ):
                     result = PinnedResponse(
                         status_code=status_code,
                         url=target.url,
@@ -365,8 +613,6 @@ class PinnedTransport:
                         body=payload,
                         redirect_chain=tuple(redirect_chain),
                     )
-                    _close_response(response)
-                    response = None
                     return result
                 if redirect_count >= max_redirects:
                     raise DomainPolicyViolation("public redirect limit exceeded")
@@ -383,21 +629,34 @@ class PinnedTransport:
                         for key, value in request_headers.items()
                         if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
                     }
-                if status_code == 303 or (
+                rewrite_to_get = (status_code == 303 and current_method != "HEAD") or (
                     status_code in {301, 302} and current_method == "POST"
-                ):
+                )
+                if rewrite_to_get:
                     current_method = "GET"
+                if rewrite_to_get or status_code == 303:
                     current_body = None
-                _close_response(response)
+                    request_headers = {
+                        key: value
+                        for key, value in request_headers.items()
+                        if key.lower() not in _REDIRECT_BODY_AND_FRAMING_HEADERS
+                    }
+                redirect_response = response
                 response = None
+                _close_response(redirect_response)
                 if origin_changed:
-                    _close_session(session)
+                    previous_session = session
                     session = None
+                    _close_session(previous_session)
                 target = next_target
                 redirect_chain.append(target.url)
+            raise DomainPolicyViolation("public redirect limit exceeded")
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            if response is not None:
-                _close_response(response)
-            if session is not None:
-                _close_session(session)
-        raise DomainPolicyViolation("public redirect limit exceeded")
+            _close_resources(
+                response,
+                session,
+                suppress_errors=primary_error is not None,
+            )
