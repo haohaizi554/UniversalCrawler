@@ -540,7 +540,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     ) -> None:
         if self._should_use_local_hls_proxy(video_item):
             local_proxy = self._start_local_hls_proxy(video_item, headers, proxy)
-            try:
+            with hls_proxy_utils._hls_proxy_cleanup_scope(local_proxy.stop):
                 local_headers = {"User-Agent": str(user_agent or DEFAULT_USER_AGENT)}
                 self._run_nm3u8_external_command(
                     video_item,
@@ -551,14 +551,12 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     "",
                     None,
                     local_headers,
-                    thread_count,
+                    hls_proxy_utils._local_hls_proxy_thread_count(thread_count),
                     progress_callback,
                     check_stop_func,
                     local_proxy=True,
                     progress_provider=local_proxy.progress_snapshot,
                 )
-            finally:
-                local_proxy.stop()
             return
         self._run_nm3u8_external_command(
             video_item,
@@ -789,20 +787,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @classmethod
     def _headers_for_hls_proxy_upstream(cls, upstream_url: str, headers: dict[str, str]) -> dict[str, str]:
-        upstream_headers = dict(headers)
-        if cls._looks_like_hls_playlist_url(upstream_url, ""):
-            return upstream_headers
-        upstream_headers.pop("Origin", None)
-        upstream_headers["Accept"] = "*/*"
-        upstream_headers["Accept-Encoding"] = "identity;q=1, *;q=0"
-        upstream_headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en-CN;q=0.8,en;q=0.7")
-        upstream_headers.setdefault("Cache-Control", "no-cache")
-        upstream_headers.setdefault("Pragma", "no-cache")
-        upstream_headers["Priority"] = "i"
-        upstream_headers["Sec-Fetch-Dest"] = "video"
-        upstream_headers["Sec-Fetch-Mode"] = "no-cors"
-        upstream_headers["Sec-Fetch-Site"] = "same-origin"
-        return upstream_headers
+        return hls_proxy_utils.build_hls_proxy_upstream_headers(upstream_url, headers)
 
     def _hls_proxy_fetch_upstream(
         self,
@@ -894,27 +879,31 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         max_redirects: int = 5,
     ):
         """读取单个 HLS 资源，并在跟随前逐跳校验每次重定向。"""
-        if domain_policy is not None and not upstream_proxy:
-            return PinnedTransport(
-                policy=domain_policy,
-                timeout=60,
-                max_response_bytes=256 * 1024 * 1024,
-            ).request("GET", upstream_url, headers=headers, max_redirects=max_redirects)
         current_url = canonicalize_request_target(str(upstream_url)).url
         redirect_chain = [current_url]
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
-            request_url = current_url
-            if domain_policy is not None:
-                target = canonicalize_request_target(current_url)
-                request_url = target.url
-                domain_policy.require_public_url(request_url)
-            response = self._curl_cffi_get_response(
-                curl_requests,
-                request_url,
-                request_headers,
-                upstream_proxy,
-                allow_redirects=False,
+            request_url, curl_options = hls_proxy_utils.prepare_hls_curl_request(
+                current_url, domain_policy, upstream_proxy
+            )
+            response_body = hls_proxy_utils._BoundedHlsResponseBody(request_url)
+            try:
+                response = self._curl_cffi_get_response(
+                    curl_requests,
+                    request_url,
+                    request_headers,
+                    upstream_proxy,
+                    allow_redirects=False,
+                    content_callback=response_body.collect,
+                    curl_options=curl_options,
+                    header_callback=response_body.collect_header,
+                )
+            except Exception as exc:
+                response_body.raise_if_oversized(exc)
+                raise
+            response_body.finalize(
+                response,
+                lambda: self._close_hls_proxy_response(response, request_url),
             )
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
@@ -953,14 +942,14 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
 
     @staticmethod
-    def _close_hls_proxy_response(response, url: str) -> None:
+    def _close_hls_proxy_response(response, _url: str) -> None:
         close = getattr(response, "close", None)
         if not callable(close):
             return
         try:
             close()
-        except (OSError, RuntimeError, AttributeError) as exc:
-            debug_logger.log_exception("M3U8Downloader", "close_redirect_response", exc, details={"url": url})
+        except Exception as exc:
+            hls_proxy_utils._log_diagnostic_best_effort("M3U8Downloader", "close_redirect_response", exc)
 
     @staticmethod
     def _hls_proxy_header_attempts(headers: dict[str, str]) -> list[dict[str, str]]:
@@ -981,6 +970,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         stream: bool = False,
         allow_redirects: bool = True,
         curl_options: dict[Any, Any] | None = None,
+        content_callback: Callable[[bytes], int] | None = None,
+        header_callback: Callable[[bytes], int] | None = None,
     ):
         kwargs: dict[str, Any] = {
             "headers": headers,
@@ -992,15 +983,11 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             kwargs["proxy"] = proxy
         if curl_options:
             kwargs["curl_options"] = curl_options
+        if content_callback is not None:
+            kwargs["content_callback"] = content_callback
         if stream:
             kwargs["stream"] = True
-        try:
-            return curl_requests.get(url, **kwargs)
-        except TypeError:
-            kwargs.pop("impersonate", None)
-            if stream:
-                kwargs.pop("stream", None)
-            return curl_requests.get(url, **kwargs)
+        return hls_proxy_utils.perform_hls_curl_get(curl_requests, url, kwargs, header_callback)
 
     @staticmethod
     def _looks_like_hls_playlist(url: str, content_type: str, body: bytes) -> bool:
@@ -1910,7 +1897,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             ydl_headers = {"User-Agent": str(headers.get("User-Agent") or DEFAULT_USER_AGENT)}
 
         params = self._yt_dlp_params(str(target), ydl_headers, yt_dlp_proxy, progress_hook)
-        try:
+        with hls_proxy_utils._hls_proxy_cleanup_scope(
+            local_proxy.stop if local_proxy is not None else None
+        ):
             try:
                 self._run_yt_dlp(source_url, dict(params))
             except YoutubeDLError as exc:
@@ -1928,12 +1917,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                         details={"initial_error": str(exc)},
                         trace_id=video_item.meta.get("trace_id"),
                     )
-        finally:
-            if local_proxy is not None:
-                local_proxy.stop()
-
-        if not target.exists() or target.stat().st_size <= 0:
-            raise ExternalToolError("yt-dlp fallback did not create a valid output file")
+            if not target.exists() or target.stat().st_size <= 0:
+                raise ExternalToolError("yt-dlp fallback did not create a valid output file")
 
     @staticmethod
     def _headers_for_yt_dlp(headers: dict[str, str]) -> dict[str, str]:

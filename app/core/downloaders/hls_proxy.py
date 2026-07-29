@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import hmac
 import http.server
@@ -13,7 +14,7 @@ import socketserver
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,7 @@ from shared.network.pinned_transport import (
     canonicalize_request_target,
     curl_resolve_options as _pinned_curl_resolve_options,
 )
+from shared.runtime_options import DomainPolicyViolation
 
 if TYPE_CHECKING:
     from shared.runtime_options import DomainPolicyEngine
@@ -38,15 +40,38 @@ _MAX_PLAYLIST_CHARS = 8 * 1024 * 1024
 _MAX_PLAYLIST_LINES = 50_000
 _MAX_TASK_MEMBERS = 50_000
 _MAX_PLAYLIST_DEPTH = 16
+_MAX_CONCURRENT_REQUESTS = 4
+_MAX_PLAYLIST_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_MEDIA_RESPONSE_BYTES = 32 * 1024 * 1024
+_HLS_CLASSIFICATION_PREFIX_BYTES = 4096
+_MAX_HLS_RESPONSE_HEADER_BYTES = 64 * 1024
+_PROCESS_REQUEST_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_REQUESTS)
 _CLIENT_SOCKET_TIMEOUT_SECONDS = 10.0
+_SERVER_POLL_INTERVAL_SECONDS = 0.05
+_STARTUP_TIMEOUT_SECONDS = 1.0
+_STOP_TIMEOUT_SECONDS = 2.0
 _URI_ATTRIBUTE = re.compile(r'(?<![A-Z0-9-])URI=(["\'])(.*?)\1', re.IGNORECASE)
 _UNQUOTED_URI_ATTRIBUTE = re.compile(r'(?<![A-Z0-9-])URI\s*=', re.IGNORECASE)
 _SIGNATURE = re.compile(r"[0-9a-f]{64}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)\Z")
+_CURL_WRITEFUNC_ERROR = 0xFFFFFFFF
 _ALWAYS_DROP_UPSTREAM_HEADERS = frozenset({"host", "proxy-authorization"})
 _CROSS_ORIGIN_CREDENTIAL_HEADERS = frozenset({"authorization", "cookie"})
 _FORBIDDEN_PLAYLIST_TAGS = ("#EXT-X-CONTENT-STEERING", "#EXT-X-DEFINE")
+_URI_RESOURCE_TAGS = frozenset(
+    {
+        "#EXT-X-I-FRAME-STREAM-INF",
+        "#EXT-X-IMAGE-STREAM-INF",
+        "#EXT-X-KEY",
+        "#EXT-X-MAP",
+        "#EXT-X-MEDIA",
+        "#EXT-X-PART",
+        "#EXT-X-PRELOAD-HINT",
+        "#EXT-X-RENDITION-REPORT",
+        "#EXT-X-SESSION-KEY",
+    }
+)
 
 
 class HlsCapabilityError(ExternalToolError):
@@ -55,6 +80,10 @@ class HlsCapabilityError(ExternalToolError):
 
 class HlsClientRequestError(ExternalToolError):
     """A local client supplied an invalid forwarding header."""
+
+
+class HlsProxyLifecycleError(ExternalToolError):
+    """The local listener could not prove that startup or cleanup completed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +116,71 @@ def _diagnostic_exception(exc: BaseException) -> RuntimeError:
     return RuntimeError(f"local HLS proxy failure ({type(exc).__name__})")
 
 
+def _log_diagnostic_best_effort(
+    component: str,
+    action: str,
+    exc: BaseException,
+    *,
+    context: dict[str, Any] | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Keep diagnostics from changing proxy response and cleanup semantics."""
+
+    try:
+        debug_logger.log_exception(
+            component,
+            action,
+            _diagnostic_exception(exc),
+            context=context,
+            details=details,
+        )
+    except BaseException:
+        return
+
+
+def _record_secondary_cleanup_failure(
+    primary_error: BaseException,
+    cleanup_error: BaseException,
+) -> None:
+    """Report cleanup without changing the already-active download failure."""
+
+    try:
+        add_note = object.__getattribute__(primary_error, "add_note")
+    except BaseException:
+        add_note = None
+    if callable(add_note):
+        try:
+            add_note("local HLS proxy cleanup failed; preserved the primary download error")
+        except BaseException:
+            pass
+    _log_diagnostic_best_effort(
+        "N_m3u8DL_RE_Downloader",
+        "local_hls_proxy_cleanup_after_download_error",
+        cleanup_error,
+    )
+
+
+@contextlib.contextmanager
+def _hls_proxy_cleanup_scope(cleanup: Callable[[], None] | None) -> Iterator[None]:
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            if cleanup is not None:
+                cleanup()
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            try:
+                _record_secondary_cleanup_failure(primary_error, cleanup_error)
+            except BaseException:
+                pass
+
+
 def looks_like_hls_playlist(url: str, content_type: str, body: bytes) -> bool:
     if b"#EXTM3U" in body[:4096]:
         return True
@@ -101,6 +195,142 @@ def looks_like_hls_playlist_url(url: str, content_type: str) -> bool:
     if "mpegurl" in lowered_type or "m3u8" in lowered_type:
         return True
     return ".m3u8" in str(url or "").lower()
+
+
+def _hls_response_budget(upstream_url: str) -> int | None:
+    if looks_like_hls_playlist_url(upstream_url, ""):
+        return _MAX_PLAYLIST_RESPONSE_BYTES
+    if looks_like_hls_media_resource(upstream_url):
+        return _MAX_MEDIA_RESPONSE_BYTES
+    return None
+
+
+def _local_hls_proxy_thread_count(thread_count: str | int | None) -> int:
+    try:
+        requested = int(thread_count or _MAX_CONCURRENT_REQUESTS)
+    except (TypeError, ValueError):
+        requested = _MAX_CONCURRENT_REQUESTS
+    return max(1, min(requested, _MAX_CONCURRENT_REQUESTS))
+
+
+def build_hls_proxy_upstream_headers(
+    upstream_url: str,
+    headers: dict[str, str],
+) -> dict[str, str]:
+    upstream_headers = dict(headers)
+    if looks_like_hls_playlist_url(upstream_url, ""):
+        return upstream_headers
+    upstream_headers.pop("Origin", None)
+    upstream_headers["Accept"] = "*/*"
+    upstream_headers["Accept-Encoding"] = "identity;q=1, *;q=0"
+    upstream_headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en-CN;q=0.8,en;q=0.7")
+    upstream_headers.setdefault("Cache-Control", "no-cache")
+    upstream_headers.setdefault("Pragma", "no-cache")
+    upstream_headers["Priority"] = "i"
+    upstream_headers["Sec-Fetch-Dest"] = "video"
+    upstream_headers["Sec-Fetch-Mode"] = "no-cors"
+    upstream_headers["Sec-Fetch-Site"] = "same-origin"
+    return upstream_headers
+
+
+class _BoundedHlsResponseBody:
+    """Classify one response from headers/prefix before applying its hard limit."""
+
+    def __init__(self, upstream_url: str) -> None:
+        fixed_budget = _hls_response_budget(upstream_url)
+        self._url_budget = fixed_budget
+        self._url_kind = (
+            "playlist"
+            if fixed_budget == _MAX_PLAYLIST_RESPONSE_BYTES
+            else "media"
+            if fixed_budget == _MAX_MEDIA_RESPONSE_BYTES
+            else None
+        )
+        self.kind = self._url_kind
+        self.max_bytes = fixed_budget or _HLS_CLASSIFICATION_PREFIX_BYTES
+        self.buffered = bytearray()
+        self.prefix = bytearray()
+        self.too_large = False
+
+    def _set_kind(self, kind: str) -> None:
+        self.kind = kind
+        self.max_bytes = (
+            _MAX_PLAYLIST_RESPONSE_BYTES if kind == "playlist" else _MAX_MEDIA_RESPONSE_BYTES
+        )
+
+    def _observe_content_type(self, content_type: str) -> None:
+        value = str(content_type or "").lower()
+        if "mpegurl" in value or "m3u8" in value:
+            self._set_kind("playlist")
+        elif value:
+            self._set_kind("media")
+
+    def _observe_prefix(self, chunk: bytes) -> None:
+        remaining = _HLS_CLASSIFICATION_PREFIX_BYTES - len(self.prefix)
+        if remaining > 0:
+            self.prefix.extend(chunk[:remaining])
+        if b"#EXTM3U" in self.prefix:
+            self._set_kind("playlist")
+        elif self.kind is None and len(self.prefix) >= _HLS_CLASSIFICATION_PREFIX_BYTES:
+            self._set_kind("media")
+
+    def collect_header(self, line: bytes) -> int:
+        raw_line = bytes(line)
+        if raw_line.startswith(b"HTTP/"):
+            self.kind = self._url_kind
+            self.max_bytes = self._url_budget or _HLS_CLASSIFICATION_PREFIX_BYTES
+        name, separator, value = raw_line.partition(b":")
+        if separator and name.strip().lower() == b"content-type":
+            self._observe_content_type(value.decode("latin-1", errors="replace").strip())
+        return len(raw_line)
+
+    def collect(self, chunk: bytes) -> int:
+        self._observe_prefix(chunk)
+        if len(self.buffered) + len(chunk) > self.max_bytes:
+            self.too_large = True
+            return _CURL_WRITEFUNC_ERROR
+        self.buffered.extend(chunk)
+        return len(chunk)
+
+    def raise_if_oversized(self, exc: BaseException) -> None:
+        if self.too_large:
+            raise DomainPolicyViolation("HLS upstream response exceeds size limit") from exc
+
+    def finalize(self, response: Any, close_response: Callable[[], None]) -> bytes:
+        def close_best_effort() -> None:
+            try:
+                close_response()
+            except BaseException:
+                pass
+
+        try:
+            response_headers = getattr(response, "headers", {}) or {}
+            content_type = response_headers.get("Content-Type") or response_headers.get(
+                "content-type", ""
+            )
+            self._observe_content_type(content_type)
+            raw_content = getattr(response, "content", b"") or b""
+            callback_body = bytes(self.buffered)
+            raw_body = bytes(raw_content)
+        except (TypeError, ValueError) as exc:
+            close_best_effort()
+            raise DomainPolicyViolation("HLS upstream response body is invalid") from exc
+        try:
+            self._observe_prefix(callback_body or raw_body)
+            self._set_kind(self.kind or "media")
+            if self.too_large:
+                raise DomainPolicyViolation("HLS upstream response exceeds size limit")
+            if len(callback_body) > self.max_bytes or len(raw_body) > self.max_bytes:
+                raise DomainPolicyViolation("HLS upstream response exceeds size limit")
+            if callback_body and raw_body and callback_body != raw_body:
+                raise DomainPolicyViolation("HLS upstream response body is inconsistent")
+            payload = callback_body or raw_body
+            if callback_body and raw_body != callback_body:
+                response.content = payload
+            return payload
+        except BaseException:
+            close_best_effort()
+            raise
 
 
 def response_content_bytes(response) -> bytes:
@@ -139,7 +369,164 @@ def response_iter_bytes(response, chunk_size: int = 256 * 1024):
 def curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[Any, Any]:
     """把 curl 固定到已通过策略校验的公网地址，防止解析结果漂移。"""
     target = canonicalize_request_target(url)
-    return _pinned_curl_resolve_options(target, addresses, disable_proxy=True)
+    options = _pinned_curl_resolve_options(target, addresses, disable_proxy=True)
+    from curl_cffi.const import CurlOpt
+
+    options.update(
+        {
+            CurlOpt.NOSIGNAL: 1,
+            CurlOpt.FRESH_CONNECT: 1,
+            CurlOpt.FORBID_REUSE: 1,
+        }
+    )
+    return options
+
+
+def prepare_hls_curl_request(
+    url: str,
+    domain_policy: "DomainPolicyEngine | None",
+    upstream_proxy: str | None,
+) -> tuple[str, dict[Any, Any] | None]:
+    request_url = canonicalize_request_target(url).url
+    if domain_policy is None:
+        return request_url, None
+    if upstream_proxy:
+        domain_policy.require_public_url(request_url)
+        return request_url, None
+    addresses = domain_policy.resolve_public_addresses(request_url)
+    return request_url, curl_resolve_options(request_url, addresses)
+
+
+class _HlsResponseHeaders:
+    """Collect the final header block through curl_cffi's public callback API."""
+
+    def __init__(self, callback: Callable[[bytes], int]) -> None:
+        self.callback = callback
+        self.lines: list[bytes] = []
+        self.size = 0
+        self.too_large = False
+
+    def write(self, line: bytes) -> int:
+        raw_line = bytes(line)
+        if self.callback(raw_line) != len(raw_line):
+            return _CURL_WRITEFUNC_ERROR
+        stripped = raw_line.rstrip(b"\r\n")
+        is_status = stripped.startswith(b"HTTP/")
+        if is_status:
+            self.lines.clear()
+            self.size = len(raw_line)
+        else:
+            self.size += len(raw_line)
+        if self.size > _MAX_HLS_RESPONSE_HEADER_BYTES:
+            self.too_large = True
+            return _CURL_WRITEFUNC_ERROR
+        if stripped and not is_status:
+            if stripped[:1] in {b" ", b"\t"} and self.lines:
+                self.lines[-1] += stripped
+            else:
+                self.lines.append(stripped)
+        return len(raw_line)
+
+    def apply(self, curl_requests: Any, response: Any) -> None:
+        headers_type = getattr(curl_requests, "Headers", None)
+        if not callable(headers_type):
+            raise DomainPolicyViolation("curl session cannot expose bounded HLS headers")
+        response.headers = headers_type(self.lines)
+
+
+@dataclass(slots=True)
+class _HlsCurlResponse:
+    status_code: int
+    headers: Any
+    content: bytes
+    url: str
+
+    def close(self) -> None:
+        return
+
+
+def _staged_curl_get(
+    curl_requests: Any,
+    url: str,
+    kwargs: dict[str, Any],
+    header_callback: Callable[[bytes], int],
+):
+    from curl_cffi import Curl
+    from curl_cffi.const import CurlInfo, CurlOpt
+
+    request_kwargs = dict(kwargs)
+    curl_options = dict(request_kwargs.pop("curl_options", None) or {})
+    response_headers = _HlsResponseHeaders(header_callback)
+    response_body = bytearray()
+
+    def collect_body(chunk: bytes) -> int:
+        response_body.extend(chunk)
+        return len(chunk)
+
+    content_callback = request_kwargs.pop("content_callback", None) or collect_body
+    headers = request_kwargs.pop("headers", {}) or {}
+    timeout = float(request_kwargs.pop("timeout", 60))
+    impersonate = request_kwargs.pop("impersonate", None)
+    allow_redirects = bool(request_kwargs.pop("allow_redirects", False))
+    proxy = request_kwargs.pop("proxy", None)
+    if request_kwargs.pop("stream", False) or request_kwargs:
+        raise TypeError("unsupported bounded HLS curl request options")
+
+    curl = Curl()
+    with _hls_proxy_cleanup_scope(curl.close):
+        try:
+            impersonation_target = "chrome124" if impersonate == "chrome" else impersonate
+            if impersonation_target and curl.impersonate(str(impersonation_target)) != 0:
+                raise DomainPolicyViolation("curl browser impersonation is unavailable")
+            curl.setopt(CurlOpt.URL, str(url).encode("utf-8"))
+            curl.setopt(CurlOpt.TIMEOUT_MS, max(1, int(timeout * 1000)))
+            curl.setopt(CurlOpt.FOLLOWLOCATION, int(allow_redirects))
+            curl.setopt(
+                CurlOpt.HTTPHEADER,
+                [f"{name}: {value}".encode("utf-8") for name, value in headers.items()],
+            )
+            for option, value in curl_options.items():
+                curl.setopt(option, value)
+            curl.setopt(CurlOpt.PROXY, str(proxy or ""))
+            curl.setopt(CurlOpt.NOPROXY, "")
+            curl.setopt(CurlOpt.WRITEFUNCTION, content_callback)
+            curl.setopt(CurlOpt.HEADERFUNCTION, response_headers.write)
+            curl.perform()
+            effective_url = curl.getinfo(CurlInfo.EFFECTIVE_URL)
+            response = _HlsCurlResponse(
+                status_code=int(curl.getinfo(CurlInfo.RESPONSE_CODE)),
+                headers={},
+                content=bytes(response_body),
+                url=(
+                    effective_url.decode("utf-8", errors="replace")
+                    if isinstance(effective_url, bytes)
+                    else str(effective_url)
+                ),
+            )
+        except Exception as exc:
+            if response_headers.too_large:
+                raise DomainPolicyViolation("HLS upstream response headers exceed size limit") from exc
+            raise
+    response_headers.apply(curl_requests, response)
+    return response
+
+
+def perform_hls_curl_get(
+    curl_requests: Any,
+    url: str,
+    kwargs: dict[str, Any],
+    header_callback: Callable[[bytes], int] | None,
+):
+    if header_callback is not None:
+        return _staged_curl_get(curl_requests, url, kwargs, header_callback)
+    try:
+        return curl_requests.get(url, **kwargs)
+    except TypeError:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("impersonate", None)
+        if retry_kwargs.get("stream"):
+            retry_kwargs.pop("stream", None)
+        return curl_requests.get(url, **retry_kwargs)
 
 
 def looks_like_hls_media_resource(url: str) -> bool:
@@ -191,6 +578,17 @@ class _ThreadingHlsProxyServer(socketserver.ThreadingMixIn, http.server.HTTPServ
     allow_reuse_address = True
     request_queue_size = 32
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.ready_event = threading.Event()
+        self.stopped_event = threading.Event()
+        self.listener_error: BaseException | None = None
+
+    def service_actions(self) -> None:
+        # ``Thread.start()`` only proves that Python scheduled the thread. The
+        # first completed serve_forever poll proves that the listener loop ran.
+        self.ready_event.set()
+
     def process_request(self, request: Any, client_address: Any) -> None:
         owner = getattr(self, "owner", None)
         if owner is None or not owner.acquire_request_slot():
@@ -205,11 +603,14 @@ class _ThreadingHlsProxyServer(socketserver.ThreadingMixIn, http.server.HTTPServ
             raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
+        owner = getattr(self, "owner", None)
+        if owner is not None:
+            owner.mark_request_handler_started()
         try:
             super().process_request_thread(request, client_address)
         finally:
-            owner = getattr(self, "owner", None)
             if owner is not None:
+                owner.mark_request_handler_stopped()
                 owner.release_request_slot()
 
 
@@ -232,10 +633,10 @@ class _HlsProxyHandler(http.server.BaseHTTPRequestHandler):
         except HlsClientRequestError:
             self.send_error(400)
         except Exception as exc:
-            debug_logger.log_exception(
+            _log_diagnostic_best_effort(
                 "N_m3u8DL_RE_Downloader",
                 "local_hls_proxy_error",
-                _diagnostic_exception(exc),
+                exc,
                 context={"task_id": owner.capability.task_id},
             )
             self.send_error(502)
@@ -288,51 +689,241 @@ class _LocalHlsProxy:
         self.base_url = ""
         self.url = ""
         self._lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self._request_condition = threading.Condition(self._lock)
         root_kind = "playlist" if looks_like_hls_playlist_url(self.root_url, "") else "unknown"
         self._members: dict[str, _HlsMember] = {
             self.root_url: _HlsMember(self.root_url, root_kind, None, "root", 0)
         }
         self._revoked = False
         self._credential_origin = self._url_origin(self.root_url)
-        self._request_slots = threading.BoundedSemaphore(16)
+        self._request_slots = _PROCESS_REQUEST_SLOTS
+        self._active_requests = 0
+        self._handler_thread_ids: set[int] = set()
         self._completed_members: set[str] = set()
         self._segment_total = 0
         self._segment_completed = 0
         self._bytes_served = 0
 
     def start(self) -> "_LocalHlsProxy":
-        with self._lock:
-            if self._revoked:
-                raise HlsCapabilityError("local HLS capability is revoked")
-            if self.server is not None:
-                return self
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._revoked:
+                    raise HlsCapabilityError("local HLS capability is revoked")
+                existing_server, existing_thread = self.server, self.thread
+            if existing_server is not None or existing_thread is not None:
+                if self._listener_is_ready(existing_server, existing_thread):
+                    return self
+                self._cleanup_listener(
+                    existing_server,
+                    existing_thread,
+                    timeout=_STOP_TIMEOUT_SECONDS,
+                )
+
             server = _ThreadingHlsProxyServer(("127.0.0.1", 0), _HlsProxyHandler)
             server.owner = self  # type: ignore[attr-defined]
             host, port = server.server_address[:2]
             host_text = host.decode("ascii") if isinstance(host, bytes) else str(host)
-            self.base_url = f"http://{host_text}:{port}"
-            self.url = self.local_url_for(self.root_url)
             thread = threading.Thread(
-                target=server.serve_forever,
+                target=self._run_listener,
+                args=(server,),
                 name="ucp-hls-proxy",
                 daemon=True,
             )
-            self.server = server
-            self.thread = thread
-            thread.start()
+            with self._lock:
+                self.base_url = f"http://{host_text}:{port}"
+                self.url = self.local_url_for(self.root_url)
+                self.server = server
+                self.thread = thread
+            try:
+                thread.start()
+                self._wait_until_listener_ready(server, thread)
+            except BaseException as start_exc:
+                try:
+                    self._cleanup_listener(
+                        server,
+                        thread,
+                        timeout=_STOP_TIMEOUT_SECONDS,
+                    )
+                except HlsProxyLifecycleError as cleanup_exc:
+                    raise cleanup_exc from start_exc
+                raise
             return self
 
     def stop(self) -> None:
         self.revoke()
-        with self._lock:
-            server, thread = self.server, self.thread
-            self.server = None
-            self.thread = None
+        with self._lifecycle_lock:
+            with self._lock:
+                server, thread = self.server, self.thread
+                if server is None and thread is None:
+                    self.base_url = ""
+                    self.url = ""
+                    return
+            self._cleanup_listener(server, thread, timeout=_STOP_TIMEOUT_SECONDS)
+
+    @staticmethod
+    def _run_listener(server: _ThreadingHlsProxyServer) -> None:
+        try:
+            server.serve_forever(poll_interval=_SERVER_POLL_INTERVAL_SECONDS)
+        except BaseException as exc:
+            server.listener_error = exc
+        finally:
+            server.stopped_event.set()
+
+    @staticmethod
+    def _thread_is_alive(thread: threading.Thread | None) -> bool:
+        if thread is None:
+            return False
+        try:
+            return bool(thread.is_alive())
+        except Exception:
+            return True
+
+    @staticmethod
+    def _listener_socket_is_closed(server: _ThreadingHlsProxyServer | None) -> bool:
+        if server is None:
+            return True
+        socket_object = getattr(server, "socket", None)
+        fileno = getattr(socket_object, "fileno", None)
+        if not callable(fileno):
+            return False
+        try:
+            return int(fileno()) < 0
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _listener_is_ready(
+        self,
+        server: _ThreadingHlsProxyServer | None,
+        thread: threading.Thread | None,
+    ) -> bool:
+        ready_event = getattr(server, "ready_event", None)
+        return bool(
+            server is not None
+            and thread is not None
+            and self._thread_is_alive(thread)
+            and not self._listener_socket_is_closed(server)
+            and isinstance(ready_event, threading.Event)
+            and ready_event.is_set()
+        )
+
+    def _wait_until_listener_ready(
+        self,
+        server: _ThreadingHlsProxyServer,
+        thread: threading.Thread,
+    ) -> None:
+        deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if self._listener_is_ready(server, thread):
+                return
+            if server.stopped_event.is_set() or not self._thread_is_alive(thread):
+                break
+            server.ready_event.wait(timeout=0.01)
+        if server.listener_error is not None:
+            raise HlsProxyLifecycleError("local HLS listener failed during startup") from server.listener_error
+        raise HlsProxyLifecycleError("local HLS listener did not become ready")
+
+    def _wait_for_request_convergence(self, deadline: float) -> bool:
+        current_ident = threading.get_ident()
+        with self._request_condition:
+            if current_ident in self._handler_thread_ids:
+                return self._active_requests == 0
+            while self._active_requests:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._request_condition.wait(timeout=remaining)
+            return True
+
+    def _cleanup_listener(
+        self,
+        server: _ThreadingHlsProxyServer | None,
+        thread: threading.Thread | None,
+        *,
+        timeout: float,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        current_thread = threading.current_thread()
+        ready_event = getattr(server, "ready_event", None)
+        listener_entered_loop = bool(
+            isinstance(ready_event, threading.Event) and ready_event.is_set()
+        )
+        shutdown_timed_out = False
+        if (
+            server is not None
+            and listener_entered_loop
+            and self._thread_is_alive(thread)
+            and thread is not current_thread
+        ):
+            shutdown_done = threading.Event()
+            shutdown_errors: list[BaseException] = []
+
+            def request_shutdown() -> None:
+                try:
+                    server.shutdown()
+                except BaseException as exc:
+                    shutdown_errors.append(exc)
+                finally:
+                    shutdown_done.set()
+
+            try:
+                threading.Thread(
+                    target=request_shutdown,
+                    name="ucp-hls-proxy-shutdown",
+                    daemon=True,
+                ).start()
+            except Exception as exc:
+                shutdown_errors.append(exc)
+                shutdown_done.set()
+            shutdown_timed_out = not shutdown_done.wait(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+            for exc in shutdown_errors:
+                _log_diagnostic_best_effort("M3U8Proxy", "shutdown_server", exc)
         if server is not None:
-            server.shutdown()
-            server.server_close()
-        if thread is not None:
-            thread.join(timeout=2)
+            try:
+                server.server_close()
+            except Exception as exc:
+                _log_diagnostic_best_effort(
+                    "M3U8Proxy",
+                    "close_server",
+                    exc,
+                    details={"task_id": self.capability.task_id},
+                )
+        if thread is not None and thread is not current_thread and self._thread_is_alive(thread):
+            try:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception as exc:
+                _log_diagnostic_best_effort(
+                    "M3U8Proxy",
+                    "join_server_thread",
+                    exc,
+                    details={"task_id": self.capability.task_id},
+                )
+
+        listener_stopped = not self._thread_is_alive(thread)
+        socket_closed = self._listener_socket_is_closed(server)
+        requests_stopped = self._wait_for_request_convergence(deadline)
+        incomplete = []
+        if shutdown_timed_out:
+            incomplete.append("server shutdown")
+        if not listener_stopped:
+            incomplete.append("listener thread")
+        if not socket_closed:
+            incomplete.append("listener socket")
+        if not requests_stopped:
+            incomplete.append("active request handlers")
+        if incomplete:
+            raise HlsProxyLifecycleError(
+                f"local HLS proxy cleanup incomplete: {', '.join(incomplete)}"
+            )
+
+        with self._lock:
+            if self.server is server and self.thread is thread:
+                self.server = None
+                self.thread = None
+                self.base_url = ""
+                self.url = ""
 
     def revoke(self) -> None:
         with self._lock:
@@ -345,10 +936,27 @@ class _LocalHlsProxy:
             return frozenset(self._members)
 
     def acquire_request_slot(self) -> bool:
-        return self._request_slots.acquire(blocking=False)
+        with self._request_condition:
+            if self._revoked or not self._request_slots.acquire(blocking=False):
+                return False
+            self._active_requests += 1
+            return True
 
     def release_request_slot(self) -> None:
-        self._request_slots.release()
+        with self._request_condition:
+            if self._active_requests <= 0:
+                raise RuntimeError("local HLS request slot accounting underflow")
+            self._active_requests -= 1
+            self._request_slots.release()
+            self._request_condition.notify_all()
+
+    def mark_request_handler_started(self) -> None:
+        with self._request_condition:
+            self._handler_thread_ids.add(threading.get_ident())
+
+    def mark_request_handler_stopped(self) -> None:
+        with self._request_condition:
+            self._handler_thread_ids.discard(threading.get_ident())
 
     @staticmethod
     def _canonical_member_url(url: str) -> str:
@@ -510,6 +1118,7 @@ class _LocalHlsProxy:
         if tag in {
             "#EXT-X-MEDIA",
             "#EXT-X-I-FRAME-STREAM-INF",
+            "#EXT-X-IMAGE-STREAM-INF",
             "#EXT-X-RENDITION-REPORT",
         }:
             return "playlist"
@@ -541,6 +1150,8 @@ class _LocalHlsProxy:
                 if tag.startswith(_FORBIDDEN_PLAYLIST_TAGS):
                     raise HlsCapabilityError(f"unsupported HLS control tag: {tag}")
                 matches = list(_URI_ATTRIBUTE.finditer(line))
+                if matches and tag not in _URI_RESOURCE_TAGS:
+                    raise HlsCapabilityError(f"unsupported HLS URI-bearing tag: {tag}")
                 residual = _URI_ATTRIBUTE.sub("", line)
                 if _UNQUOTED_URI_ATTRIBUTE.search(residual):
                     raise HlsCapabilityError("HLS URI attributes must be quoted")
@@ -756,11 +1367,11 @@ class _LocalHlsProxy:
             if callable(close):
                 try:
                     close()
-                except (OSError, RuntimeError, AttributeError) as exc:
-                    debug_logger.log_exception(
+                except Exception as exc:
+                    _log_diagnostic_best_effort(
                         "M3U8Proxy",
                         "close_upstream_response",
-                        _diagnostic_exception(exc),
+                        exc,
                         details={"task_id": self.capability.task_id},
                     )
 
@@ -795,11 +1406,11 @@ class _LocalHlsProxy:
             handler.wfile.write(chunk)
             try:
                 handler.wfile.flush()
-            except (BrokenPipeError, OSError, RuntimeError) as exc:
-                debug_logger.log_exception(
+            except Exception as exc:
+                _log_diagnostic_best_effort(
                     "M3U8Proxy",
                     "flush_response_body",
-                    _diagnostic_exception(exc),
+                    exc,
                     details={"task_id": self.capability.task_id},
                 )
             self._record_resource_bytes(len(chunk))

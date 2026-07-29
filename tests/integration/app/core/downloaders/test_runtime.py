@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.server
 import io
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import requests
+from curl_cffi.const import CurlOpt
 
 from app.config import cfg
 from app.core.download_manager import DownloadManager, DownloadWorker
@@ -4054,9 +4056,260 @@ class DownloaderStrategyTests(unittest.TestCase):
         args = mocked_run.call_args.args
         self.assertEqual(args[3], "http://127.0.0.1:12345/hls?u=demo")
         self.assertIsNone(args[6])
-        self.assertEqual(args[8], 16)
+        self.assertEqual(args[8], 4)
         self.assertTrue(mocked_run.call_args.kwargs["local_proxy"])
         self.assertTrue(callable(mocked_run.call_args.kwargs["progress_provider"]))
+
+    def test_local_hls_proxy_cleanup_failure_is_secondary_to_download_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        primary_error = LookupError("download primary failure")
+        cleanup_error = RuntimeError("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.progress_snapshot.return_value = (0, 0)
+        local_proxy.stop.side_effect = cleanup_error
+
+        with patch.object(downloader, "_start_local_hls_proxy", return_value=local_proxy), patch.object(
+            downloader,
+            "_run_nm3u8_external_command",
+            side_effect=primary_error,
+        ), patch("app.core.downloaders.hls_proxy.debug_logger.log_exception") as logged:
+            with self.assertRaises(LookupError) as raised:
+                downloader._download_with_nm3u8_external(
+                    item,
+                    "demo.mp4",
+                    "N_m3u8DL-RE.exe",
+                    "ua-demo",
+                    "https://missav.ai/cn/demo",
+                    None,
+                    {},
+                    4,
+                    lambda _value: None,
+                    lambda: False,
+                )
+
+        self.assertIs(raised.exception, primary_error)
+        self.assertEqual(str(raised.exception), "download primary failure")
+        local_proxy.stop.assert_called_once_with()
+        self.assertTrue(any("cleanup" in note.lower() for note in primary_error.__notes__))
+        logged.assert_called_once()
+
+    def test_local_hls_proxy_cleanup_failure_is_visible_without_download_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        cleanup_error = RuntimeError("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.progress_snapshot.return_value = (0, 0)
+        local_proxy.stop.side_effect = cleanup_error
+
+        with patch.object(downloader, "_start_local_hls_proxy", return_value=local_proxy), patch.object(
+            downloader,
+            "_run_nm3u8_external_command",
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                downloader._download_with_nm3u8_external(
+                    item,
+                    "demo.mp4",
+                    "N_m3u8DL-RE.exe",
+                    "ua-demo",
+                    "https://missav.ai/cn/demo",
+                    None,
+                    {},
+                    4,
+                    lambda _value: None,
+                    lambda: False,
+                )
+
+        self.assertIs(raised.exception, cleanup_error)
+        local_proxy.stop.assert_called_once_with()
+
+    def test_local_hls_proxy_cleanup_diagnostics_cannot_replace_hostile_primary(self):
+        class HostilePrimary(RuntimeError):
+            note_attempted = False
+
+            def add_note(self, _note: str) -> None:
+                self.note_attempted = True
+                raise SystemExit("add_note failed")
+
+            def __str__(self) -> str:
+                raise AssertionError("primary __str__ failed")
+
+        class HostileCleanup(RuntimeError):
+            def __str__(self) -> str:
+                raise AssertionError("cleanup __str__ failed")
+
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        primary_error = HostilePrimary("download primary failure")
+        cleanup_error = HostileCleanup("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.progress_snapshot.return_value = (0, 0)
+        local_proxy.stop.side_effect = cleanup_error
+
+        raised: BaseException | None = None
+        with patch.object(downloader, "_start_local_hls_proxy", return_value=local_proxy), patch.object(
+            downloader,
+            "_run_nm3u8_external_command",
+            side_effect=primary_error,
+        ), patch(
+            "app.core.downloaders.hls_proxy.debug_logger.log_exception",
+            side_effect=KeyboardInterrupt("logger failed"),
+        ) as logged:
+            try:
+                downloader._download_with_nm3u8_external(
+                    item,
+                    "demo.mp4",
+                    "N_m3u8DL-RE.exe",
+                    "ua-demo",
+                    "https://missav.ai/cn/demo",
+                    None,
+                    {},
+                    4,
+                    lambda _value: None,
+                    lambda: False,
+                )
+            except BaseException as exc:
+                raised = exc
+
+        self.assertIs(raised, primary_error)
+        self.assertEqual(raised.args, ("download primary failure",))
+        self.assertTrue(primary_error.note_attempted)
+        local_proxy.stop.assert_called_once_with()
+        logged.assert_called_once()
+
+    def test_local_yt_dlp_proxy_cleanup_failure_is_secondary_to_download_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        primary_error = LookupError("yt-dlp primary failure")
+        cleanup_error = RuntimeError("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.stop.side_effect = cleanup_error
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            downloader,
+            "_start_local_hls_proxy",
+            return_value=local_proxy,
+        ), patch.object(downloader, "_run_yt_dlp", side_effect=primary_error), patch(
+            "app.core.downloaders.hls_proxy.debug_logger.log_exception"
+        ) as logged:
+            with self.assertRaises(LookupError) as raised:
+                downloader._download_with_yt_dlp_fallback(
+                    item,
+                    os.path.join(temp_dir, "demo.mp4"),
+                    {},
+                    None,
+                    lambda _value: None,
+                    lambda: False,
+                )
+
+        self.assertIs(raised.exception, primary_error)
+        self.assertEqual(str(raised.exception), "yt-dlp primary failure")
+        local_proxy.stop.assert_called_once_with()
+        self.assertTrue(any("cleanup" in note.lower() for note in primary_error.__notes__))
+        logged.assert_called_once()
+
+    def test_local_yt_dlp_proxy_cleanup_failure_is_visible_without_primary(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        cleanup_error = RuntimeError("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.stop.side_effect = cleanup_error
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            def create_output(_url, _params) -> None:
+                Path(save_path).write_bytes(b"video")
+
+            with patch.object(
+                downloader,
+                "_start_local_hls_proxy",
+                return_value=local_proxy,
+            ), patch.object(downloader, "_run_yt_dlp", side_effect=create_output):
+                with self.assertRaises(RuntimeError) as raised:
+                    downloader._download_with_yt_dlp_fallback(
+                        item,
+                        save_path,
+                        {},
+                        None,
+                        lambda _value: None,
+                        lambda: False,
+                    )
+
+        self.assertIs(raised.exception, cleanup_error)
+        local_proxy.stop.assert_called_once_with()
+
+    def test_local_yt_dlp_proxy_cleanup_diagnostics_cannot_replace_hostile_primary(self):
+        class HostilePrimary(RuntimeError):
+            note_attempted = False
+
+            def add_note(self, _note: str) -> None:
+                self.note_attempted = True
+                raise SystemExit("add_note failed")
+
+            def __str__(self) -> str:
+                raise AssertionError("primary __str__ failed")
+
+        class HostileCleanup(RuntimeError):
+            def __str__(self) -> str:
+                raise AssertionError("cleanup __str__ failed")
+
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        primary_error = HostilePrimary("yt-dlp primary failure")
+        cleanup_error = HostileCleanup("proxy cleanup failure")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.stop.side_effect = cleanup_error
+        raised: BaseException | None = None
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            downloader,
+            "_start_local_hls_proxy",
+            return_value=local_proxy,
+        ), patch.object(downloader, "_run_yt_dlp", side_effect=primary_error), patch(
+            "app.core.downloaders.hls_proxy.debug_logger.log_exception",
+            side_effect=KeyboardInterrupt("logger failed"),
+        ) as logged:
+            try:
+                downloader._download_with_yt_dlp_fallback(
+                    item,
+                    os.path.join(temp_dir, "demo.mp4"),
+                    {},
+                    None,
+                    lambda _value: None,
+                    lambda: False,
+                )
+            except BaseException as exc:
+                raised = exc
+
+        self.assertIs(raised, primary_error)
+        self.assertEqual(raised.args, ("yt-dlp primary failure",))
+        self.assertTrue(primary_error.note_attempted)
+        local_proxy.stop.assert_called_once_with()
+        logged.assert_called_once()
+
+    def test_local_yt_dlp_output_validation_precedes_proxy_cleanup_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        local_proxy = Mock(url="http://127.0.0.1:12345/hls?u=demo")
+        local_proxy.stop.side_effect = RuntimeError("proxy cleanup failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            downloader,
+            "_start_local_hls_proxy",
+            return_value=local_proxy,
+        ), patch.object(downloader, "_run_yt_dlp", return_value=None):
+            with self.assertRaisesRegex(ExternalToolError, "valid output"):
+                downloader._download_with_yt_dlp_fallback(
+                    item,
+                    os.path.join(temp_dir, "demo.mp4"),
+                    {},
+                    None,
+                    lambda _value: None,
+                    lambda: False,
+                )
+
+        local_proxy.stop.assert_called_once_with()
 
     def test_public_external_hls_always_uses_validating_loopback_proxy(self):
         downloader = N_m3u8DL_RE_Downloader()
@@ -4574,6 +4827,7 @@ https://cdn.example.com/seg2.m4s?token=1
         response = Mock()
         response.status_code = 200
         response.headers = {"Content-Type": "video/mp4"}
+        response.content = b""
         fake_curl_cffi = types.ModuleType("curl_cffi")
         fake_curl_cffi.requests = object()
 
@@ -4593,15 +4847,10 @@ https://cdn.example.com/seg2.m4s?token=1
 
     def test_hls_proxy_rejects_private_upstream_before_curl(self):
         downloader = N_m3u8DL_RE_Downloader()
-        fake_curl_cffi = types.ModuleType("curl_cffi")
-        fake_curl_cffi.requests = object()
-        transport = Mock()
-        transport.request.side_effect = DomainPolicyViolation("private upstream")
-
-        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
-            "app.core.downloaders.m3u8.PinnedTransport",
-            return_value=transport,
-        ), patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
+        with patch("app.core.downloaders.m3u8.PinnedTransport") as pinned_transport, patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+        ) as mocked_get:
             with self.assertRaises(DomainPolicyViolation):
                 downloader._hls_proxy_open_upstream(
                     "http://127.0.0.1/private-segment.ts",
@@ -4610,66 +4859,89 @@ https://cdn.example.com/seg2.m4s?token=1
                     domain_policy=DomainPolicyEngine(),
                 )
 
+        pinned_transport.assert_not_called()
         mocked_get.assert_not_called()
 
     def test_hls_proxy_rejects_redirect_to_private_upstream_before_following(self):
         downloader = N_m3u8DL_RE_Downloader()
-        fake_curl_cffi = types.ModuleType("curl_cffi")
-        fake_curl_cffi.requests = object()
-        transport = Mock()
-        transport.request.side_effect = DomainPolicyViolation("private redirect")
+        response = Mock(
+            status_code=302,
+            headers={"Location": "http://127.0.0.1/private.m3u8"},
+            content=b"",
+            url="https://cdn.example:443/playlist.m3u8",
+        )
+        policy = Mock(spec=DomainPolicyEngine)
+        policy.resolve_public_addresses.side_effect = [
+            ("93.184.216.34",),
+            DomainPolicyViolation("private redirect"),
+        ]
 
-        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
-            "app.core.downloaders.m3u8.PinnedTransport",
-            return_value=transport,
-        ), patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
+        with patch("app.core.downloaders.m3u8.PinnedTransport") as pinned_transport, patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ) as mocked_get:
             with self.assertRaises(DomainPolicyViolation):
                 downloader._hls_proxy_open_upstream(
                     "https://cdn.example/playlist.m3u8",
                     {},
                     None,
-                    domain_policy=DomainPolicyEngine(),
+                    domain_policy=policy,
                 )
 
-        mocked_get.assert_not_called()
+        pinned_transport.assert_not_called()
+        mocked_get.assert_called_once()
+        response.close.assert_called_once_with()
 
-    def test_hls_proxy_public_request_uses_private_pinned_transport(self):
+    def test_hls_proxy_known_suffixes_use_staged_curl_and_process_memory_bound(self):
         downloader = N_m3u8DL_RE_Downloader()
-        response = Mock(status_code=200, headers={"Content-Type": "video/mp4"})
-        fake_curl_cffi = types.ModuleType("curl_cffi")
-        fake_curl_cffi.requests = object()
+        response = Mock(status_code=200, headers={"Content-Type": "video/mp4"}, content=b"")
         policy = Mock(spec=DomainPolicyEngine)
-        transport = Mock()
-        transport.request.return_value = response
+        policy.resolve_public_addresses.return_value = ("93.184.216.34",)
 
-        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch(
-            "app.core.downloaders.m3u8.PinnedTransport",
-            return_value=transport,
-        ) as transport_factory, patch.object(downloader, "_curl_cffi_get_response") as mocked_get:
-            result = downloader._hls_proxy_open_upstream(
+        with patch("app.core.downloaders.m3u8.PinnedTransport") as pinned_transport, patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ) as mocked_get:
+            media_result = downloader._hls_proxy_open_upstream(
                 "https://CDN.Example./video.mp4",
                 {"Range": "bytes=0-"},
                 None,
                 domain_policy=policy,
             )
+            playlist_result = downloader._hls_proxy_open_upstream(
+                "https://CDN.Example./master.m3u8",
+                {},
+                None,
+                domain_policy=policy,
+            )
 
-        self.assertIs(result, response)
-        transport_factory.assert_called_once_with(
-            policy=policy,
-            timeout=60,
-            max_response_bytes=256 * 1024 * 1024,
+        self.assertIs(media_result, response)
+        self.assertIs(playlist_result, response)
+        pinned_transport.assert_not_called()
+        self.assertEqual(mocked_get.call_count, 2)
+        for request in mocked_get.call_args_list:
+            self.assertTrue(callable(request.kwargs["content_callback"]))
+            self.assertTrue(callable(request.kwargs["header_callback"]))
+            self.assertIn(CurlOpt.RESOLVE, request.kwargs["curl_options"])
+
+        proxy = _LocalHlsProxy(downloader, "https://cdn.example/master.m3u8", {}, None)
+        admitted = 0
+        while proxy.acquire_request_slot():
+            admitted += 1
+        for _index in range(admitted):
+            proxy.release_request_slot()
+
+        self.assertGreaterEqual(admitted, 4)
+        self.assertLessEqual(
+            admitted * 3 * 32 * 1024 * 1024,
+            384 * 1024 * 1024,
         )
-        transport.request.assert_called_once_with(
-            "GET",
-            "https://CDN.Example./video.mp4",
-            headers={"Range": "bytes=0-"},
-            max_redirects=5,
-        )
-        mocked_get.assert_not_called()
 
     def test_hls_proxy_local_explicit_upstream_proxy_is_preserved(self):
         downloader = N_m3u8DL_RE_Downloader()
-        response = Mock(status_code=200, headers={"Content-Type": "video/mp4"})
+        response = Mock(status_code=200, headers={"Content-Type": "video/mp4"}, content=b"")
         fake_curl_cffi = types.ModuleType("curl_cffi")
         fake_curl_cffi.requests = object()
         policy = DomainPolicyEngine(
@@ -4689,10 +4961,353 @@ https://cdn.example.com/seg2.m4s?token=1
                 {},
                 proxy_url,
                 domain_policy=policy,
-            )
+        )
 
         self.assertEqual(mocked_get.call_args.args[3], proxy_url)
-        self.assertNotIn("curl_options", mocked_get.call_args.kwargs)
+        self.assertIsNone(mocked_get.call_args.kwargs["curl_options"])
+        self.assertTrue(callable(mocked_get.call_args.kwargs["header_callback"]))
+
+    def test_hls_proxy_explicit_proxy_size_limit_survives_cleanup_logging_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(status_code=200, headers={}, content=b"")
+        response.close.side_effect = ValueError("close failed")
+
+        def return_oversized_response(*_args, **kwargs):
+            callback = kwargs["content_callback"]
+            callback(b"12345")
+            return response
+
+        with patch(
+            "app.core.downloaders.hls_proxy._MAX_MEDIA_RESPONSE_BYTES",
+            4,
+        ), patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            side_effect=return_oversized_response,
+        ), patch(
+            "app.core.downloaders.m3u8.debug_logger.log_exception",
+            side_effect=RuntimeError("diagnostic logger failed"),
+        ):
+            with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                downloader._hls_proxy_request_response(
+                    object(),
+                    "https://cdn.example/video.mp4",
+                    {},
+                    "http://user-proxy.example:8080",
+                    domain_policy=None,
+                )
+
+    def test_hls_proxy_explicit_proxy_closes_unbounded_raw_response(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(status_code=200, headers={}, content=b"12345")
+
+        with patch(
+            "app.core.downloaders.hls_proxy._MAX_MEDIA_RESPONSE_BYTES",
+            4,
+        ), patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                downloader._hls_proxy_request_response(
+                    object(),
+                    "https://cdn.example/video.mp4",
+                    {},
+                    "http://user-proxy.example:8080",
+                    domain_policy=None,
+                )
+
+        response.close.assert_called_once_with()
+
+    def test_hls_proxy_extensionless_content_type_playlist_is_limited_before_buffering_media_size(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(
+            status_code=200,
+            headers={"Content-Type": "application/vnd.apple.mpegurl"},
+            content=b"",
+        )
+
+        def return_oversized_playlist(*_args, **kwargs):
+            header_callback = kwargs["header_callback"]
+            header_callback(b"Content-Type: application/vnd.apple.mpegurl\r\n")
+            chunk = b"x" * (8 * 1024 * 1024 + 1)
+            if kwargs["content_callback"](chunk) != len(chunk):
+                raise OSError("curl write aborted")
+            return response
+
+        with patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            side_effect=return_oversized_playlist,
+        ):
+            with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                downloader._hls_proxy_request_response(
+                    object(),
+                    "https://cdn.example/opaque-token",
+                    {},
+                    "http://user-proxy.example:8080",
+                    domain_policy=None,
+                )
+
+    def test_hls_proxy_extensionless_body_marker_playlist_is_limited_to_eight_mib(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(status_code=200, headers={}, content=b"")
+
+        def return_oversized_playlist(*_args, **kwargs):
+            callback = kwargs["content_callback"]
+            for chunk in (b"#EXTM3U\n", b"x" * (8 * 1024 * 1024)):
+                if callback(chunk) != len(chunk):
+                    raise OSError("curl write aborted")
+            return response
+
+        with patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            side_effect=return_oversized_playlist,
+        ):
+            with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                downloader._hls_proxy_request_response(
+                    object(),
+                    "https://cdn.example/opaque-token",
+                    {},
+                    "http://user-proxy.example:8080",
+                    domain_policy=None,
+                )
+
+    def test_hls_proxy_extensionless_small_playlist_and_media_remain_usable(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        cases = (
+            ("application/vnd.apple.mpegurl", b"#EXTM3U\n#EXT-X-VERSION:3\n"),
+            ("application/octet-stream", b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n"),
+            ("video/mp4", b"\x00" * 8192),
+        )
+
+        for content_type, body in cases:
+            with self.subTest(content_type=content_type, marker=body[:7]):
+                response = Mock(status_code=200, headers={"Content-Type": content_type}, content=b"")
+
+                def return_response(*_args, **kwargs):
+                    header_callback = kwargs["header_callback"]
+                    header_callback(f"Content-Type: {content_type}\r\n".encode("ascii"))
+                    self.assertEqual(kwargs["content_callback"](body), len(body))
+                    return response
+
+                with patch.object(
+                    downloader,
+                    "_curl_cffi_get_response",
+                    side_effect=return_response,
+                ):
+                    result = downloader._hls_proxy_request_response(
+                        object(),
+                        "https://cdn.example/opaque-token",
+                        {},
+                        "http://user-proxy.example:8080",
+                        domain_policy=None,
+                    )
+
+                self.assertEqual(result.content, body)
+
+    def test_hls_proxy_extensionless_public_request_keeps_dns_pin_during_staged_read(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(
+            status_code=200,
+            headers={"Content-Type": "video/mp4"},
+            content=b"media",
+        )
+        policy = Mock(spec=DomainPolicyEngine)
+        policy.resolve_public_addresses.return_value = ("93.184.216.34",)
+
+        with patch("app.core.downloaders.m3u8.PinnedTransport") as pinned_transport, patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ) as request:
+            result = downloader._hls_proxy_request_response(
+                object(),
+                "https://cdn.example/opaque-token",
+                {},
+                None,
+                domain_policy=policy,
+            )
+
+        self.assertIs(result, response)
+        pinned_transport.assert_not_called()
+        policy.resolve_public_addresses.assert_called_once_with(
+            "https://cdn.example:443/opaque-token"
+        )
+        options = request.call_args.kwargs["curl_options"]
+        self.assertIn(CurlOpt.RESOLVE, options)
+        self.assertEqual(options[CurlOpt.PROXY], "")
+        self.assertEqual(options[CurlOpt.FRESH_CONNECT], 1)
+        self.assertEqual(options[CurlOpt.FORBID_REUSE], 1)
+        self.assertTrue(callable(request.call_args.kwargs["header_callback"]))
+
+    def test_hls_proxy_extensionless_oversized_raw_playlist_closes_response(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock(
+            status_code=200,
+            headers={"Content-Type": "application/vnd.apple.mpegurl"},
+            content=b"x" * (8 * 1024 * 1024 + 1),
+        )
+
+        with patch.object(downloader, "_curl_cffi_get_response", return_value=response):
+            with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                downloader._hls_proxy_request_response(
+                    object(),
+                    "https://cdn.example/opaque-token",
+                    {},
+                    "http://user-proxy.example:8080",
+                    domain_policy=None,
+                )
+
+        response.close.assert_called_once_with()
+
+    def test_hls_proxy_real_curl_classifies_extensionless_playlist_headers_before_body(self):
+        request_paths: list[str] = []
+        oversized_length = 20 * 1024 * 1024
+        bytes_sent = 0
+        response_finished = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                nonlocal bytes_sent
+                request_paths.append(self.path)
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", "/opaque-token")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Content-Length", str(oversized_length))
+                self.end_headers()
+                remaining = oversized_length
+                try:
+                    while remaining:
+                        chunk = b"x" * min(64 * 1024, remaining)
+                        self.wfile.write(chunk)
+                        bytes_sent += len(chunk)
+                        remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    response_finished.set()
+
+            def log_message(self, _format, *_args):
+                return
+
+        class Server(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+
+        server = Server(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        port = int(server.server_address[1])
+
+        def loopback_pin(url, _domain_policy, _upstream_proxy):
+            return url, {
+                CurlOpt.RESOLVE: [f"hls.public.test:{port}:127.0.0.1"],
+                CurlOpt.PROXY: "",
+            }
+
+        try:
+            from curl_cffi import requests as curl_requests
+
+            with patch(
+                "app.core.downloaders.hls_proxy.prepare_hls_curl_request",
+                side_effect=loopback_pin,
+            ):
+                with self.assertRaisesRegex(DomainPolicyViolation, "size limit"):
+                    N_m3u8DL_RE_Downloader()._hls_proxy_request_response(
+                        curl_requests,
+                        f"http://hls.public.test:{port}/redirect",
+                        {},
+                        None,
+                        domain_policy=None,
+                        max_redirects=1,
+                    )
+            self.assertTrue(response_finished.wait(2), "loopback response did not finish")
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+        self.assertEqual(request_paths, ["/redirect", "/opaque-token"])
+        self.assertLess(bytes_sent, oversized_length)
+
+    def test_hls_public_curl_proxy_choice_overrides_environment_and_caller_options(self):
+        request_paths: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                request_paths.append(self.path)
+                if self.path.startswith("http://explicit-target.invalid"):
+                    body = b"explicit-proxy"
+                elif self.path.startswith("http://"):
+                    body = b"ambient-proxy"
+                else:
+                    body = b"direct"
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        port = int(server.server_address[1])
+        proxy_url = f"http://127.0.0.1:{port}"
+        try:
+            from curl_cffi import requests as curl_requests
+
+            explicit_body = bytearray()
+            with patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}, clear=False):
+                N_m3u8DL_RE_Downloader._curl_cffi_get_response(
+                    curl_requests,
+                    "http://explicit-target.invalid/video.mp4",
+                    {},
+                    proxy_url,
+                    allow_redirects=False,
+                    curl_options={CurlOpt.PROXY: "http://127.0.0.1:1", CurlOpt.NOPROXY: "*"},
+                    content_callback=lambda chunk: explicit_body.extend(chunk) or len(chunk),
+                    header_callback=lambda line: len(line),
+                )
+
+            direct_body = bytearray()
+            with patch.dict(
+                os.environ,
+                {"HTTP_PROXY": proxy_url, "http_proxy": proxy_url, "NO_PROXY": "", "no_proxy": ""},
+                clear=False,
+            ):
+                N_m3u8DL_RE_Downloader._curl_cffi_get_response(
+                    curl_requests,
+                    f"http://hls.direct.test:{port}/video.mp4",
+                    {},
+                    None,
+                    allow_redirects=False,
+                    curl_options={
+                        CurlOpt.RESOLVE: [f"hls.direct.test:{port}:127.0.0.1"],
+                        CurlOpt.PROXY: proxy_url,
+                    },
+                    content_callback=lambda chunk: direct_body.extend(chunk) or len(chunk),
+                    header_callback=lambda line: len(line),
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+        self.assertEqual(bytes(explicit_body), b"explicit-proxy")
+        self.assertEqual(bytes(direct_body), b"direct")
+        self.assertEqual(request_paths, ["http://explicit-target.invalid/video.mp4", "/video.mp4"])
 
     @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")
     @patch("app.core.downloaders.m3u8.subprocess.Popen")

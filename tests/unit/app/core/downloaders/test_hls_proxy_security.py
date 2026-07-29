@@ -3,11 +3,12 @@ from __future__ import annotations
 import io
 import re
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import pytest
@@ -188,10 +189,8 @@ def _public_resolver(host: str, port: int | None, **_kwargs):
 
 def _record_playlist_fail_closed(proxy: subject._LocalHlsProxy, playlist: str) -> None:
     record_playlist = _required_method(proxy, "record_playlist")
-    try:
+    with pytest.raises((ExternalToolError, DomainPolicyViolation)):
         record_playlist(ROOT_URL, playlist)
-    except (ExternalToolError, DomainPolicyViolation):
-        return
 
 
 def test_hls_proxy_rejects_unsigned_expired_and_unlisted_urls() -> None:
@@ -347,6 +346,7 @@ variants/main.m3u8
 #EXTINF:4,
 segments/one.ts
 #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=120000,URI="iframes/index.m3u8"
+#EXT-X-IMAGE-STREAM-INF:BANDWIDTH=24000,URI="images/index.m3u8"
 """
     expected_members = {
         CANONICAL_ROOT_URL,
@@ -356,6 +356,7 @@ segments/one.ts
         "https://media.example:443/init/init.mp4",
         "https://media.example:443/segments/one.ts",
         "https://media.example:443/iframes/index.m3u8",
+        "https://media.example:443/images/index.m3u8",
     }
 
     record_playlist(ROOT_URL, playlist)
@@ -539,6 +540,26 @@ def test_hls_content_steering_and_variable_playlists_fail_closed_without_members
     assert verify_path(_path(proxy.local_url_for(apparently_safe_child))) is None
 
 
+@pytest.mark.parametrize(
+    "metadata_tag",
+    [
+        '#EXT-X-SESSION-DATA:DATA-ID="account",URI="account/private.json"',
+        '#EXT-X-UNKNOWN:URI="account/private.json"',
+    ],
+)
+def test_hls_playlist_rejects_uri_attributes_on_non_media_tags_atomically(
+    metadata_tag: str,
+) -> None:
+    proxy, _downloader, _clock = _new_proxy()
+    unauthorized = "https://media.example/account/private.json"
+
+    with pytest.raises(subject.HlsCapabilityError, match="URI|tag|unsupported"):
+        proxy.record_playlist(ROOT_URL, f"#EXTM3U\n{metadata_tag}\n")
+
+    assert proxy.members == {CANONICAL_ROOT_URL}
+    assert proxy.verify_path(_path(proxy.local_url_for(unauthorized))) is None
+
+
 def test_hls_proxy_stop_revokes_previously_signed_paths() -> None:
     proxy, _downloader, _clock = _new_proxy()
     verify_path = _required_method(proxy, "verify_path")
@@ -548,6 +569,414 @@ def test_hls_proxy_stop_revokes_previously_signed_paths() -> None:
     proxy.stop()
 
     assert verify_path(signed_path) is None
+
+
+def test_hls_proxy_start_failure_closes_bound_server_and_clears_state(monkeypatch) -> None:
+    proxy, _downloader = _new_basic_proxy()
+    server_type = subject._ThreadingHlsProxyServer
+    created_servers = []
+
+    def create_server(*args, **kwargs):
+        server = server_type(*args, **kwargs)
+        created_servers.append(server)
+        return server
+
+    monkeypatch.setattr(subject, "_ThreadingHlsProxyServer", create_server)
+    try:
+        with patch.object(
+            subject.threading.Thread,
+            "start",
+            side_effect=RuntimeError("thread start failed"),
+        ):
+            with pytest.raises(RuntimeError, match="thread start failed"):
+                proxy.start()
+
+        assert proxy.server is None
+        assert proxy.thread is None
+        assert proxy.base_url == ""
+        assert proxy.url == ""
+        assert created_servers[0].socket.fileno() == -1
+    finally:
+        for server in created_servers:
+            server.server_close()
+
+
+def test_hls_proxy_start_rejects_immediately_dead_listener_and_can_retry(monkeypatch) -> None:
+    proxy, _downloader = _new_basic_proxy()
+    server_type = subject._ThreadingHlsProxyServer
+    created_servers = []
+
+    def create_server(*args, **kwargs):
+        server = server_type(*args, **kwargs)
+        created_servers.append(server)
+        return server
+
+    monkeypatch.setattr(subject, "_ThreadingHlsProxyServer", create_server)
+    monkeypatch.setattr(subject, "_STARTUP_TIMEOUT_SECONDS", 0.1, raising=False)
+    try:
+        with patch.object(server_type, "serve_forever", return_value=None):
+            with pytest.raises(ExternalToolError, match="start|ready|listener"):
+                proxy.start()
+
+        assert proxy.server is None
+        assert proxy.thread is None
+        assert proxy.base_url == ""
+        assert proxy.url == ""
+        assert created_servers[0].socket.fileno() == -1
+
+        assert proxy.start() is proxy
+        assert proxy.thread is not None and proxy.thread.is_alive()
+        assert proxy.url.startswith("http://127.0.0.1:")
+    finally:
+        if proxy.thread is not None and not proxy.thread.is_alive():
+            if proxy.server is not None:
+                proxy.server.server_close()
+            proxy.server = None
+            proxy.thread = None
+        else:
+            proxy.stop()
+        for server in created_servers:
+            server.server_close()
+
+
+def test_hls_proxy_stop_retains_blocked_handler_state_until_retry(monkeypatch) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    client_errors: list[BaseException] = []
+    media_url = "https://media.example/segment.ts"
+    canonical_media_url = "https://media.example:443/segment.ts"
+
+    class _BlockingResponse:
+        status_code = 200
+        url = canonical_media_url
+        redirect_chain = (canonical_media_url,)
+        headers = {"Content-Type": "video/mp2t"}
+        content = b""
+
+        @staticmethod
+        def iter_content():
+            entered.set()
+            release.wait()
+            yield b"segment"
+
+        @staticmethod
+        def close() -> None:
+            return
+
+    proxy, downloader = _new_basic_proxy()
+    proxy.authorize_playlist_resource(ROOT_URL, media_url, kind="media")
+    downloader.response = _BlockingResponse()  # type: ignore[assignment]
+    monkeypatch.setattr(subject, "_STOP_TIMEOUT_SECONDS", 0.1, raising=False)
+    proxy.start()
+    server = proxy.server
+    listener = proxy.thread
+
+    def request_media() -> None:
+        try:
+            parts = urlsplit(proxy.local_url_for(media_url))
+            request_target = urlunsplit(("", "", parts.path, parts.query, ""))
+            with socket.create_connection((parts.hostname, parts.port), timeout=2) as client:
+                client.settimeout(3)
+                client.sendall(
+                    (
+                        f"GET {request_target} HTTP/1.0\r\n"
+                        "Host: 127.0.0.1\r\n\r\n"
+                    ).encode("ascii")
+                )
+                while client.recv(4096):
+                    pass
+        except BaseException as exc:
+            client_errors.append(exc)
+
+    client = threading.Thread(target=request_media, name="blocked-hls-client", daemon=True)
+    client.start()
+    try:
+        assert entered.wait(2), "the real proxy handler never reached the blocking response"
+
+        stop_started = time.monotonic()
+        with pytest.raises(ExternalToolError, match="cleanup|active|handler|request"):
+            proxy.stop()
+        assert time.monotonic() - stop_started < 0.5
+
+        assert proxy.server is server
+        assert proxy.thread is listener
+        assert server is not None and server.socket.fileno() == -1
+        assert listener is not None and not listener.is_alive()
+
+        release.set()
+        client.join(timeout=2)
+        assert not client.is_alive()
+        assert client_errors == []
+
+        proxy.stop()
+
+        assert proxy.server is None
+        assert proxy.thread is None
+        assert proxy.base_url == ""
+        assert proxy.url == ""
+
+        replacement, _replacement_downloader = _new_basic_proxy()
+        reacquired = [replacement.acquire_request_slot() for _index in range(5)]
+        try:
+            assert reacquired == [True] * 4 + [False]
+        finally:
+            for accepted in reacquired:
+                if accepted:
+                    replacement.release_request_slot()
+    finally:
+        release.set()
+        client.join(timeout=2)
+        try:
+            proxy.stop()
+        except ExternalToolError:
+            pass
+
+
+def test_hls_proxy_stop_attempts_close_and_join_when_shutdown_diagnostics_fail() -> None:
+    class _TrackingSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def fileno(self) -> int:
+            return -1 if self.closed else 1
+
+    class _FailingServer:
+        def __init__(self) -> None:
+            self.shutdown_calls = 0
+            self.close_calls = 0
+            self.socket = _TrackingSocket()
+            self.ready_event = threading.Event()
+            self.ready_event.set()
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            raise RuntimeError("shutdown failed")
+
+        def server_close(self) -> None:
+            self.close_calls += 1
+            self.socket.closed = True
+
+    class _TrackingThread:
+        def __init__(self) -> None:
+            self.join_calls: list[float | None] = []
+            self.alive = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls.append(timeout)
+            self.alive = False
+
+    proxy, _downloader = _new_basic_proxy()
+    signed_path = _path(proxy.local_url_for(ROOT_URL))
+    server = _FailingServer()
+    thread = _TrackingThread()
+    proxy.server = server  # type: ignore[assignment]
+    proxy.thread = thread  # type: ignore[assignment]
+
+    with patch.object(
+        subject.debug_logger,
+        "log_exception",
+        side_effect=RuntimeError("diagnostic logger failed"),
+    ):
+        proxy.stop()
+
+    assert server.shutdown_calls == 1
+    assert server.close_calls == 1
+    assert len(thread.join_calls) == 1
+    assert thread.join_calls[0] is not None and 0 < thread.join_calls[0] <= 2
+    assert proxy.server is None
+    assert proxy.thread is None
+    assert proxy.verify_path(signed_path) is None
+
+
+def test_hls_proxy_shutdown_obeys_hard_cleanup_deadline() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _Socket:
+        closed = False
+
+        def fileno(self) -> int:
+            return -1 if self.closed else 1
+
+    class _BlockingServer:
+        ready_event = threading.Event()
+        socket = _Socket()
+
+        def shutdown(self) -> None:
+            entered.set()
+            release.wait(2)
+
+        def server_close(self) -> None:
+            self.socket.closed = True
+
+    class _AliveThread:
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+        @staticmethod
+        def join(timeout=None) -> None:
+            return
+
+    server = _BlockingServer()
+    server.ready_event.set()
+    proxy, _downloader = _new_basic_proxy()
+    errors: list[BaseException] = []
+
+    def cleanup() -> None:
+        try:
+            proxy._cleanup_listener(server, _AliveThread(), timeout=0.05)  # type: ignore[arg-type]
+        except BaseException as exc:
+            errors.append(exc)
+
+    cleanup_thread = threading.Thread(target=cleanup, daemon=True)
+    started = time.monotonic()
+    cleanup_thread.start()
+    assert entered.wait(1)
+    cleanup_thread.join(timeout=0.25)
+    completed_within_deadline = not cleanup_thread.is_alive()
+    elapsed = time.monotonic() - started
+    release.set()
+    cleanup_thread.join(timeout=1)
+
+    assert completed_within_deadline
+    assert elapsed < 0.25
+    assert len(errors) == 1
+    assert isinstance(errors[0], subject.HlsProxyLifecycleError)
+    assert server.socket.closed
+
+
+@pytest.mark.parametrize(
+    ("url", "content_type", "accepted"),
+    [
+        ("https://cdn.example/video.mp4", "application/vnd.apple.mpegurl", False),
+        ("https://cdn.example/master.m3u8", "video/mp4", True),
+    ],
+)
+def test_hls_response_content_type_overrides_misleading_url_suffix(
+    url: str,
+    content_type: str,
+    accepted: bool,
+) -> None:
+    with patch.object(subject, "_MAX_PLAYLIST_RESPONSE_BYTES", 4), patch.object(
+        subject, "_MAX_MEDIA_RESPONSE_BYTES", 8
+    ):
+        body = subject._BoundedHlsResponseBody(url)
+        body.collect_header(f"Content-Type: {content_type}\r\n".encode())
+        result = body.collect(b"12345")
+
+    assert (result == 5) is accepted
+    assert body.too_large is not accepted
+
+
+def test_hls_response_classification_resets_for_final_header_block() -> None:
+    with patch.object(subject, "_MAX_PLAYLIST_RESPONSE_BYTES", 4), patch.object(
+        subject, "_MAX_MEDIA_RESPONSE_BYTES", 8
+    ):
+        body = subject._BoundedHlsResponseBody("https://cdn.example/master.m3u8")
+        body.collect_header(b"HTTP/1.1 200 Connection established\r\n")
+        body.collect_header(b"Content-Type: video/mp4\r\n")
+        body.collect_header(b"HTTP/2 200\r\n")
+        result = body.collect(b"12345")
+
+    assert result == subject._CURL_WRITEFUNC_ERROR
+    assert body.too_large
+
+
+def test_hls_curl_close_failure_cannot_replace_primary_transfer_error() -> None:
+    primary = RuntimeError("perform failed")
+    curl = Mock()
+    curl.impersonate.return_value = 0
+    curl.perform.side_effect = primary
+    curl.close.side_effect = OSError("close failed")
+    requests_api = SimpleNamespace(Headers=lambda lines: lines)
+
+    with patch("curl_cffi.Curl", return_value=curl), patch.object(
+        subject.debug_logger,
+        "log_exception",
+        side_effect=RuntimeError("diagnostic failed"),
+    ):
+        with pytest.raises(RuntimeError, match="perform failed") as caught:
+            subject._staged_curl_get(
+                requests_api,
+                "https://cdn.example/video.mp4",
+                {"headers": {}, "timeout": 1, "allow_redirects": False},
+                lambda line: len(line),
+            )
+
+    assert caught.value is primary
+    assert any("cleanup failed" in note for note in getattr(primary, "__notes__", ()))
+
+
+def test_hls_curl_close_failure_after_success_fails_closed() -> None:
+    curl = Mock()
+    curl.impersonate.return_value = 0
+    curl.getinfo.side_effect = [b"https://cdn.example/video.mp4", 200]
+    curl.close.side_effect = OSError("close failed")
+
+    with patch("curl_cffi.Curl", return_value=curl):
+        with pytest.raises(OSError, match="close failed"):
+            subject._staged_curl_get(
+                SimpleNamespace(Headers=lambda lines: lines),
+                "https://cdn.example/video.mp4",
+                {"headers": {}, "timeout": 1, "allow_redirects": False},
+                lambda line: len(line),
+            )
+
+
+def test_hls_staged_close_type_error_never_retries_request() -> None:
+    curl = Mock()
+    curl.impersonate.return_value = 0
+    curl.getinfo.side_effect = [b"https://cdn.example/video.mp4", 200]
+    curl.close.side_effect = TypeError("close failed")
+
+    with patch("curl_cffi.Curl", return_value=curl) as curl_factory:
+        with pytest.raises(TypeError, match="close failed"):
+            subject.perform_hls_curl_get(
+                SimpleNamespace(Headers=lambda lines: lines),
+                "https://cdn.example/video.mp4",
+                {
+                    "headers": {},
+                    "timeout": 1,
+                    "impersonate": "chrome",
+                    "allow_redirects": False,
+                },
+                lambda line: len(line),
+            )
+
+    curl_factory.assert_called_once_with()
+    curl.perform.assert_called_once_with()
+
+
+def test_hls_header_budget_counts_status_crlf_and_terminal_blank_line() -> None:
+    status = b"HTTP/1.1 200 OK\r\n"
+    header = b"X-Test: value\r\n"
+    terminal = b"\r\n"
+    with patch.object(subject, "_MAX_HLS_RESPONSE_HEADER_BYTES", len(status + header + terminal) - 1):
+        response_headers = subject._HlsResponseHeaders(lambda line: len(line))
+        assert response_headers.write(status) == len(status)
+        assert response_headers.write(header) == len(header)
+        assert response_headers.write(terminal) == subject._CURL_WRITEFUNC_ERROR
+
+    assert response_headers.too_large
+    assert response_headers.size == len(status + header + terminal)
+
+
+def test_hls_header_budget_restarts_with_and_limits_new_status_line() -> None:
+    first_status = b"HTTP/1.1 100 Continue\r\n"
+    second_status = b"HTTP/2 200 " + b"x" * 32 + b"\r\n"
+    with patch.object(subject, "_MAX_HLS_RESPONSE_HEADER_BYTES", len(second_status) - 1):
+        response_headers = subject._HlsResponseHeaders(lambda line: len(line))
+        assert response_headers.write(first_status) == len(first_status)
+        assert response_headers.write(b"X-Ignored: value\r\n") != subject._CURL_WRITEFUNC_ERROR
+        assert response_headers.write(second_status) == subject._CURL_WRITEFUNC_ERROR
+
+    assert response_headers.too_large
+    assert response_headers.size == len(second_status)
+    assert response_headers.lines == []
 
 
 def test_hls_capability_explicit_revoke_invalidates_previously_signed_paths() -> None:
@@ -763,15 +1192,56 @@ def test_hls_proxy_accepts_one_well_formed_byte_range(header_value: str) -> None
     assert subject._LocalHlsProxy._validate_forwarded_header("Range", header_value) == header_value
 
 
-def test_hls_proxy_request_admission_is_bounded_and_reusable() -> None:
-    proxy, _downloader = _new_basic_proxy()
-    admitted = [proxy.acquire_request_slot() for _index in range(17)]
+def test_hls_proxy_request_admission_is_process_wide_and_reusable() -> None:
+    first_proxy, _first_downloader = _new_basic_proxy()
+    second_proxy, _second_downloader = _new_basic_proxy()
+    acquisition_order = [first_proxy, second_proxy] * 3
+    admitted: list[bool] = []
+    acquired_by: list[subject._LocalHlsProxy] = []
 
-    assert admitted == [True] * 16 + [False]
-    proxy.release_request_slot()
-    assert proxy.acquire_request_slot()
-    for _index in range(16):
-        proxy.release_request_slot()
+    try:
+        for proxy in acquisition_order:
+            accepted = proxy.acquire_request_slot()
+            admitted.append(accepted)
+            if accepted:
+                acquired_by.append(proxy)
+
+        assert admitted == [True] * 4 + [False] * 2
+        first_proxy.revoke()
+    finally:
+        for proxy in acquired_by:
+            proxy.release_request_slot()
+
+    assert not first_proxy.acquire_request_slot()
+    reacquired = [second_proxy.acquire_request_slot() for _index in range(5)]
+    assert reacquired == [True] * 4 + [False]
+    for _index in range(4):
+        second_proxy.release_request_slot()
+
+
+def test_hls_proxy_handler_failure_releases_shared_admission_slot() -> None:
+    proxy, _downloader = _new_basic_proxy()
+    replacement, _replacement_downloader = _new_basic_proxy()
+    server = subject._ThreadingHlsProxyServer(("127.0.0.1", 0), subject._HlsProxyHandler)
+    server.owner = proxy  # type: ignore[attr-defined]
+    server.finish_request = Mock(side_effect=RuntimeError("handler failed"))
+    server.handle_error = Mock()
+    server.shutdown_request = Mock()
+
+    try:
+        assert proxy.acquire_request_slot()
+        server.process_request_thread(Mock(), ("127.0.0.1", 12345))
+        assert proxy._active_requests == 0
+
+        reacquired = [replacement.acquire_request_slot() for _index in range(5)]
+        try:
+            assert reacquired == [True] * 4 + [False]
+        finally:
+            for accepted in reacquired:
+                if accepted:
+                    replacement.release_request_slot()
+    finally:
+        server.server_close()
 
 
 def test_loopback_admission_bounds_partial_request_threads_and_recovers() -> None:
@@ -782,7 +1252,7 @@ def test_loopback_admission_bounds_partial_request_threads_and_recovers() -> Non
         try:
             assert proxy.server is not None
             target = proxy.server.server_address[:2]
-            for _index in range(16):
+            for _index in range(4):
                 client = socket.create_connection(target, timeout=1)
                 client.sendall(b"GET /hls?")
                 partial_clients.append(client)
@@ -807,9 +1277,9 @@ def test_loopback_admission_bounds_partial_request_threads_and_recovers() -> Non
                 client.close()
             partial_clients.clear()
             deadline = time.monotonic() + 2
-            while getattr(proxy._request_slots, "_value", 0) != 16 and time.monotonic() < deadline:
+            while getattr(proxy._request_slots, "_value", 0) != 4 and time.monotonic() < deadline:
                 time.sleep(0.01)
-            assert getattr(proxy._request_slots, "_value", 0) == 16
+            assert getattr(proxy._request_slots, "_value", 0) == 4
 
             parts = urlsplit(proxy.url)
             request_target = urlunsplit(("", "", parts.path, parts.query, ""))
@@ -893,3 +1363,77 @@ def test_hls_handler_does_not_log_client_path_or_upstream_exception_secrets() ->
     assert "client-secret" not in rendered_log_call
     assert "upstream-secret" not in rendered_log_call
     assert "user:pass" not in rendered_log_call
+
+
+def test_hls_handler_returns_502_even_when_diagnostic_logging_fails() -> None:
+    class _FailingOwner:
+        capability = SimpleNamespace(task_id=TASK_A)
+
+        @staticmethod
+        def verify_path(_path_value: str) -> str:
+            return CANONICAL_ROOT_URL
+
+        @staticmethod
+        def serve(_handler, _upstream_url: str) -> None:
+            raise RuntimeError("upstream failed")
+
+    errors: list[int] = []
+    handler = SimpleNamespace(
+        server=SimpleNamespace(owner=_FailingOwner()),
+        path="/hls",
+        send_error=errors.append,
+    )
+
+    with patch.object(
+        subject.debug_logger,
+        "log_exception",
+        side_effect=RuntimeError("diagnostic logger failed"),
+    ):
+        subject._HlsProxyHandler.do_GET(handler)
+
+    assert errors == [502]
+
+
+@pytest.mark.parametrize("close_error", [RuntimeError, ValueError])
+def test_hls_response_cleanup_never_masks_a_completed_response(close_error) -> None:
+    class _CloseFails(_FakeResponse):
+        def close(self) -> None:
+            raise close_error("close failed")
+
+    proxy, downloader = _new_basic_proxy()
+    media_url = "https://media.example/segment.ts"
+    proxy.authorize_playlist_resource(ROOT_URL, media_url, kind="media")
+    downloader.response = _CloseFails(url=media_url)
+    handler = _FakeHandler()
+
+    with patch.object(
+        subject.debug_logger,
+        "log_exception",
+        side_effect=RuntimeError("diagnostic logger failed"),
+    ):
+        proxy.serve(handler, media_url)
+
+    assert handler.status == 200
+    assert handler.wfile.getvalue() == b"segment"
+
+
+def test_hls_flush_diagnostic_failure_does_not_interrupt_streaming() -> None:
+    class _FlushFails(io.BytesIO):
+        def flush(self) -> None:
+            raise OSError("client flush failed")
+
+    proxy, _downloader = _new_basic_proxy()
+    media_url = "https://media.example/segment.ts"
+    proxy.authorize_playlist_resource(ROOT_URL, media_url, kind="media")
+    handler = _FakeHandler()
+    handler.wfile = _FlushFails()
+
+    with patch.object(
+        subject.debug_logger,
+        "log_exception",
+        side_effect=RuntimeError("diagnostic logger failed"),
+    ):
+        proxy.serve(handler, media_url)
+
+    assert handler.wfile.getvalue() == b"segment"
+    assert proxy.progress_snapshot() == (0, 7)
