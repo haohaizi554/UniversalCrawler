@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock, patch
 from curl_cffi import CurlError
 from curl_cffi.requests.exceptions import RequestException
 
-from shared.network.pinned_transport import PinnedResponse
+from shared.network.pinned_transport import (
+    PinnedResponse,
+    PinnedTransportNetworkError,
+)
 from shared.runtime_options import DomainPolicyViolation
 
 from app.core.lib.douyin.link.extractor import Extractor
@@ -238,6 +241,27 @@ class RequesterSecurityTests(unittest.IsolatedAsyncioTestCase):
         rendered = repr(logger.entries)
         self.assertIn("transport request failed", rendered.lower())
         self.assertNotIn("timeout-secret-must-not-be-logged", rendered)
+
+    async def test_pinned_transport_network_failure_follows_retry_contract(self) -> None:
+        transport = _RecordingTransport(
+            error=PinnedTransportNetworkError("network-secret-must-not-be-logged")
+        )
+        requester, logger, _client = _requester(transport, max_retry=2)
+
+        with patch(
+            "app.core.lib.douyin.tools.retry.wait",
+            new_callable=AsyncMock,
+        ) as retry_wait:
+            result = await requester.request_url(
+                "https://v.douyin.com/transient-pinned-network"
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(transport.calls), 3)
+        self.assertEqual(retry_wait.await_count, 2)
+        rendered = repr(logger.entries)
+        self.assertIn("transport request failed", rendered.lower())
+        self.assertNotIn("network-secret-must-not-be-logged", rendered)
 
     async def test_full_redirect_chain_is_delegated_once_to_pinned_transport(self) -> None:
         response = PinnedResponse(

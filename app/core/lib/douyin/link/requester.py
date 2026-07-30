@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 from shared.network.pinned_transport import (
     PinnedTransport,
+    PinnedTransportNetworkError,
     canonicalize_host,
     canonicalize_request_target,
 )
@@ -129,7 +130,7 @@ def _has_unsafe_live_path_segments(path: str) -> bool:
 
 
 def _is_retryable_transport_error(error: BaseException) -> bool:
-    if isinstance(error, (OSError, TimeoutError)):
+    if isinstance(error, (OSError, TimeoutError, PinnedTransportNetworkError)):
         return True
     try:
         from curl_cffi import CurlError

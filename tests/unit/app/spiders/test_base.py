@@ -110,6 +110,35 @@ class BaseSpiderTests(unittest.TestCase):
         route.abort.assert_called_once()
         route.continue_.assert_not_called()
 
+    def test_playwright_route_aborts_dns_failure_without_escaping_handler(self):
+        spider = _DummySpider(keyword="demo", config={})
+
+        def resolver(host, *_args, **_kwargs):
+            if host == "dns-fail.example":
+                raise OSError("temporary resolver failure")
+            return [(None, None, None, None, ("93.184.216.34", 443))]
+
+        spider._public_domain_policy = DomainPolicyEngine(resolver=resolver)
+        route_handlers = []
+
+        class FakePage:
+            url = "about:blank"
+
+            def route(self, _pattern, handler):
+                route_handlers.append(handler)
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+        page = FakePage()
+        self.assertTrue(spider.interruptible_playwright_goto(page, "https://example.com"))
+        route = SimpleNamespace(abort=Mock(), continue_=Mock())
+
+        route_handlers[0](route, SimpleNamespace(url="https://dns-fail.example/data"))
+
+        route.abort.assert_called_once_with("blockedbyclient")
+        route.continue_.assert_not_called()
+
     def test_playwright_route_is_installed_on_context_for_popup_navigation(self):
         spider = _DummySpider(keyword="demo", config={})
         spider._public_domain_policy = DomainPolicyEngine(
@@ -205,6 +234,45 @@ class BaseSpiderTests(unittest.TestCase):
         websocket_handlers[0](public_socket)
         public_socket.close.assert_not_called()
         public_socket.connect_to_server.assert_called_once_with()
+
+    def test_playwright_websocket_closes_dns_failure_without_escaping_handler(self):
+        spider = _DummySpider(keyword="demo", config={})
+
+        def resolver(host, *_args, **_kwargs):
+            if host == "dns-fail.example":
+                raise OSError("temporary resolver failure")
+            return [(None, None, None, None, ("93.184.216.34", 443))]
+
+        spider._public_domain_policy = DomainPolicyEngine(resolver=resolver)
+        websocket_handlers = []
+
+        class FakePage:
+            url = "about:blank"
+
+            def route(self, _pattern, _handler):
+                return None
+
+            def route_web_socket(self, _pattern, handler):
+                websocket_handlers.append(handler)
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+        page = FakePage()
+        self.assertTrue(spider.interruptible_playwright_goto(page, "https://example.com"))
+        socket_route = SimpleNamespace(
+            url="wss://dns-fail.example/events",
+            close=Mock(),
+            connect_to_server=Mock(),
+        )
+
+        websocket_handlers[0](socket_route)
+
+        socket_route.close.assert_called_once_with(
+            code=1008,
+            reason="Blocked by public network policy",
+        )
+        socket_route.connect_to_server.assert_not_called()
 
     def test_playwright_context_blocks_service_workers_from_bypassing_routes(self):
         spider = _DummySpider(keyword="demo", config={})

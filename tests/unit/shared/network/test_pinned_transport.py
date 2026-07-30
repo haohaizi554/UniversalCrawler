@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Barrier, Thread
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import urlsplit
 
@@ -23,11 +24,12 @@ from shared.network import pinned_transport as pinned_transport_module
 from shared.network.pinned_transport import (
     PinnedResponse,
     PinnedTransport,
+    PinnedTransportNetworkError,
     canonicalize_host,
     canonicalize_request_target,
     curl_resolve_options,
 )
-from shared.runtime_options import DomainPolicyViolation
+from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
 from shared.subprocess_env import isolated_media_subprocess_env
 
 
@@ -90,6 +92,11 @@ class _FakeResponse:
     closed: bool = False
     close_calls: int = 0
     close_error: BaseException | None = None
+
+    def iter_content(self, chunk_size: int | None = None):
+        size = 3 if chunk_size is None else max(1, int(chunk_size))
+        for offset in range(0, len(self.content), size):
+            yield self.content[offset : offset + size]
 
     def close(self) -> None:
         self.close_calls += 1
@@ -263,6 +270,86 @@ class _CapturingPolicy:
         return ("8.8.4.4", "2606:4700:4700::1111")
 
 
+def test_domain_policy_resolves_each_transport_hop_exactly_once() -> None:
+    resolver_calls: list[tuple[str, int | None]] = []
+
+    def resolver(host: str, port: int | None, **_kwargs):
+        resolver_calls.append((host, port))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    response = _FakeResponse(200, "https://public.example:443/file", {}, b"ok")
+
+    result = PinnedTransport(
+        policy=DomainPolicyEngine(resolver=resolver),
+        session_factory=lambda: _RecordingSession(deque([response])),
+    ).request("GET", "https://public.example/file", headers={})
+
+    assert result.body == b"ok"
+    assert resolver_calls == [("public.example", 443)]
+
+
+def test_domain_policy_resolver_api_keeps_temporary_dns_failure_out_of_policy_violations() -> None:
+    dns_error = socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+
+    def resolver(*_args, **_kwargs):
+        raise dns_error
+
+    policy = DomainPolicyEngine(resolver=resolver)
+
+    with pytest.raises(OSError) as exc_info:
+        policy.resolve_public_addresses("https://public.example/file")
+
+    assert exc_info.value is dns_error
+    assert not isinstance(exc_info.value, DomainPolicyViolation)
+
+
+def test_domain_policy_preflight_converts_temporary_dns_failure_to_policy_rejection() -> None:
+    dns_error = socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+
+    def resolver(*_args, **_kwargs):
+        raise dns_error
+
+    with pytest.raises(DomainPolicyViolation, match="无法解析") as exc_info:
+        DomainPolicyEngine(resolver=resolver).require_public_url(
+            "https://public.example/file"
+        )
+
+    assert exc_info.value.__cause__ is dns_error
+
+
+def test_transport_normalizes_temporary_dns_failure_as_retryable_network_error() -> None:
+    dns_error = socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+    resolver_calls = 0
+
+    def resolver(*_args, **_kwargs):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        raise dns_error
+
+    with pytest.raises(PinnedTransportNetworkError, match="name resolution failed") as exc_info:
+        PinnedTransport(
+            policy=DomainPolicyEngine(resolver=resolver),
+            session_factory=lambda: pytest.fail("DNS failure must precede session creation"),
+        ).request("GET", "https://public.example/file", headers={})
+
+    assert exc_info.value.__cause__ is dns_error
+    assert resolver_calls == 1
+
+
+def test_transport_keeps_private_dns_answers_as_policy_violations() -> None:
+    policy = DomainPolicyEngine(
+        resolver=lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+        ]
+    )
+
+    with pytest.raises(DomainPolicyViolation):
+        PinnedTransport(
+            policy=policy,
+            session_factory=lambda: pytest.fail("unsafe DNS must precede session creation"),
+        ).request("GET", "https://public.example/file", headers={})
+
+
 def test_public_curl_options_pin_dns_and_disable_environment_proxy() -> None:
     target = canonicalize_request_target("https://CDN.Example.:8443/a.ts")
 
@@ -326,6 +413,23 @@ def test_canonicalize_host_rejects_empty_labels_and_multiple_terminal_dots(
 
 def test_canonicalize_host_accepts_exactly_one_terminal_dot_and_idna() -> None:
     assert canonicalize_host("BÜCHER.Example.") == "xn--bcher-kva.example"
+
+
+def test_canonicalize_host_uses_nontransitional_idna2008() -> None:
+    assert canonicalize_host("faß.de") == "xn--fa-hia.de"
+    target = canonicalize_request_target("https://faß.de./download")
+
+    assert target.host == "xn--fa-hia.de"
+    assert target.url == "https://xn--fa-hia.de:443/download"
+    assert curl_resolve_options(target, ("1.1.1.1",))[CurlOpt.RESOLVE] == [
+        "xn--fa-hia.de:443:1.1.1.1"
+    ]
+
+
+@pytest.mark.parametrize("host", ["ab\u200dcd.example", "abcא.example"])
+def test_canonicalize_host_rejects_invalid_joiner_and_bidi(host: str) -> None:
+    with pytest.raises(DomainPolicyViolation, match="IDNA"):
+        canonicalize_host(host)
 
 
 @pytest.mark.parametrize(
@@ -407,6 +511,31 @@ def test_redirect_hops_share_one_canonical_target_without_system_dns(
     assert all(call["curl_options"][CurlOpt.FORBID_REUSE] == 1 for call in calls)
     assert all(session.closed for session in factory.sessions)
     system_dns.assert_not_called()
+
+
+def test_redirect_location_header_name_is_case_insensitive() -> None:
+    factory = _RecordingSessionFactory(
+        [
+            _FakeResponse(
+                302,
+                "https://one.example:443/start",
+                {"lOcAtIoN": "/final"},
+            ),
+            _FakeResponse(200, "https://one.example:443/final", {}, b"ok"),
+        ]
+    )
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=factory,
+    ).request("GET", "https://one.example/start", headers={})
+
+    assert result.status_code == 200
+    assert result.url == "https://one.example:443/final"
+    assert result.redirect_chain == (
+        "https://one.example:443/start",
+        "https://one.example:443/final",
+    )
 
 
 def test_pinned_response_four_positional_arguments_keep_compatibility() -> None:
@@ -998,6 +1127,190 @@ def test_transport_closes_and_rejects_session_without_curl_options() -> None:
     assert session.request_calls == 0
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+@pytest.mark.parametrize(
+    "rejection_branch",
+    ["real-injected", "options-not-dict", "dirty-state"],
+)
+@pytest.mark.parametrize(
+    ("error_type", "error_args"),
+    [(KeyboardInterrupt, ("stop",)), (SystemExit, (7,))],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+def test_candidate_rejection_prefers_cleanup_control_flow_before_policy_error(
+    monkeypatch,
+    streaming: bool,
+    rejection_branch: str,
+    error_type: type[BaseException],
+    error_args: tuple[object, ...],
+) -> None:
+    cleanup_error = error_type(*error_args)
+
+    class Candidate:
+        def __init__(self) -> None:
+            self.curl_options: object = {}
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise cleanup_error
+
+    candidate = Candidate()
+    if rejection_branch == "real-injected":
+        monkeypatch.setattr(curl_requests, "Session", Candidate)
+    elif rejection_branch == "options-not-dict":
+        candidate.curl_options = ()
+    else:
+        monkeypatch.setattr(
+            pinned_transport_module,
+            "_real_session_request_state_is_clean",
+            lambda _candidate: False,
+        )
+    transport = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: candidate,
+        max_response_bytes=16,
+    )
+
+    with pytest.raises(error_type) as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/file",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/file", headers={})
+
+    assert exc_info.value is cleanup_error
+    assert candidate.close_calls == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+@pytest.mark.parametrize(
+    "primary_kind",
+    ["ordinary", "policy"],
+)
+@pytest.mark.parametrize(
+    ("cleanup_type", "cleanup_args"),
+    [(KeyboardInterrupt, ("stop",)), (SystemExit, (7,))],
+    ids=["keyboard-interrupt-cleanup", "system-exit-cleanup"],
+)
+def test_candidate_getter_primary_survives_cleanup_control_flow_with_safe_note(
+    streaming: bool,
+    primary_kind: str,
+    cleanup_type: type[BaseException],
+    cleanup_args: tuple[object, ...],
+) -> None:
+    primary_error: BaseException
+    if primary_kind == "ordinary":
+        primary_error = RuntimeError("getter failed")
+    else:
+        primary_error = DomainPolicyViolation("getter policy failed")
+    cleanup_error = cleanup_type(*cleanup_args)
+
+    class GetterFailingCandidate:
+        close_calls = 0
+
+        @property
+        def curl_options(self):
+            raise primary_error
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise cleanup_error
+
+    candidate = GetterFailingCandidate()
+    transport = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: candidate,
+        max_response_bytes=16,
+    )
+
+    with pytest.raises(type(primary_error)) as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/file",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/file", headers={})
+
+    assert exc_info.value is primary_error
+    assert candidate.close_calls == 1
+    assert any(
+        "session" in note and cleanup_type.__name__ in note
+        for note in primary_error.__notes__
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["policy-rejection", "getter-primary"],
+)
+def test_candidate_cleanup_hostile_type_name_cannot_replace_the_outcome(
+    streaming: bool,
+    failure_stage: str,
+) -> None:
+    class HostileNameMeta(type):
+        @property
+        def __name__(cls) -> str:
+            raise SystemExit("cleanup type-name lookup must not run")
+
+    class HostileCleanupError(Exception, metaclass=HostileNameMeta):
+        pass
+
+    cleanup_error = HostileCleanupError("private cleanup detail")
+    primary_error = RuntimeError("getter primary")
+
+    class Candidate:
+        close_calls = 0
+
+        @property
+        def curl_options(self):
+            if failure_stage == "getter-primary":
+                raise primary_error
+            return ()
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise cleanup_error
+
+    candidate = Candidate()
+    transport = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: candidate,
+        max_response_bytes=16,
+    )
+    expected_error = primary_error if failure_stage == "getter-primary" else None
+
+    if expected_error is None:
+        expectation = pytest.raises(DomainPolicyViolation, match="pinned DNS")
+    else:
+        expectation = pytest.raises(RuntimeError, match="getter primary")
+    with expectation as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/file",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/file", headers={})
+
+    if expected_error is not None:
+        assert exc_info.value is expected_error
+    assert candidate.close_calls == 1
+
+
 def test_transport_rejects_noop_curl_options_setter_before_request() -> None:
     session = _HostileCurlOptionsSession(store_assignment=False)
 
@@ -1221,13 +1534,13 @@ def test_request_error_survives_session_cleanup_failure() -> None:
     session = RequestFailingSession(deque())
     session.close_error = cleanup_error
 
-    with pytest.raises(RuntimeError, match="request primary") as exc_info:
+    with pytest.raises(PinnedTransportNetworkError, match="public request failed") as exc_info:
         PinnedTransport(
             policy=_CapturingPolicy(),
             session_factory=lambda: session,
         ).request("GET", "https://one.example/a", headers={})
 
-    assert exc_info.value is primary_error
+    assert exc_info.value.__cause__ is primary_error
     assert session.close_calls == 1
 
 
@@ -1259,6 +1572,60 @@ def test_resolver_error_survives_session_cleanup_failure_after_redirect() -> Non
     assert session.close_calls == 1
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+@pytest.mark.parametrize(
+    ("cleanup_type", "cleanup_args"),
+    [(KeyboardInterrupt, ("stop",)), (SystemExit, (7,))],
+    ids=["keyboard-interrupt-cleanup", "system-exit-cleanup"],
+)
+def test_policy_primary_survives_cleanup_control_flow_with_safe_note(
+    streaming: bool,
+    cleanup_type: type[BaseException],
+    cleanup_args: tuple[object, ...],
+) -> None:
+    primary_error = DomainPolicyViolation("resolver primary")
+
+    class SecondHopFailingPolicy(_CapturingPolicy):
+        def resolve_public_addresses(self, url: str) -> tuple[str, ...]:
+            if self.checked_urls:
+                raise primary_error
+            return super().resolve_public_addresses(url)
+
+    first_response = _FakeResponse(
+        302,
+        "https://one.example:443/a",
+        {"Location": "/b"},
+    )
+    session_type = _StreamingCallbackSession if streaming else _RecordingSession
+    session = session_type(deque([first_response]))
+    session.close_error = cleanup_type(*cleanup_args)
+    transport = PinnedTransport(
+        policy=SecondHopFailingPolicy(),
+        session_factory=lambda: session,
+        max_response_bytes=16,
+    )
+
+    with pytest.raises(DomainPolicyViolation) as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/a",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/a", headers={})
+
+    assert exc_info.value is primary_error
+    assert first_response.close_calls == 1
+    assert session.close_calls == 1
+    assert any(
+        "session" in note and cleanup_type.__name__ in note
+        for note in primary_error.__notes__
+    )
+
+
 def test_size_limit_error_survives_cleanup_failures_and_attempts_both_closes() -> None:
     response = _FakeResponse(
         200,
@@ -1270,7 +1637,7 @@ def test_size_limit_error_survives_cleanup_failures_and_attempts_both_closes() -
     session = _RecordingSession(deque([response]))
     session.close_error = RuntimeError("session cleanup")
 
-    with pytest.raises(DomainPolicyViolation, match="size limit"):
+    with pytest.raises(DomainPolicyViolation, match="size limit") as exc_info:
         PinnedTransport(
             policy=_CapturingPolicy(),
             session_factory=lambda: session,
@@ -1279,6 +1646,8 @@ def test_size_limit_error_survives_cleanup_failures_and_attempts_both_closes() -
 
     assert response.close_calls == 1
     assert session.close_calls == 1
+    assert any("response" in note and "LookupError" in note for note in exc_info.value.__notes__)
+    assert any("session" in note and "RuntimeError" in note for note in exc_info.value.__notes__)
 
 
 def test_cleanup_failure_is_visible_without_primary_error_and_attempts_both_closes() -> (
@@ -1295,13 +1664,101 @@ def test_cleanup_failure_is_visible_without_primary_error_and_attempts_both_clos
     session = _RecordingSession(deque([response]))
     session.close_error = RuntimeError("session cleanup")
 
-    with pytest.raises(LookupError, match="response cleanup") as exc_info:
+    with pytest.raises(
+        PinnedTransportNetworkError,
+        match="public transport cleanup failed",
+    ) as exc_info:
         PinnedTransport(
             policy=_CapturingPolicy(),
             session_factory=lambda: session,
         ).request("GET", "https://one.example/a", headers={})
 
-    assert exc_info.value is response_error
+    assert exc_info.value.__cause__ is response_error
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "control_error",
+    [KeyboardInterrupt("stop"), SystemExit(7)],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+def test_cleanup_prefers_later_control_flow_over_earlier_ordinary_error(
+    control_error: BaseException,
+    streaming: bool,
+) -> None:
+    response = _FakeResponse(
+        200,
+        "https://one.example:443/file",
+        {},
+        b"ok",
+        close_error=OSError("ordinary response cleanup"),
+    )
+    session_type = _StreamingCallbackSession if streaming else _RecordingSession
+    session = session_type(deque([response]))
+    session.close_error = control_error
+    transport = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: session,
+        max_response_bytes=16,
+    )
+
+    with pytest.raises(type(control_error)) as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/file",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/file", headers={})
+
+    assert exc_info.value is control_error
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "control_error",
+    [KeyboardInterrupt("stop"), SystemExit(7)],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+def test_redirect_cleanup_prefers_later_control_flow_over_response_close_error(
+    control_error: BaseException,
+    streaming: bool,
+) -> None:
+    response = _FakeResponse(
+        302,
+        "https://one.example:443/start",
+        {"Location": "/final"},
+        close_error=OSError("ordinary redirect response cleanup"),
+    )
+    session_type = _StreamingCallbackSession if streaming else _RecordingSession
+    session = session_type(deque([response]))
+    session.close_error = control_error
+    transport = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: session,
+        max_response_bytes=16,
+    )
+
+    with pytest.raises(type(control_error)) as exc_info:
+        if streaming:
+            transport.request_to_sink(
+                "GET",
+                "https://one.example/start",
+                headers={},
+                sink=lambda _chunk: None,
+                max_total_bytes=16,
+            )
+        else:
+            transport.request("GET", "https://one.example/start", headers={})
+
+    assert exc_info.value is control_error
     assert response.close_calls == 1
     assert session.close_calls == 1
 
@@ -1514,6 +1971,569 @@ def test_real_curl_response_overflow_is_translated_to_policy_violation(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_real_curl_streams_bounded_response_directly_to_sink(monkeypatch) -> None:
+    payload = b"installer-chunk-" * 4096
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    class LoopbackHarnessPolicy:
+        @staticmethod
+        def resolve_public_addresses(_url: str) -> tuple[str, ...]:
+            return ("127.0.0.1",)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        pinned_transport_module,
+        "curl_resolve_options",
+        lambda *_args, **_kwargs: {CurlOpt.PROXY: ""},
+    )
+    output = bytearray()
+    response_budget = len(payload) + 4096
+    events: list[str] = []
+
+    def validate_response(status: int, headers: dict[str, str]) -> None:
+        events.append("headers")
+        assert status == 200
+        assert int(headers["Content-Length"]) == len(payload)
+
+    def consume(chunk: bytes) -> None:
+        assert events == ["headers"]
+        output.extend(chunk)
+    try:
+        result = PinnedTransport(
+            policy=LoopbackHarnessPolicy(),
+            timeout=2,
+            max_response_bytes=response_budget,
+        ).request_to_sink(
+            "GET",
+            f"http://127.0.0.1:{server.server_port}/installer",
+            headers={},
+            sink=consume,
+            response_validator=validate_response,
+            accepted_statuses={200},
+            max_total_bytes=response_budget,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert output == payload
+    assert events == ["headers"]
+    assert result.bytes_written == len(payload)
+    assert len(payload) < result.total_response_bytes <= response_budget
+
+
+class _StreamingCallbackSession(_RecordingSession):
+    def request(self, method: str, url: str, **kwargs):
+        assert kwargs.get("stream") is not True
+        response = super().request(method, url, **kwargs)
+        self.curl = SimpleNamespace(
+            getinfo=lambda _info: response.status_code,
+        )
+        kwargs["response_start_callback"](response.status_code, response.headers)
+        callback = kwargs["content_callback"]
+        for offset in range(0, len(response.content), 3):
+            chunk = response.content[offset : offset + 3]
+            if callback(chunk) != len(chunk):
+                raise OSError("curl write callback aborted")
+        return response
+
+
+class _RawHeaderStreamingSession(_RecordingSession):
+    def request(self, method: str, url: str, **kwargs):
+        response = super().request(method, url, **kwargs)
+        self.curl = SimpleNamespace(getinfo=lambda _info: response.status_code)
+        raw_lines = [f"HTTP/1.1 {response.status_code} Test\r\n".encode("ascii")]
+        raw_lines.extend(
+            f"{name}: {value}\r\n".encode("latin-1")
+            for name, value in response.headers.items()
+        )
+        raw_lines.append(b"\r\n")
+        for line in raw_lines:
+            kwargs["header_callback"](line)
+        kwargs["response_start_callback"](response.status_code, response.headers)
+        callback = kwargs["content_callback"]
+        for offset in range(0, len(response.content), 3):
+            chunk = response.content[offset : offset + 3]
+            if callback(chunk) != len(chunk):
+                raise OSError("curl write callback aborted")
+        return response
+
+
+class _BodyBeforeHeadersSession(_RecordingSession):
+    def request(self, method: str, url: str, **kwargs):
+        response = super().request(method, url, **kwargs)
+        self.curl = SimpleNamespace(getinfo=lambda _info: response.status_code)
+        kwargs["content_callback"](response.content)
+        return response
+
+
+def test_streaming_transport_writes_bounded_body_without_buffering_again() -> None:
+    response = _FakeResponse(200, "https://one.example:443/file", {}, b"payload")
+    factory = _RecordingSessionFactory(
+        [response],
+        session_type=_StreamingCallbackSession,
+    )
+    output = bytearray()
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=factory,
+        max_response_bytes=16,
+    ).request_to_sink(
+        "GET",
+        "https://one.example/file",
+        headers={},
+        sink=output.extend,
+        accepted_statuses={200},
+        max_total_bytes=8,
+    )
+
+    assert output == b"payload"
+    assert result.status_code == 200
+    assert result.bytes_written == len(output)
+    assert result.total_response_bytes == len(output)
+    options = factory.sessions[0].calls[0]["curl_options"]
+    assert options[CurlOpt.PROXY] == ""
+    assert options[CurlOpt.FRESH_CONNECT] == 1
+    assert options[CurlOpt.FORBID_REUSE] == 1
+    assert options[CurlOpt.RESOLVE] == ["one.example:443:1.1.1.1"]
+
+
+def test_streaming_transport_rejects_body_before_header_validation() -> None:
+    response = _FakeResponse(200, "https://one.example:443/file", {}, b"payload")
+    output = bytearray()
+
+    with pytest.raises(DomainPolicyViolation, match="headers were not validated before body"):
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: _BodyBeforeHeadersSession(deque([response])),
+            max_response_bytes=16,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=output.extend,
+            response_validator=lambda _status, _headers: None,
+            accepted_statuses={200},
+            max_total_bytes=16,
+        )
+
+    assert output == b""
+
+
+def test_streaming_transport_discards_redirect_body_and_strips_cross_origin_secrets() -> None:
+    policy = _CapturingPolicy()
+    factory = _RecordingSessionFactory(
+        [
+            _FakeResponse(
+                302,
+                "https://one.example:443/file",
+                {"Location": "https://two.example/final"},
+                b"redirect-body",
+            ),
+            _FakeResponse(200, "https://two.example:443/final", {}, b"installer"),
+        ],
+        session_type=_StreamingCallbackSession,
+    )
+    output = bytearray()
+
+    result = PinnedTransport(
+        policy=policy,
+        session_factory=factory,
+        max_response_bytes=64,
+    ).request_to_sink(
+        "GET",
+        "https://one.example/file",
+        headers={"Authorization": "Bearer secret", "Cookie": "session=secret", "X-Test": "ok"},
+        sink=output.extend,
+        accepted_statuses={200},
+        max_total_bytes=64,
+    )
+
+    assert output == b"installer"
+    assert result.redirect_chain == (
+        "https://one.example:443/file",
+        "https://two.example:443/final",
+    )
+    assert policy.checked_urls == list(result.redirect_chain)
+    second_headers = factory.sessions[1].calls[0]["headers"]
+    assert "Authorization" not in second_headers
+    assert "Cookie" not in second_headers
+    assert second_headers["X-Test"] == "ok"
+
+
+def test_streaming_total_budget_counts_raw_headers_and_body_across_redirects() -> None:
+    first = _FakeResponse(
+        302,
+        "https://one.example:443/start",
+        {"lOcAtIoN": "https://two.example/final", "X-Hop": "one"},
+        b"abc",
+    )
+    second = _FakeResponse(
+        200,
+        "https://two.example:443/final",
+        {"X-Hop": "two"},
+        b"done",
+    )
+    expected_total = sum(
+        len(line)
+        for line in (
+            b"HTTP/1.1 302 Test\r\n",
+            b"lOcAtIoN: https://two.example/final\r\n",
+            b"X-Hop: one\r\n",
+            b"\r\n",
+            b"abc",
+            b"HTTP/1.1 200 Test\r\n",
+            b"X-Hop: two\r\n",
+            b"\r\n",
+            b"done",
+        )
+    )
+    factory = _RecordingSessionFactory(
+        [first, second],
+        session_type=_RawHeaderStreamingSession,
+    )
+    output = bytearray()
+
+    result = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=factory,
+        max_response_bytes=expected_total,
+    ).request_to_sink(
+        "GET",
+        "https://one.example/start",
+        headers={},
+        sink=output.extend,
+        accepted_statuses={200},
+        max_total_bytes=expected_total,
+    )
+
+    assert output == b"done"
+    assert result.total_response_bytes == expected_total
+
+
+def test_streaming_total_budget_rejects_headers_and_body_one_byte_over_limit() -> None:
+    response = _FakeResponse(
+        200,
+        "https://one.example:443/file",
+        {"X-Budget": "header"},
+        b"body",
+    )
+    expected_total = sum(
+        map(
+            len,
+            (
+                b"HTTP/1.1 200 Test\r\n",
+                b"X-Budget: header\r\n",
+                b"\r\n",
+                b"body",
+            ),
+        )
+    )
+
+    with pytest.raises(DomainPolicyViolation, match="size limit"):
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: _RawHeaderStreamingSession(deque([response])),
+            max_response_bytes=expected_total,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=lambda _chunk: None,
+            accepted_statuses={200},
+            max_total_bytes=expected_total - 1,
+        )
+
+
+def test_streaming_transport_aborts_before_sink_when_total_body_limit_is_exceeded() -> None:
+    factory = _RecordingSessionFactory(
+        [_FakeResponse(200, "https://one.example:443/file", {}, b"12345")],
+        session_type=_StreamingCallbackSession,
+    )
+    output = bytearray()
+
+    with pytest.raises(DomainPolicyViolation, match="size limit"):
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=factory,
+            max_response_bytes=8,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=output.extend,
+            accepted_statuses={200},
+            max_total_bytes=4,
+        )
+
+    assert output == b"123"
+    assert factory.sessions[0].closed
+
+
+def test_streaming_transport_preserves_sink_baseexception_over_cleanup_failures() -> None:
+    class SinkFailure(BaseException):
+        pass
+
+    primary = SinkFailure("sink failed")
+    response = _FakeResponse(
+        200,
+        "https://one.example:443/file",
+        {},
+        b"payload",
+        close_error=SystemExit("response cleanup"),
+    )
+    class ReturningAfterCallbackAbortSession(_StreamingCallbackSession):
+        def request(self, method: str, url: str, **kwargs):
+            response = _RecordingSession.request(self, method, url, **kwargs)
+            self.curl = SimpleNamespace(getinfo=lambda _info: response.status_code)
+            kwargs["response_start_callback"](response.status_code, response.headers)
+            kwargs["content_callback"](response.content)
+            return response
+
+    session = ReturningAfterCallbackAbortSession(deque([response]))
+    session.close_error = KeyboardInterrupt("session cleanup")
+
+    def sink(_chunk: bytes) -> None:
+        raise primary
+
+    with pytest.raises(SinkFailure) as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: session,
+            max_response_bytes=16,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=sink,
+            accepted_statuses={200},
+            max_total_bytes=16,
+        )
+
+    assert exc_info.value is primary
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+    assert any("response" in note and "SystemExit" in note for note in primary.__notes__)
+    assert any("session" in note and "KeyboardInterrupt" in note for note in primary.__notes__)
+
+
+def test_streaming_transport_never_reads_materialized_response_content() -> None:
+    class NoContentResponse:
+        status_code = 200
+        url = "https://one.example:443/file"
+        headers: dict[str, str] = {}
+
+        @property
+        def content(self):
+            raise AssertionError("streaming transport must not materialize response.content")
+
+        def close(self) -> None:
+            return None
+
+    class NoContentSession(_RecordingSession):
+        def request(self, method: str, url: str, **kwargs):
+            self.calls.append({"method": method, "url": url, "curl_options": dict(self.curl_options)})
+            self.curl = SimpleNamespace(getinfo=lambda _info: 200)
+            kwargs["response_start_callback"](200, {})
+            assert kwargs["content_callback"](b"safe") == 4
+            return NoContentResponse()
+
+    output = bytearray()
+    result = PinnedTransport(
+        policy=_CapturingPolicy(),
+        session_factory=lambda: NoContentSession(deque()),
+        max_response_bytes=8,
+    ).request_to_sink(
+        "GET",
+        "https://one.example/file",
+        headers={},
+        sink=output.extend,
+        accepted_statuses={200},
+        max_total_bytes=8,
+    )
+
+    assert output == b"safe"
+    assert result.bytes_written == 4
+
+
+def test_streaming_transport_normalizes_session_network_errors() -> None:
+    class FailingSession(_RecordingSession):
+        def request(self, method: str, url: str, **kwargs):
+            del method, url, kwargs
+            raise OSError("connection reset")
+
+    with pytest.raises(PinnedTransportNetworkError, match="public request failed"):
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: FailingSession(deque()),
+            max_response_bytes=8,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=lambda _chunk: None,
+        )
+
+
+def test_buffered_transport_normalizes_session_network_errors() -> None:
+    class CurlLikeFailure(Exception):
+        pass
+
+    primary = CurlLikeFailure("curl connection reset")
+
+    class FailingSession(_RecordingSession):
+        def request(self, method: str, url: str, **kwargs):
+            del method, url, kwargs
+            raise primary
+
+    with pytest.raises(PinnedTransportNetworkError, match="public request failed") as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: FailingSession(deque()),
+            max_response_bytes=8,
+        ).request(
+            "GET",
+            "https://one.example/file",
+            headers={},
+        )
+
+    assert exc_info.value.__cause__ is primary
+
+
+def test_buffered_transport_normalizes_success_cleanup_errors() -> None:
+    response = _FakeResponse(200, "https://one.example:443/file", {}, b"safe")
+    session = _RecordingSession(deque([response]))
+    session.close_error = OSError("curl close failed")
+
+    with pytest.raises(PinnedTransportNetworkError, match="transport cleanup") as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: session,
+            max_response_bytes=8,
+        ).request("GET", "https://one.example/file", headers={})
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+
+
+def test_buffered_transport_normalizes_same_origin_redirect_response_cleanup() -> None:
+    redirect = _FakeResponse(
+        302,
+        "https://one.example:443/file",
+        {"Location": "/final"},
+        close_error=OSError("redirect close failed"),
+    )
+    session = _RecordingSession(deque([redirect]))
+
+    with pytest.raises(
+        PinnedTransportNetworkError,
+        match="redirect response cleanup",
+    ) as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: session,
+            max_response_bytes=8,
+        ).request("GET", "https://one.example/file", headers={})
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert redirect.close_calls == 1
+    assert session.close_calls == 1
+
+
+def test_buffered_transport_normalizes_cross_origin_old_session_cleanup() -> None:
+    responses = deque(
+        [
+            _FakeResponse(
+                302,
+                "https://one.example:443/file",
+                {"Location": "https://two.example/final"},
+            ),
+            _FakeResponse(200, "https://two.example:443/final", {}, b"safe"),
+        ]
+    )
+    first = _RecordingSession(responses)
+    first.close_error = OSError("old session close failed")
+    second = _RecordingSession(responses)
+    sessions = iter((first, second))
+
+    with pytest.raises(
+        PinnedTransportNetworkError,
+        match="redirect session cleanup",
+    ) as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: next(sessions),
+            max_response_bytes=8,
+        ).request("GET", "https://one.example/file", headers={})
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert first.close_calls == 1
+    assert second.close_calls == 0
+
+
+def test_streaming_transport_normalizes_success_cleanup_errors() -> None:
+    response = _FakeResponse(200, "https://one.example:443/file", {}, b"safe")
+    session = _StreamingCallbackSession(deque([response]))
+    session.close_error = OSError("curl close failed")
+
+    with pytest.raises(PinnedTransportNetworkError, match="transport cleanup") as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: session,
+            max_response_bytes=8,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=lambda _chunk: None,
+        )
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+
+
+def test_streaming_transport_normalizes_redirect_cleanup_errors() -> None:
+    response = _FakeResponse(
+        302,
+        "https://one.example:443/file",
+        {"Location": "/final"},
+        b"redirect",
+        close_error=OSError("redirect close failed"),
+    )
+    session = _StreamingCallbackSession(deque([response]))
+
+    with pytest.raises(PinnedTransportNetworkError, match="redirect response cleanup") as exc_info:
+        PinnedTransport(
+            policy=_CapturingPolicy(),
+            session_factory=lambda: session,
+            max_response_bytes=16,
+        ).request_to_sink(
+            "GET",
+            "https://one.example/file",
+            headers={},
+            sink=lambda _chunk: None,
+        )
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert response.close_calls == 1
+    assert session.close_calls == 1
 
 
 def test_media_subprocess_environment_drops_proxy_and_cookie_variables(

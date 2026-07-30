@@ -147,7 +147,11 @@ class DomainPolicyEngine:
             or address.is_unspecified
         )
 
-    def require_public_url(self, url: str) -> str:
+    def _validated_url_target(
+        self, url: str
+    ) -> tuple[str, str, int | None, ipaddress.IPv4Address | ipaddress.IPv6Address | None]:
+        """Validate URL syntax and literal addresses without consulting DNS."""
+
         if not isinstance(url, str):
             raise DomainPolicyViolation("url 必须是字符串")
         normalized_url = url.strip()
@@ -165,50 +169,21 @@ class DomainPolicyEngine:
             port = parts.port
         except ValueError as exc:
             raise DomainPolicyViolation("url 端口无效") from exc
-
         try:
             host_address = ipaddress.ip_address(host)
         except ValueError:
             host_address = None
-        if host_address is not None:
-            if self._is_unsafe_address(host):
-                raise DomainPolicyViolation("禁止访问本地或内网地址")
-            return normalized_url
+        if host_address is not None and self._is_unsafe_address(host):
+            raise DomainPolicyViolation("禁止访问本地或内网地址")
+        return normalized_url, host, port, host_address
+
+    def _resolve_public_host(
+        self, host: str, port: int | None
+    ) -> tuple[str, ...]:
+        """Resolve once, preserving transient resolver failures as network errors."""
 
         resolver = self._resolver or socket.getaddrinfo
-        try:
-            addr_infos = resolver(host, port or None, type=socket.SOCK_STREAM)
-        except OSError as exc:
-            raise DomainPolicyViolation("url 主机名无法解析") from exc
-        if not addr_infos:
-            raise DomainPolicyViolation("url 主机名无法解析")
-        for addr_info in addr_infos:
-            resolved_host = str(addr_info[4][0])
-            try:
-                unsafe = self._is_unsafe_address(resolved_host)
-            except ValueError as exc:
-                raise DomainPolicyViolation("url 主机名解析结果无效") from exc
-            if unsafe:
-                raise DomainPolicyViolation("禁止访问本地或内网地址")
-        return normalized_url
-
-    def resolve_public_addresses(self, url: str) -> tuple[str, ...]:
-        """返回刚完成校验的地址集合，供传输层固定 DNS 解析结果。"""
-        normalized_url = self.require_public_url(url)
-        parts = urlsplit(normalized_url)
-        host = str(parts.hostname or "")
-        try:
-            host_address = ipaddress.ip_address(host)
-        except ValueError:
-            host_address = None
-        if host_address is not None:
-            return (str(host_address),)
-
-        resolver = self._resolver or socket.getaddrinfo
-        try:
-            addr_infos = resolver(host, parts.port or None, type=socket.SOCK_STREAM)
-        except OSError as exc:
-            raise DomainPolicyViolation("url 主机名无法解析") from exc
+        addr_infos = resolver(host, port or None, type=socket.SOCK_STREAM)
         addresses: list[str] = []
         for addr_info in addr_infos:
             address = str(addr_info[4][0])
@@ -223,6 +198,22 @@ class DomainPolicyEngine:
         if not addresses:
             raise DomainPolicyViolation("url 主机名无法解析")
         return tuple(addresses)
+
+    def require_public_url(self, url: str) -> str:
+        normalized_url, host, port, host_address = self._validated_url_target(url)
+        if host_address is None:
+            try:
+                self._resolve_public_host(host, port)
+            except OSError as exc:
+                raise DomainPolicyViolation("url 主机名无法解析") from exc
+        return normalized_url
+
+    def resolve_public_addresses(self, url: str) -> tuple[str, ...]:
+        """返回刚完成校验的地址集合，供传输层固定 DNS 解析结果。"""
+        _normalized_url, host, port, host_address = self._validated_url_target(url)
+        if host_address is not None:
+            return (str(host_address),)
+        return self._resolve_public_host(host, port)
 
     def validate_redirect_response(self, response: Any, *_args: Any, **_kwargs: Any) -> Any:
         """Requests 钩子：在 resolve_redirects 发出请求前拒绝不安全的 Location。"""
@@ -334,6 +325,8 @@ def validate_direct_download_url(
         PUBLIC_DOMAIN_POLICY.require_public_url(url)
     except DomainPolicyViolation as exc:
         return str(exc)
+    except OSError:
+        return "url 主机名无法解析"
     return None
 
 def build_missav_proxy_url(proxy_str: str) -> str:
