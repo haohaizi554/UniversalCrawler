@@ -1,10 +1,438 @@
 from __future__ import annotations
 
+import errno
 import os
+import queue
+import sys
+import threading
+import time
 
 import pytest
 
 import shared.filesystem_directory_capability as capability_module
+
+
+def test_posix_generation_lease_opens_nonblocking_before_type_check(
+    tmp_path,
+    monkeypatch,
+):
+    seed = os.open(tmp_path / "seed.bin", os.O_RDWR | os.O_CREAT)
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=91,
+        identity=(0, 0),
+    )
+    flags_seen: list[int] = []
+    nonblocking = 0x800
+
+    def fake_open(_name, flags, **_kwargs):
+        flags_seen.append(flags)
+        return os.dup(seed)
+
+    monkeypatch.setattr(capability, "assert_bound", lambda: None)
+    monkeypatch.setattr(capability_module.os, "open", fake_open)
+    monkeypatch.setattr(
+        capability_module.os,
+        "O_NONBLOCK",
+        nonblocking,
+        raising=False,
+    )
+
+    descriptor = capability.open_owned_generation_lease(
+        "a" * 64 + "-target.bin"
+    )
+    os.close(descriptor)
+    os.close(seed)
+
+    assert flags_seen and flags_seen[0] & nonblocking
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux FIFO nonblocking integration contract",
+)
+def test_linux_generation_lease_rejects_fifo_without_blocking(tmp_path):
+    target_name = "a" * 64 + "-target.fifo"
+    target = tmp_path / target_name
+    os.mkfifo(target)
+    outcomes: queue.Queue[BaseException | int] = queue.Queue()
+
+    with capability_module.filesystem_directory_capability(tmp_path) as capability:
+        def open_fifo() -> None:
+            try:
+                outcomes.put(capability.open_owned_generation_lease(target_name))
+            except BaseException as exc:
+                outcomes.put(exc)
+
+        started = time.monotonic()
+        worker = threading.Thread(target=open_fifo, daemon=True)
+        worker.start()
+        worker.join(0.5)
+        if worker.is_alive():
+            writer = os.open(target, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(writer)
+            worker.join(1.0)
+            pytest.fail("FIFO lease open blocked before regular-file validation")
+        elapsed = time.monotonic() - started
+
+    outcome = outcomes.get_nowait()
+    if isinstance(outcome, int):
+        os.close(outcome)
+        pytest.fail("FIFO was accepted as a published generation")
+    assert isinstance(outcome, OSError)
+    assert elapsed < 0.5
+
+
+def test_linux_owned_generation_is_created_with_otmpfile(monkeypatch):
+    calls: list[tuple[object, ...]] = []
+    temporary_flag = 0x410000
+
+    def fake_open(*args, **kwargs):
+        calls.append((*args, kwargs))
+        return 701
+
+    monkeypatch.setattr(capability_module.os, "open", fake_open)
+    monkeypatch.setattr(
+        capability_module.os,
+        "set_inheritable",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        capability_module.os,
+        "O_TMPFILE",
+        temporary_flag,
+        raising=False,
+    )
+
+    descriptor = capability_module._create_linux_owned_generation(91, 0o640)
+
+    assert descriptor == 701
+    assert calls == [
+        (
+            ".",
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | temporary_flag,
+            0o640,
+            {"dir_fd": 91},
+        )
+    ]
+
+
+def test_linux_publish_links_the_exact_source_descriptor(monkeypatch):
+    calls: list[tuple[int, bytes, int, bytes, int]] = []
+
+    def fake_linkat(
+        source_directory: int,
+        source_name: bytes,
+        target_directory: int,
+        target_name: bytes,
+        flags: int,
+    ) -> None:
+        calls.append(
+            (
+                source_directory,
+                source_name,
+                target_directory,
+                target_name,
+                flags,
+            )
+        )
+
+    monkeypatch.setattr(capability_module, "_call_linkat", fake_linkat)
+
+    capability_module._publish_linux_descriptor_no_replace(
+        72,
+        93,
+        "a" * 64 + "-installer.exe",
+    )
+
+    assert calls == [
+        (
+            72,
+            b"",
+            93,
+            ("a" * 64 + "-installer.exe").encode(),
+            capability_module._AT_EMPTY_PATH,
+        )
+    ]
+
+
+def test_linux_publish_uses_procfd_only_for_empty_path_unavailability(monkeypatch):
+    calls: list[tuple[int, bytes, int, bytes, int]] = []
+
+    def fake_linkat(
+        source_directory: int,
+        source_name: bytes,
+        target_directory: int,
+        target_name: bytes,
+        flags: int,
+    ) -> None:
+        calls.append(
+            (
+                source_directory,
+                source_name,
+                target_directory,
+                target_name,
+                flags,
+            )
+        )
+        if len(calls) == 1:
+            raise OSError(errno.EPERM, "AT_EMPTY_PATH unavailable")
+
+    monkeypatch.setattr(capability_module, "_call_linkat", fake_linkat)
+
+    capability_module._publish_linux_descriptor_no_replace(72, 93, "target.bin")
+
+    assert calls == [
+        (72, b"", 93, b"target.bin", capability_module._AT_EMPTY_PATH),
+        (
+            capability_module._AT_FDCWD,
+            b"/proc/self/fd/72",
+            93,
+            b"target.bin",
+            capability_module._AT_SYMLINK_FOLLOW,
+        ),
+    ]
+
+
+def test_linux_publish_does_not_retry_an_ambiguous_native_failure(monkeypatch):
+    calls = 0
+
+    def fake_linkat(*_args) -> None:
+        nonlocal calls
+        calls += 1
+        raise OSError(errno.EIO, "ambiguous filesystem failure")
+
+    monkeypatch.setattr(capability_module, "_call_linkat", fake_linkat)
+
+    with pytest.raises(OSError) as exc_info:
+        capability_module._publish_linux_descriptor_no_replace(
+            72,
+            93,
+            "target.bin",
+        )
+
+    assert exc_info.value.errno == errno.EIO
+    assert calls == 1
+
+
+def test_windows_publish_uses_same_source_handle_absolute_target_and_no_replace(
+    tmp_path,
+    monkeypatch,
+):
+    calls: list[tuple[int, int, str, bool]] = []
+    monkeypatch.setattr(
+        capability_module,
+        "_windows_raw_handle_from_descriptor",
+        lambda descriptor: descriptor + 1000,
+    )
+    monkeypatch.setattr(
+        capability_module,
+        "_set_windows_handle_rename",
+        lambda source, target, name, *, replace: calls.append(
+            (source, target, name, replace)
+        ),
+    )
+
+    capability_module._publish_windows_descriptor_no_replace(
+        17,
+        tmp_path / "target.bin",
+    )
+
+    assert calls == [(1017, 0, str(tmp_path / "target.bin"), False)]
+
+
+def test_darwin_publish_clones_from_the_exact_source_descriptor(monkeypatch):
+    calls: list[tuple[int, int, bytes, int]] = []
+    monkeypatch.setattr(
+        capability_module,
+        "_call_fclonefileat",
+        lambda source, target, name, flags: calls.append(
+            (source, target, name, flags)
+        ),
+    )
+
+    capability_module._publish_darwin_descriptor_no_replace(
+        17,
+        29,
+        "target.bin",
+    )
+
+    assert calls == [(17, 29, b"target.bin", 0)]
+
+
+def test_darwin_owned_generation_creation_is_explicitly_unsupported(
+    tmp_path,
+    monkeypatch,
+):
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=73,
+        identity=(0, 0),
+    )
+    monkeypatch.setattr(capability, "assert_bound", lambda: None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    with pytest.raises(OSError) as exc_info:
+        capability.create_owned_generation()
+
+    assert exc_info.value.errno == errno.ENOTSUP
+
+
+def test_committed_publish_postcheck_failure_returns_uncertain_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    source_descriptor = os.open(tmp_path / "source.bin", os.O_RDWR | os.O_CREAT)
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=91,
+        identity=(0, 0),
+    )
+    source = capability_module.OwnedGenerationHandle._for_test(
+        capability,
+        source_descriptor,
+        platform="linux",
+    )
+    checks = iter((None, OSError("root swapped after commit")))
+
+    def assert_bound() -> None:
+        outcome = next(checks)
+        if outcome is not None:
+            raise outcome
+
+    monkeypatch.setattr(capability, "assert_bound", assert_bound)
+    monkeypatch.setattr(
+        capability_module,
+        "_publish_linux_descriptor_no_replace",
+        lambda *_args: None,
+    )
+
+    receipt = capability.publish_owned_generation_no_replace(
+        source,
+        "a" * 64 + "-installer.exe",
+    )
+
+    assert receipt.status is capability_module.DescriptorPublishStatus.COMMITTED_AUTHORITY_UNCERTAIN
+    assert source.published is True
+    source.detach_published_descriptor()
+    os.close(source_descriptor)
+
+
+def test_owned_generation_publish_rejects_a_fixed_non_digest_target(
+    tmp_path,
+    monkeypatch,
+):
+    descriptor = os.open(tmp_path / "source.bin", os.O_RDWR | os.O_CREAT)
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=91,
+        identity=(0, 0),
+    )
+    source = capability_module.OwnedGenerationHandle._for_test(
+        capability,
+        descriptor,
+        platform="linux",
+    )
+    monkeypatch.setattr(capability, "assert_bound", lambda: None)
+
+    with pytest.raises(OSError, match="not content-addressed"):
+        capability.publish_owned_generation_no_replace(
+            source,
+            "installer.exe",
+        )
+
+    assert source.publish_attempted is False
+    source.close()
+
+
+def test_context_exit_marks_committed_receipt_uncertain_without_retry_error(
+    tmp_path,
+    monkeypatch,
+):
+    descriptor = os.open(
+        tmp_path / "capability-handle.bin",
+        os.O_RDWR | os.O_CREAT,
+    )
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=descriptor,
+        identity=(0, 0),
+    )
+    receipt = capability._new_committed_receipt("target.bin")
+    monkeypatch.setattr(
+        capability,
+        "assert_bound",
+        lambda: (_ for _ in ()).throw(OSError("root postcheck failed")),
+    )
+
+    capability_module._finish_capability(capability, None)
+
+    assert receipt.status is capability_module.DescriptorPublishStatus.COMMITTED_AUTHORITY_UNCERTAIN
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
+def test_ambiguous_windows_publish_abandon_never_deletes_by_handle(
+    tmp_path,
+    monkeypatch,
+):
+    descriptor = os.open(tmp_path / "source.bin", os.O_RDWR | os.O_CREAT)
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=91,
+        identity=(0, 0),
+    )
+    source = capability_module.OwnedGenerationHandle._for_test(
+        capability,
+        descriptor,
+        platform="windows",
+    )
+    source._begin_publish()
+    delete_calls: list[int] = []
+    monkeypatch.setattr(
+        capability_module,
+        "_delete_windows_generation_descriptor",
+        lambda value: delete_calls.append(value),
+    )
+
+    source.abandon_after_ambiguous_publish()
+
+    assert delete_calls == []
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
+def test_known_collision_cleanup_closes_descriptor_and_preserves_control_flow(
+    tmp_path,
+    monkeypatch,
+):
+    descriptor = os.open(tmp_path / "source.bin", os.O_RDWR | os.O_CREAT)
+    capability = capability_module.FilesystemDirectoryCapability(
+        tmp_path,
+        descriptor=91,
+        identity=(0, 0),
+    )
+    source = capability_module.OwnedGenerationHandle._for_test(
+        capability,
+        descriptor,
+        platform="windows",
+    )
+    source._begin_publish()
+    control = KeyboardInterrupt("exact cleanup interrupted")
+    monkeypatch.setattr(
+        capability_module,
+        "_delete_windows_generation_descriptor",
+        lambda _value: (_ for _ in ()).throw(control),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as exc_info:
+        source.discard_after_known_no_commit()
+
+    assert exc_info.value is control
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_capability_closes_after_exit_identity_failure(tmp_path, monkeypatch):

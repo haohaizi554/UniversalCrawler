@@ -23,7 +23,7 @@ env:
 jobs:
   quality:
     name: Static and architecture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - name: Checkout
@@ -61,6 +61,17 @@ jobs:
         run: |
           mkdir -p artifacts
           python -X faulthandler -m pytest tests/architecture tests/release/ci -q --junitxml=artifacts/quality.xml
+
+      - name: Linux exact-generation contracts
+        shell: bash
+        run: |
+          findmnt -T "$RUNNER_TEMP"
+          python -X faulthandler -m pytest -q -rs \
+          --basetemp="$RUNNER_TEMP/pytest-exact-generation" \
+          --junitxml=artifacts/linux-exact-generation.xml \
+          tests/integration/shared/test_linux_owned_generation.py \
+          tests/unit/shared/test_filesystem_directory_capability.py \
+          tests/unit/app/services/test_updater_owned_generation.py
 
       - name: Upload quality report
         if: always()

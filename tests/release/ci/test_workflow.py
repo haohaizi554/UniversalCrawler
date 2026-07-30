@@ -90,6 +90,37 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
 
         self.assertNotIn("app/core/lib/douyin/encrypt", quality_block)
 
+    def test_linux_quality_runs_native_exact_generation_contracts(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
+        source = workflow.read_text(encoding="utf-8")
+        quality_block = source.split("  quality:", 1)[1].split(
+            "  compatibility:", 1
+        )[0]
+
+        self.assertIn("runs-on: ubuntu-24.04", quality_block)
+        self.assertIn("Linux exact-generation contracts", quality_block)
+        self.assertIn('findmnt -T "$RUNNER_TEMP"', quality_block)
+        self.assertIn(
+            '--basetemp="$RUNNER_TEMP/pytest-exact-generation"',
+            quality_block,
+        )
+        self.assertIn(
+            "--junitxml=artifacts/linux-exact-generation.xml",
+            quality_block,
+        )
+        self.assertIn(
+            "tests/integration/shared/test_linux_owned_generation.py",
+            quality_block,
+        )
+        self.assertIn(
+            "tests/unit/shared/test_filesystem_directory_capability.py",
+            quality_block,
+        )
+        self.assertIn(
+            "tests/unit/app/services/test_updater_owned_generation.py",
+            quality_block,
+        )
+
     def test_browser_job_caches_playwright_runtime(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
