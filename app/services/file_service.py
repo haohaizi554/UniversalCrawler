@@ -9,15 +9,23 @@ import shutil
 import stat
 import sys
 import time
+import unicodedata
 from collections.abc import Iterable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, NoReturn, TypeVar
 
 from app.debug_logger import debug_logger
 from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
+from app.services.path_policy import (
+    ApprovedChildPath,
+    ApprovedRootGrant,
+    ApprovedRootsLease,
+    PathPolicy,
+)
 from app.utils import sanitize_filename
 
 T = TypeVar("T")
@@ -68,6 +76,87 @@ class MediaDeleteMutationPlan:
         )
 
 
+class MediaDeleteStatus(str, Enum):
+    """Durable outcome states for a delete that cannot return ordinary success."""
+
+    OUTCOME_UNCERTAIN = "outcome_uncertain"
+    COMMITTED_TARGET_REPLACED = "committed_target_replaced"
+    COMMITTED_AUTHORITY_UNCERTAIN = "committed_authority_uncertain"
+
+
+@dataclass(frozen=True)
+class MediaDeleteReceipt:
+    """Non-sensitive delete evidence that explicitly forbids blind retries."""
+
+    target_name: str
+    status: MediaDeleteStatus
+
+    @property
+    def committed(self) -> bool | None:
+        if self.status is MediaDeleteStatus.OUTCOME_UNCERTAIN:
+            return None
+        return True
+
+    @property
+    def retry_safe(self) -> bool:
+        return False
+
+
+class MediaDeleteOutcomeError(FileOperationError):
+    """A delete that must be reconciled instead of retried by path."""
+
+    def __init__(self, message: str, receipt: MediaDeleteReceipt) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(status={self.receipt.status.value!r}, "
+            f"committed={self.receipt.committed!r})"
+        )
+
+
+class MediaRenameStatus(str, Enum):
+    """Durable outcome states for a rename that cannot return ordinary success."""
+
+    OUTCOME_UNCERTAIN = "outcome_uncertain"
+    COMMITTED_TARGET_INVALID = "committed_target_invalid"
+    COMMITTED_AUTHORITY_UNCERTAIN = "committed_authority_uncertain"
+
+
+@dataclass(frozen=True)
+class MediaRenameReceipt:
+    """Non-sensitive rename outcome evidence for reconciliation by the caller."""
+
+    source_name: str
+    target_name: str
+    status: MediaRenameStatus
+
+    @property
+    def committed(self) -> bool | None:
+        if self.status is MediaRenameStatus.OUTCOME_UNCERTAIN:
+            return None
+        return True
+
+    @property
+    def retry_safe(self) -> bool:
+        return False
+
+
+class MediaRenameOutcomeError(FileOperationError):
+    """A rename that must be reconciled instead of blindly retried or rolled back."""
+
+    def __init__(self, message: str, receipt: MediaRenameReceipt) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(status={self.receipt.status.value!r}, "
+            f"committed={self.receipt.committed!r})"
+        )
+
+
 class MediaLibraryService:
     """扫描和重命名媒体，并以任务归属及临时名白名单约束联动删除。"""
 
@@ -102,10 +191,17 @@ class MediaLibraryService:
         *BILIBILI_TEMP_SUFFIXES,
     )
 
-    def __init__(self, video_extensions: tuple[str, ...], image_extensions: tuple[str, ...]):
+    def __init__(
+        self,
+        video_extensions: tuple[str, ...],
+        image_extensions: tuple[str, ...],
+        *,
+        path_policy: PathPolicy | None = None,
+    ) -> None:
         self.video_extensions = tuple(ext.lower() for ext in video_extensions)
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
         self.all_media_extensions = self.video_extensions + self.image_extensions
+        self._path_policy = path_policy or PathPolicy()
 
     @staticmethod
     def _run_file_mutation_with_retry(
@@ -688,7 +784,12 @@ class MediaLibraryService:
             message = "重命名失败后的状态对账无法确认"
         return FileOperationError(message)
 
-    def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
+    def rename_media(
+        self,
+        video: VideoItem,
+        new_title: str,
+        save_dir: str,
+    ) -> tuple[str, str]:
         old_path = video.local_path
         source_stat = self._regular_rename_source_stat(old_path)
         ext = os.path.splitext(old_path)[1]
@@ -735,6 +836,195 @@ class MediaLibraryService:
         if result is None:
             raise FileOperationError("重命名文件失败")
         return result
+
+    def rename_media_authorized(
+        self,
+        video: VideoItem,
+        new_title: str,
+        save_dir: str,
+        *,
+        approved_root_grants: Iterable[ApprovedRootGrant],
+    ) -> tuple[str, str]:
+        """Rename the path-linearized source and validate its authoritative target.
+
+        Ordinary success keeps the legacy two-path tuple.  Any error that may
+        follow an OS commit raises :class:`MediaRenameOutcomeError` with a
+        non-retryable reconciliation receipt.
+        """
+        old_path = os.path.abspath(video.local_path)
+        extension = os.path.splitext(old_path)[1]
+        safe_name = sanitize_filename(new_title) + extension
+        new_path = os.path.abspath(os.path.join(save_dir, safe_name))
+        committed = False
+        try:
+            with self._path_policy.lease_approved_root_grants(
+                approved_root_grants
+            ) as roots:
+                roots.assert_bound()
+                with ExitStack() as stack:
+                    source = stack.enter_context(roots.bind_child(old_path))
+                    target = stack.enter_context(roots.bind_child(new_path))
+                    source_stat = source.stat()
+                    if not stat.S_ISREG(source_stat.st_mode):
+                        raise FileOperationError(
+                            "重命名源必须是普通媒体文件，不能是目录或符号链接"
+                        )
+                    if old_path == new_path:
+                        return old_path, new_path
+                    try:
+                        target_stat = target.stat()
+                    except FileNotFoundError:
+                        target_stat = None
+                    if target_stat is not None:
+                        same_entry = os.path.samestat(source_stat, target_stat)
+                        case_only_alias = (
+                            os.name == "nt"
+                            and same_entry
+                            and source.parent.root == target.parent.root
+                            and source.name.casefold() == target.name.casefold()
+                        )
+                        if not case_only_alias:
+                            raise FileOperationError(f"文件名 '{safe_name}' 已存在")
+                        roots.assert_bound()
+                        try:
+                            os.rename(source.absolute_path, target.absolute_path)
+                        except FileExistsError as exc:
+                            raise FileOperationError(
+                                f"文件名 '{safe_name}' 已存在"
+                            ) from exc
+                        except BaseException as exc:
+                            self._raise_authorized_rename_outcome(
+                                old_path,
+                                new_path,
+                                MediaRenameStatus.OUTCOME_UNCERTAIN,
+                                "授权媒体重命名结果不确定，需要状态对账",
+                                cause=exc,
+                            )
+                    else:
+                        try:
+                            source.rename_no_replace(target)
+                        except FileExistsError as exc:
+                            raise FileOperationError(
+                                f"文件名 '{safe_name}' 已存在"
+                            ) from exc
+                        except BaseException as exc:
+                            self._raise_authorized_rename_outcome(
+                                old_path,
+                                new_path,
+                                MediaRenameStatus.OUTCOME_UNCERTAIN,
+                                "授权媒体重命名结果不确定，需要状态对账",
+                                cause=exc,
+                            )
+                    committed = True
+                    self._postcheck_authorized_rename(
+                        roots,
+                        target,
+                        old_path,
+                        new_path,
+                    )
+            return old_path, new_path
+        except MediaRenameOutcomeError:
+            raise
+        except BaseException as exc:
+            if committed:
+                self._raise_authorized_rename_outcome(
+                    old_path,
+                    new_path,
+                    MediaRenameStatus.COMMITTED_AUTHORITY_UNCERTAIN,
+                    "媒体重命名已提交，但授权状态复核失败",
+                    cause=exc,
+                )
+            raise
+
+    @staticmethod
+    def _safe_rename_receipt_name(path: str) -> str:
+        name = os.path.basename(path)
+        safe = "".join(
+            character
+            for character in name
+            if not unicodedata.category(character).startswith("C")
+        )
+        return safe[:255] or "<media>"
+
+    @classmethod
+    def _rename_receipt(
+        cls,
+        old_path: str,
+        new_path: str,
+        status: MediaRenameStatus,
+    ) -> MediaRenameReceipt:
+        return MediaRenameReceipt(
+            source_name=cls._safe_rename_receipt_name(old_path),
+            target_name=cls._safe_rename_receipt_name(new_path),
+            status=status,
+        )
+
+    @staticmethod
+    def _attach_rename_receipt_best_effort(
+        primary: BaseException,
+        receipt: MediaRenameReceipt,
+    ) -> None:
+        try:
+            object.__setattr__(primary, "media_rename_receipt", receipt)
+        except BaseException:
+            pass
+        try:
+            add_note = object.__getattribute__(primary, "add_note")
+        except BaseException:
+            return
+        if not callable(add_note):
+            return
+        try:
+            add_note(f"media rename outcome: {receipt.status.value}")
+        except BaseException:
+            return
+
+    @classmethod
+    def _raise_authorized_rename_outcome(
+        cls,
+        old_path: str,
+        new_path: str,
+        status: MediaRenameStatus,
+        message: str,
+        *,
+        cause: BaseException,
+    ) -> NoReturn:
+        receipt = cls._rename_receipt(old_path, new_path, status)
+        if not isinstance(cause, Exception):
+            cls._attach_rename_receipt_best_effort(cause, receipt)
+            raise cause
+        raise MediaRenameOutcomeError(message, receipt) from cause
+
+    @classmethod
+    def _postcheck_authorized_rename(
+        cls,
+        roots: ApprovedRootsLease,
+        target: ApprovedChildPath,
+        old_path: str,
+        new_path: str,
+    ) -> None:
+        try:
+            roots.assert_bound()
+            target_stat = target.stat()
+            roots.assert_bound()
+        except BaseException as exc:
+            cls._raise_authorized_rename_outcome(
+                old_path,
+                new_path,
+                MediaRenameStatus.COMMITTED_AUTHORITY_UNCERTAIN,
+                "媒体重命名已提交，但目标授权状态无法确认",
+                cause=exc,
+            )
+        if not stat.S_ISREG(target_stat.st_mode):
+            receipt = cls._rename_receipt(
+                old_path,
+                new_path,
+                MediaRenameStatus.COMMITTED_TARGET_INVALID,
+            )
+            raise MediaRenameOutcomeError(
+                "媒体重命名已提交，但权威目标不是普通文件",
+                receipt,
+            )
 
     @classmethod
     def _owned_empty_subdirectory_candidates(
@@ -842,3 +1132,171 @@ class MediaLibraryService:
             deleted = self._delete_file(temp_path, required=False) or deleted
         deleted = self._remove_owned_empty_subdirectories(plan.owned_directories) or deleted
         return deleted
+
+    @classmethod
+    def _unlink_explicit_approved_file(
+        cls,
+        roots: ApprovedRootsLease,
+        file_path: str,
+    ) -> bool:
+        """Delete the current regular file at an explicitly requested path.
+
+        This intentionally has path-linearized semantics.  Derived temp and
+        directory cleanup paths do not have an exact-generation token and must
+        never use this helper.
+        """
+        if not file_path:
+            return False
+        entered_child = False
+        committed = False
+        try:
+            with roots.bind_child(file_path) as child:
+                entered_child = True
+                try:
+                    value = child.stat()
+                except FileNotFoundError:
+                    return False
+                if not stat.S_ISREG(value.st_mode):
+                    raise OSError("approved deletion target is not a regular file")
+                try:
+                    child.unlink()
+                except BaseException as exc:
+                    cls._raise_authorized_delete_outcome(
+                        file_path,
+                        MediaDeleteStatus.OUTCOME_UNCERTAIN,
+                        "approved media delete outcome is uncertain and must be reconciled",
+                        cause=exc,
+                    )
+                committed = True
+                try:
+                    roots.assert_bound()
+                    try:
+                        replacement = child.stat()
+                    except FileNotFoundError:
+                        replacement = None
+                    roots.assert_bound()
+                except BaseException as exc:
+                    cls._raise_authorized_delete_outcome(
+                        file_path,
+                        MediaDeleteStatus.COMMITTED_AUTHORITY_UNCERTAIN,
+                        "approved media delete committed but authority could not be revalidated",
+                        cause=exc,
+                    )
+                if replacement is not None:
+                    receipt = cls._delete_receipt(
+                        file_path,
+                        MediaDeleteStatus.COMMITTED_TARGET_REPLACED,
+                    )
+                    raise MediaDeleteOutcomeError(
+                        "approved media delete committed but the path now names a later generation",
+                        receipt,
+                    )
+                return True
+        except MediaDeleteOutcomeError:
+            raise
+        except BaseException as exc:
+            if committed:
+                cls._raise_authorized_delete_outcome(
+                    file_path,
+                    MediaDeleteStatus.COMMITTED_AUTHORITY_UNCERTAIN,
+                    "approved media delete committed but authority cleanup failed",
+                    cause=exc,
+                )
+            if isinstance(exc, FileNotFoundError) and not entered_child:
+                return False
+            if isinstance(exc, PermissionError):
+                raise
+            if isinstance(exc, OSError):
+                raise FileOperationError(
+                    "approved media file could not be deleted safely"
+                ) from exc
+            raise
+
+    @classmethod
+    def _delete_receipt(
+        cls,
+        file_path: str,
+        status: MediaDeleteStatus,
+    ) -> MediaDeleteReceipt:
+        return MediaDeleteReceipt(
+            target_name=cls._safe_rename_receipt_name(file_path),
+            status=status,
+        )
+
+    @staticmethod
+    def _attach_delete_receipt_best_effort(
+        primary: BaseException,
+        receipt: MediaDeleteReceipt,
+    ) -> None:
+        try:
+            object.__setattr__(primary, "media_delete_receipt", receipt)
+        except BaseException:
+            pass
+        try:
+            add_note = object.__getattribute__(primary, "add_note")
+        except BaseException:
+            return
+        if not callable(add_note):
+            return
+        try:
+            add_note(f"media delete outcome: {receipt.status.value}")
+        except BaseException:
+            return
+
+    @classmethod
+    def _raise_authorized_delete_outcome(
+        cls,
+        file_path: str,
+        status: MediaDeleteStatus,
+        message: str,
+        *,
+        cause: BaseException,
+    ) -> NoReturn:
+        receipt = cls._delete_receipt(file_path, status)
+        if not isinstance(cause, Exception):
+            cls._attach_delete_receipt_best_effort(cause, receipt)
+            raise cause
+        raise MediaDeleteOutcomeError(message, receipt) from cause
+
+    def delete_media_authorized(
+        self,
+        video: VideoItem,
+        *,
+        mutation_plan: MediaDeleteMutationPlan | None = None,
+        approved_root_grants: Iterable[ApprovedRootGrant],
+    ) -> bool:
+        """Delete the explicit current media path and retain derived cleanup.
+
+        ``temp_paths`` and ``owned_directories`` are only names captured in a
+        plan.  Without exact-generation authority they must be left to residue
+        recovery so a later file or directory generation is never removed.
+        """
+        plan = mutation_plan or self.build_delete_media_plan(video)
+        committed = False
+        try:
+            with self._path_policy.lease_approved_root_grants(
+                approved_root_grants
+            ) as roots:
+                roots.assert_bound()
+                deleted = self._unlink_explicit_approved_file(
+                    roots,
+                    plan.file_path,
+                )
+                committed = deleted
+                # The plan freezes names, not filesystem generations.  Until the
+                # shared capability can prove exact-generation deletion, a Web
+                # request must leave temp files and owned directories for the
+                # recovery/residue workflow instead of deleting a later successor.
+                roots.assert_bound()
+            return deleted
+        except MediaDeleteOutcomeError:
+            raise
+        except BaseException as exc:
+            if committed:
+                self._raise_authorized_delete_outcome(
+                    plan.file_path,
+                    MediaDeleteStatus.COMMITTED_AUTHORITY_UNCERTAIN,
+                    "approved media delete committed but root authority cleanup failed",
+                    cause=exc,
+                )
+            raise
