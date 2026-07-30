@@ -12,6 +12,146 @@ import pytest
 import shared.filesystem_directory_capability as capability_module
 
 
+def test_open_capability_can_be_asserted_and_closed_from_another_thread(
+    tmp_path,
+):
+    capability = capability_module.open_filesystem_directory_capability(tmp_path)
+    outcomes: queue.Queue[BaseException | None] = queue.Queue()
+
+    def verify_and_close() -> None:
+        try:
+            capability.assert_bound()
+            capability.close()
+            capability.close()
+        except BaseException as exc:
+            outcomes.put(exc)
+        else:
+            outcomes.put(None)
+
+    worker = threading.Thread(target=verify_and_close)
+    worker.start()
+    worker.join(1.0)
+
+    assert not worker.is_alive()
+    assert outcomes.get_nowait() is None
+    capability.close()
+    with pytest.raises(OSError, match="closed"):
+        capability.assert_bound()
+
+
+def test_open_capability_is_not_registered_as_an_active_context_capability(
+    tmp_path,
+):
+    owned = capability_module.open_filesystem_directory_capability(tmp_path)
+    try:
+        with capability_module.filesystem_directory_capability(tmp_path) as scoped:
+            assert scoped is not owned
+            with capability_module.filesystem_directory_capability(
+                tmp_path
+            ) as nested:
+                assert nested is scoped
+    finally:
+        owned.close()
+
+
+def test_open_capability_projects_the_identity_of_the_same_live_handle(tmp_path):
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    capability = capability_module.open_filesystem_directory_capability(approved)
+    try:
+        root, identity = capability.snapshot_bound_identity()
+        current = os.lstat(approved)
+
+        assert root == approved.absolute()
+        assert identity == (int(current.st_dev), int(current.st_ino))
+    finally:
+        capability.close()
+
+
+def test_open_capability_rejects_a_replacement_root_generation(tmp_path):
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    moved = tmp_path / "approved-before-swap"
+    capability = capability_module.open_filesystem_directory_capability(approved)
+    try:
+        try:
+            approved.rename(moved)
+        except PermissionError:
+            capability.assert_bound()
+            assert approved.is_dir()
+            return
+
+        approved.mkdir()
+        with pytest.raises(OSError, match="identity changed"):
+            capability.assert_bound()
+
+        replacement = capability_module.open_filesystem_directory_capability(approved)
+        try:
+            replacement.assert_bound()
+        finally:
+            replacement.close()
+    finally:
+        capability.close()
+
+
+@pytest.mark.parametrize("through_ancestor", (False, True))
+def test_open_capability_rejects_directory_reparse_points(
+    tmp_path,
+    through_ancestor,
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if through_ancestor:
+        (outside / "approved").mkdir()
+        candidate = tmp_path / "ancestor-link"
+        target = candidate / "approved"
+    else:
+        candidate = tmp_path / "approved-link"
+        target = candidate
+    try:
+        candidate.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+
+    with pytest.raises(OSError, match="regular directory"):
+        capability_module.open_filesystem_directory_capability(target)
+
+
+def test_open_capability_prefers_close_control_flow_over_identity_error(
+    tmp_path,
+    monkeypatch,
+):
+    identity_error = OSError("directory identity changed")
+    close_control = KeyboardInterrupt("directory close interrupted")
+    calls: list[str] = []
+
+    class FailingCapability:
+        def assert_bound(self) -> None:
+            calls.append("assert")
+            raise identity_error
+
+        def close(self) -> None:
+            calls.append("close")
+            raise close_control
+
+    monkeypatch.setattr(
+        capability_module,
+        "_require_regular_directory_ancestry",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        capability_module,
+        "_open_directory_capability",
+        lambda _path: FailingCapability(),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as exc_info:
+        capability_module.open_filesystem_directory_capability(tmp_path)
+
+    assert exc_info.value is close_control
+    assert calls == ["assert", "close"]
+
+
 def test_posix_generation_lease_opens_nonblocking_before_type_check(
     tmp_path,
     monkeypatch,

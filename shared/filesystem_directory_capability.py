@@ -200,6 +200,12 @@ class FilesystemDirectoryCapability:
         self._closed = False
         self._committed_receipts: list[DescriptorPublishReceipt] = []
 
+    def snapshot_bound_identity(self) -> tuple[Path, tuple[int, int]]:
+        """Return the path and identity proven by this still-open authority."""
+
+        self.assert_bound()
+        return self.root, self._identity
+
     def assert_bound(self) -> None:
         self._assert_open()
         if self._parent is not None:
@@ -700,6 +706,38 @@ class FilesystemDirectoryCapability:
     def _assert_open(self) -> None:
         if self._closed:
             raise OSError("approved directory capability is closed")
+
+
+def open_filesystem_directory_capability(
+    path: str | os.PathLike[str],
+) -> FilesystemDirectoryCapability:
+    """Acquire an independently owned directory authority.
+
+    The returned capability is not registered in the active ContextVar.  Its
+    owner must close it explicitly, which may be done from another thread.
+    """
+
+    root = Path(os.path.abspath(os.fspath(path)))
+    _require_regular_directory_ancestry(root)
+    capability = _open_directory_capability(root)
+    try:
+        capability.assert_bound()
+    except BaseException as primary_error:
+        try:
+            capability.close()
+        except BaseException as cleanup_error:
+            selected_error = _preferred_cleanup_error(
+                primary_error,
+                cleanup_error,
+            )
+            if selected_error is cleanup_error:
+                raise
+            _attach_note_best_effort(
+                primary_error,
+                "approved directory capability cleanup failed",
+            )
+        raise
+    return capability
 
 
 @contextmanager
@@ -1768,4 +1806,5 @@ __all__ = [
     "filesystem_child_directory_capability",
     "filesystem_directory_capability",
     "is_link_or_reparse",
+    "open_filesystem_directory_capability",
 ]
